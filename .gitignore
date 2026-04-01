@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.bak
+.env
+.env.backup*
+data/
+archives/
+package/
+*.zip

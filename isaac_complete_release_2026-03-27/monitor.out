@@ -1,0 +1,2 @@
+/root/Isaac/isaac/monitor_server.py:20: DeprecationWarning: websockets.server.WebSocketServerProtocol is deprecated
+  from websockets.server import WebSocketServerProtocol

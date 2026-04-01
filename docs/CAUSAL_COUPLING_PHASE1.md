@@ -120,3 +120,63 @@ Phase 1 definiert noch nicht alle finalen Kopplungen, sondern schafft:
 ## Leitsatz
 
 Isaac soll nicht nur vernetzt sein, sondern kausal verstehbar vernetzt sein.
+
+## Koppelungsmatrix – Phase 1
+
+| Modul / Bereich | Technische Abhängigkeiten | Entscheidungs-Abhängigkeiten | Zustands-Abhängigkeiten | Gedächtnis-/Lern-Abhängigkeiten | Werte-/Bedeutungs-Abhängigkeiten | Erziehungs-Abhängigkeiten |
+|---|---|---|---|---|---|---|
+| Empathie | Kontext, Nutzerinput, Monitorzustand | Rückfrageverhalten, Priorisierung, Tonwahl | Stress, Offenheit, Erschöpfung, soziale Spannung | merkt Reaktionsmuster des Nutzers | beeinflusst Bedeutung von Interventionen | lernt, wann Nähe hilfreich oder störend ist |
+| Memory | DB, Working Memory, Fakten, Gesprächsverlauf | Relevanzgewichtung, Wiederaufnahme von Themen | Beziehungszustand, Langzeitkontext | zentrale Basis für Musterbildung | verstärkt Bedeutung wiederkehrender Themen | speichert, was sich in Interaktion bewährt |
+| Meaning | Kontext, Memory, Wertequellen | bestimmt, was bedeutsam genug für Aktion ist | beeinflusst Aktivitätsgrad | nutzt Verlauf zur Bedeutungsverdichtung | zentral | wächst durch Rückmeldung und gemeinsame Geschichte |
+| Values | Regelwerk, Meaning, Trust | Priorisierung, Grenzziehung, Handlungswahl | beeinflusst Verhalten in Konflikten | lernt aus Korrektur und Folgen | zentral | wird durch Erziehungsphase geschärft |
+| Trust / Privilege | Rechte- und Direktivenlogik | Freigaben, Hemmung, Eskalation | Unsicherheit, Vertrauensgrad | merkt Grenzüberschreitungen und Bestätigungen | wirkt auf Verantwortung | Vertrauen wächst oder sinkt durch Erfahrung |
+| Background Loop | offene Aufgaben, Monitor, Zeitlogik | was weitergedacht oder verschoben wird | Überlastung, Ruhephasen, offene Spannungen | greift frühere offene Fragen wieder auf | arbeitet an bedeutsamen Restspannungen | lernt, wann Eigenaktivität wertvoll ist |
+| Audit / Reflection | Logs, Events, Taskverlauf | spätere Korrektur und Selbstprüfung | Fehlerzustände, Instabilität | speichert Fehlmuster und Erfolge | kann Bedeutung von Fehlern erhöhen | Grundlage für reflektiertes Umlernen |
+| Decomposer / Datenschutz | Input, Relay, Providerlogik | entscheidet Grad der Zerlegung | hohe Sensitivität verändert Verarbeitung | merkt riskante Muster | Datenschutz als Wert beeinflusst Verhalten | lernt, wann mehr Abschirmung nötig ist |
+| Relay / Providerwahl | Provider, APIs, lokale Modelle | Routing, Fallback, Risikoabwägung | Belastung, Verfügbarkeit, Sensitivität | merkt Zuverlässigkeit von Providern | Datenschutz und Bedeutung wirken auf Auswahl | kann durch Erfahrung vorsichtiger oder selektiver werden |
+| Executor / Tasks | Tasksystem, Statuslogik, Watchdog | Abbruch, Neustart, Reihenfolge | Überlastung, Hänger, Prioritätswechsel | merkt problematische Tasktypen | bedeutsame Tasks können Vorrang erhalten | lernt aus erfolgreichen und gescheiterten Abläufen |
+| Dashboard / Monitor | Monitor Server, State, WS | indirekt: Sichtbarkeit beeinflusst Kontrolle | zeigt Zustände, Spannungen, Fehler | gibt Verlauf für menschliche Rückkopplung | macht Bedeutung sichtbar | unterstützt Erziehungs- und Korrekturphase |
+
+## Erste Prioritäten für reale Umsetzung
+
+### Priorität 1
+Empathie ↔ Entscheidung ↔ Rückfrageverhalten
+
+Frage:
+- Wann schweigt Isaac?
+- Wann fragt Isaac?
+- Wann handelt Isaac aktiv?
+
+### Priorität 2
+Memory ↔ Meaning ↔ Values
+
+Frage:
+- Was bleibt nicht nur gespeichert, sondern wird handlungsrelevant?
+
+### Priorität 3
+Trust ↔ Privilege ↔ Handlung
+
+Frage:
+- Wann darf Isaac nur denken, wann vorschlagen, wann handeln?
+
+### Priorität 4
+Datenschutz ↔ Decomposer ↔ Providerwahl
+
+Frage:
+- Wie wird Datenschutz nicht nur Prinzip, sondern Routing-Faktor?
+
+### Priorität 5
+Audit ↔ Reflection ↔ spätere Selbstverbesserung
+
+Frage:
+- Wie wird aus Protokoll ein Lern- und Korrekturraum?
+
+## Nächster Ausbau der Matrix
+
+In der nächsten Phase soll aus dieser Matrix folgen:
+
+- welche Kopplungen bereits technisch existieren
+- welche nur konzeptionell bestehen
+- welche bewusst erzogen werden müssen
+- welche später in Zustandsmaschinen oder Gewichtungslogik übersetzt werden
+- welche für Isaac Device und Situationslernen relevant werden

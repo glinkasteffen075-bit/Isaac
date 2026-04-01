@@ -1,85 +1,79 @@
-# Isaac v5.0 – Mission Control
+# Isaac
 
-## Schnellstart
+Isaac ist ein persönlicher, lokaler, vertrauensbasierter und entwicklungsfähiger KI-Kern.
 
-```bash
-# 1. Dependencies
-pip install aiohttp websockets python-dotenv
+Das Projekt verfolgt nicht das Ziel, nur einen weiteren Chatbot oder Agenten zu bauen, sondern eine KI-Infrastruktur mit Gedächtnis, Kontexttiefe, kausal erklärbarer Modulkopplung, Datenschutz durch Architektur und langfristiger Weiterentwicklungsfähigkeit.
 
-# 2. Konfiguration
-cp .env.example .env
-nano .env    # Keys eintragen
+## Grundidee
 
-# 3. Starten
-python isaac_core.py
-```
+Die meisten heutigen KI-Systeme sind leistungsfähig, aber strukturell flach.  
+Sie beantworten Fragen, nutzen Tools und verarbeiten Prompts, haben aber oft keine echte Kontinuität zwischen Nutzer, innerem Zustand, äußerer Umwelt und langfristiger Entwicklung.
 
-Browser öffnen: **http://localhost:8766**
+Isaac soll genau diese Lücke schließen.
 
----
+## Kernziele
 
-## Architektur
+Isaac soll:
 
-```
-isaac/
-├── config.py          Einzige Wahrheitsquelle für alle Einstellungen
-├── privilege.py       STEFFEN > ISAAC > TASK > GUEST
-├── memory.py          SQLite: Konversationen, Fakten, Direktiven
-├── audit.py           Append-Only Log (Isaac kann es nicht löschen)
-├── logic.py           Qualitätsbewertung + autonome Nachfragen
-├── relay.py           Async Multi-Provider (10 Provider)
-├── executor.py        Task-Engine mit Isolation und Qualitätskontrolle
-├── monitor_server.py  WebSocket-Server für Dashboard
-├── isaac_core.py      Haupt-Orchestrator
-└── dashboard.html     Task-Manager Dashboard
-```
+- lokal und persönlich verankert sein
+- Gedächtnis, Verlauf, Präferenzen und gemeinsame Geschichte tragen
+- Vertrauen statt nur starrer Regelhüllen als zentrales Steuerprinzip nutzen
+- Datenschutz durch Architektur umsetzen, insbesondere durch Zerlegung und Abstraktion von Input
+- Bedeutung, Werte und Konsequenzen in Entscheidungen einbeziehen
+- langfristig Umweltbezug durch Sensorik, Kamera und Weltmodell erhalten
+- Rückfragen und Benachrichtigungen nur dann stellen, wenn sie wirklich relevant sind
+- eigenen Entwicklungsbedarf erkennen und spätere Selbstweiterentwicklung vorbereiten
 
----
+## Architekturprinzip
 
-## Privilege-System
+Isaac soll nicht aus lose nebeneinanderstehenden Modulen bestehen, sondern aus kausal nachvollziehbaren inneren Wechselwirkungen.
 
-```
-STEFFEN (100) — Alle Rechte, kann Isaac pausieren
-  ISAAC  (70)  — Autonome Entscheidungen, Dateisystem, Internet
-    TASK (40)  — Isolierte Aufgabe, sieht nur sich selbst
-    GUEST(10)  — Nur lesen
-```
+Wichtige Entwicklungsrichtung:
 
-Steffen-Input hat immer Vorrang. Direktiven sind permanent.
+- vom modularen Nebeneinander
+- hin zur kausal erklärbaren Vernetzung
 
----
+## Beziehung als Resultat
 
-## Befehle
+Isaac soll keine Nähe simulieren, weil es so angewiesen wurde.  
+Persönliche Beziehung soll emergent entstehen, aus:
 
-| Eingabe | Aktion |
-|---------|--------|
-| `direktive: TEXT` | Permanente Anweisung setzen |
-| `korrektur: Feld = Wert` | Fakt ins Gedächtnis schreiben |
-| `suche: QUERY` | Direkte Internet-Recherche |
-| `code: BESCHREIBUNG` | Python-Code generieren |
-| `abbrechen ID` | Task abbrechen |
-| `pause` / `weiter` | Isaac steuern |
-| `status` | System-Bericht |
+- Erinnerung
+- wiederholter Interaktion
+- gemeinsamer Geschichte
+- Vertrauen
+- Bedeutung
+- Rückkopplung
+- Entwicklung über Zeit
 
----
+## Erziehungsphase
 
-## Logic-Modul
+Ein Kernprinzip des Projekts ist:
 
-Jede KI-Antwort wird auf 4 Dimensionen bewertet (0–10):
+**Isaac wird nicht nur gebaut, sondern auch erzogen.**
 
-- **Länge** — Genug Inhalt?
-- **Abdeckung** — Alle Schlüsselthemen angesprochen?
-- **Spezifität** — Konkret oder vage?
-- **Kohärenz** — Logisch strukturiert?
+Viele spätere Eigenschaften entstehen nicht allein aus Implementierung, sondern aus:
 
-Bei Score unter Schwellwert → Isaac generiert automatisch eine gezielte Nachfrage. Max. 3 Iterationen. Bei sehr schlechter Antwort → Provider-Wechsel.
+- Korrektur
+- Gewichtung
+- Grenzsetzung
+- Feedback
+- Priorisierung
+- Vertrauensaufbau
+- gemeinsamer Entwicklung
 
----
+## Langfristige Vision
 
-## Sicherheit
+Langfristig soll Isaac ein persönliches KI-System werden, das:
 
-- **Kein einziger API-Key im Code** — nur `.env`
-- `.env` niemals in Git committen
-- Audit-Log ist append-only — unveränderlich
-- Isaac kann seinen eigenen Audit-Log nicht löschen
-- Alle kritischen Aktionen brauchen R-Trace (Begründung)
+- kohärent statt bloß funktional ist
+- Weltbezug statt nur Texteingaben verarbeitet
+- Datenschutz strukturell lebt
+- seine eigene Entwicklung zunehmend mitträgt
+- und perspektivisch in ein hirninspiriertes, neuronales Systemmodell übergehen kann
+
+## Leitfrage
+
+Jede neue Datei, jedes Modul und jede Entscheidung sollte sich an folgender Frage messen lassen:
+
+**Bringt das Isaac näher an ein persönliches, kausal nachvollziehbares, vertrauensbasiertes und entwicklungsfähiges System?**

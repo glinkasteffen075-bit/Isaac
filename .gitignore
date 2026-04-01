@@ -9,3 +9,7 @@ data/
 archives/
 package/
 *.zip
+runtime/
+*.pid
+monitor.out
+*.bak*

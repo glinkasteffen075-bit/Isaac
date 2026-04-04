@@ -78,6 +78,13 @@ class MeaningStore:
         key = self._normalize_key(key)
         return self._entries.get(key, MeaningEntry(key=key, importance=default)).importance
 
+    def get(self, key: str, default: float = 0.5):
+        """
+        Dict-kompatibler Zugriff für Altcode.
+        Gibt standardmäßig die Importance des Keys zurück.
+        """
+        return self.get_importance(key, default)
+
     def record_impact(self, target: str, action: str, impact: str | ImpactType, weight: float = 1.0, reason: str = ""):
         target_norm = self._normalize_key(target)
         action_norm = self._normalize_key(action)

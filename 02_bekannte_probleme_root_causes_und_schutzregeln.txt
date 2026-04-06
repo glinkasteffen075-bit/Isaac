@@ -1,0 +1,70 @@
+ISAAC — BEKANNTE PROBLEME, ROOT CAUSES UND SCHUTZREGELN
+=======================================================
+
+AKTIVE ROOT CAUSES
+------------------
+1. Classification is discarded after the first lightweight gate.
+   Folge:
+   - spätere Routing-Logik läuft nicht auf derselben Wahrheit
+
+2. Executor reinterprets strategy.
+   Folge:
+   - Tool-Nutzung kann trotz gegenteiliger Architekturabsicht ausgelöst werden
+
+3. Retrieval ist fragmentiert.
+   Folge:
+   - doppelter oder inkonsistenter Kontext
+
+4. Memory liefert teilweise Prompt-Strings statt strukturierter Daten.
+   Folge:
+   - Kontext ist schwer steuerbar und schlecht typisiert
+
+5. Strategy ist zu implizit oder zu lose.
+   Folge:
+   - kein klarer Vertrag zwischen Kernel und Executor
+
+6. Logic kann kontextblind sein.
+   Folge:
+   - unnötige Follow-up-Loops oder fragile Qualitätsbewertung
+
+DO NOT BREAK
+------------
+Diese Dinge dürfen nicht kaputtgehen:
+
+1. Lightweight greetings remain local.
+2. Dankes-/Acknowledgment-Pfade bleiben leichtgewichtig.
+3. Normal chat darf nicht opportunistisch Tools triggern.
+4. Status-artige Eingaben dürfen nicht versehentlich als Greeting behandelt werden.
+5. Bestehende explizite Tool-/Search-Pfade dürfen nicht versehentlich blockiert werden.
+6. System muss nach jedem Substep runnable bleiben.
+7. Keine stillen Änderungen an unrelated subsystems.
+
+NICHT-ZIELE IM AKTUELLEN LAUF
+-----------------------------
+Nicht bauen:
+- neue Module, außer absolut unvermeidbar und sauber dokumentiert
+- learning loops
+- inquiry architecture
+- trust modeling
+- vector-memory redesign
+- großes persistence redesign
+- broad cleanup
+
+WARNZEICHEN FÜR FEHLLEITUNG
+---------------------------
+Wenn einer dieser Fälle auftritt, ist der Lauf wahrscheinlich auf dem falschen Weg:
+- Executor entscheidet wieder aus Hotwords
+- Classification wird erneut nur für trivialen Fast Path benutzt
+- Retrieval wird "nebenbei" noch größer oder diffuser
+- Memory wird weiter als String-Blender benutzt
+- Modell baut neue Dateien, obwohl bestehende Dateien ausreichen
+- Modell behauptet Fertigstellung ohne vollständige Acceptance Criteria
+
+ERWÜNSCHTER ENDEFFEKT DER STABILISIERUNG
+----------------------------------------
+- weniger implizite Entscheidungen
+- klarere Ownership
+- explizitere Verträge
+- weniger Drift zwischen Kernel und Executor
+- mehr Testbarkeit
+- sauber vorbereitete Grundlage für Retrieval-before-Strategy

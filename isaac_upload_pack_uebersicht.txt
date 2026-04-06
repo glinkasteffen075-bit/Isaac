@@ -1,0 +1,100 @@
+ISAAC — UPLOAD PACK ÜBERSICHT (MAX 8 DATEIEN)
+==================================================
+
+ZIEL
+----
+Diese Datei dient als einfache Referenz, welche Dateien in welcher Rolle hochgeladen werden sollen.
+Sie verhindert Verwechslungen und stellt sicher, dass das Modell die richtige Struktur erhält.
+
+EMPFOHLENE 8-DATEIEN-STRUKTUR
+-----------------------------
+
+[1] 00_hauptanweisung_und_architekturleitlinie.txt
+- höchste Priorität
+- definiert Identität, Regeln, Grenzen und Arbeitsweise
+
+[2] 01_aktueller_phasenstand_und_arbeitsziel.txt
+- beschreibt, wo das Projekt steht
+- definiert die aktuelle Phase
+
+[3] 02_bekannte_probleme_root_causes_und_schutzregeln.txt
+- listet echte Ursachen (nicht nur Symptome)
+- enthält DO-NOT-BREAK Regeln
+
+[4] 03_validierung_und_modulkarte.txt
+- enthält Testfälle
+- definiert Modulverantwortung (Ownership Map)
+
+[5] claude_compact_master_implementation_prompt_for_isaac.txt
+- kompakter Master-Arbeitsrahmen
+- enthält Regeln, Constraints, Outputstruktur
+
+[6] AKTIVER PHASENPROMPT
+- entweder:
+  - claude_phase1_full_implementation_prompt_v2.txt
+  ODER
+  - claude_phase2_full_implementation_prompt_v2.txt
+
+- entscheidet, WAS konkret umgesetzt werden soll
+
+[7] isaac_architecture_master_brief.txt
+- liefert erweiterten Architekturkontext
+- dient als Referenz, nicht als primäre Steuerung
+
+[8] isaac_programmcode_export_relevant_files.txt
+- enthält den gesamten relevanten Programmcode
+- wichtigste Grundlage für tatsächliche Implementierung
+
+WICHTIGE REGELN
+---------------
+
+1. NIEMALS beide Phasen gleichzeitig hochladen
+   → nur Phase 1 ODER Phase 2
+
+2. Hauptanweisung hat immer höchste Priorität
+
+3. Wenn sich Dateien widersprechen:
+   Reihenfolge der Priorität:
+   - Hauptanweisung
+   - aktiver Phasenprompt
+   - Phasenstand
+   - Probleme/Schutzregeln
+   - Validierung/Modulkarte
+   - Architekturbrief
+   - Code
+
+4. Ziel ist NICHT:
+   - maximale Änderungen
+   - kreative Architektur
+   - große Refactors
+
+   Ziel ist:
+   - saubere Phase
+   - korrekte Reihenfolge
+   - stabile Architektur
+
+EMPFOHLENE NACHRICHT AN DAS MODELL
+----------------------------------
+
+You are working on the Isaac project.
+
+Read the uploaded files in this order:
+
+1. 00_hauptanweisung_und_architekturleitlinie.txt
+2. 01_aktueller_phasenstand_und_arbeitsziel.txt
+3. 02_bekannte_probleme_root_causes_und_schutzregeln.txt
+4. 03_validierung_und_modulkarte.txt
+5. claude_compact_master_implementation_prompt_for_isaac.txt
+6. the active phase prompt
+7. isaac_architecture_master_brief.txt
+8. isaac_programmcode_export_relevant_files.txt
+
+Work strictly according to the architecture and phase instructions.
+Do not broaden scope.
+Do not introduce unrelated improvements.
+Do not claim completion unless all acceptance criteria and regression checks pass.
+
+There is no time limit.
+Optimize for correctness, architectural discipline, validation quality, and real completion.
+
+END

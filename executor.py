@@ -33,7 +33,7 @@ from logic     import get_logic, QualityScore, FollowUpDecision
 from relay     import get_relay
 from tool_runtime import select_live_tool_for_task, run_selected_tool
 from task_tool_state import get_task_tool_state_store
-from low_complexity import classify_interaction, is_lightweight_local_class
+from low_complexity import InteractionClass, classify_interaction, is_lightweight_local_class
 
 log = logging.getLogger("Isaac.Executor")
 
@@ -352,11 +352,15 @@ class Executor:
     def _should_try_tool(self, task: Task, prompt: str, iteration: int) -> bool:
         if task.typ in (TaskType.FILE, TaskType.BROADCAST, TaskType.SPLIT, TaskType.PIPELINE):
             return False
-        if task.typ == TaskType.CHAT and is_lightweight_local_class(classify_interaction(prompt)):
-            return False
+        if task.typ == TaskType.CHAT:
+            base_class = classify_interaction(task.beschreibung or task.prompt)
+            if is_lightweight_local_class(base_class):
+                return False
+            if base_class != InteractionClass.TOOL_REQUEST:
+                return False
         p = (prompt or '').lower()
         hotwords = ("suche", "search", "recherche", "internet", "web", "browser", "github", "api", "tool", "mcp", "wetter", "resource", "datei")
-        return iteration == 0 or any(hw in p for hw in hotwords)
+        return any(hw in p for hw in hotwords)
 
     def _tool_context_block(self, tool_name: str, tool_kind: str, via: str, result: dict) -> str:
         content = (result.get('content') or result.get('error') or '').strip()[:2200]
@@ -414,6 +418,7 @@ class Executor:
         system = self._build_system(task)
         current_prompt = task.prompt
         current_prov = task.provider
+        base_class = classify_interaction(task.beschreibung or task.prompt)
         antwort = ""
         last_score_total = -1.0
         stale_rounds = 0
@@ -472,7 +477,7 @@ class Executor:
                 break
 
             # Kein Follow-up/Provider-Switching für triviale Kurz-Chats.
-            if task.typ == TaskType.CHAT and is_lightweight_local_class(classify_interaction(task.beschreibung)):
+            if task.typ == TaskType.CHAT and is_lightweight_local_class(base_class):
                 break
 
             decision = self.logic.decide_followup(antwort, task.prompt, score, iteration, prov, task.id)

@@ -171,11 +171,12 @@ class IsaacKernel:
     # ── Haupt-Verarbeitung ────────────────────────────────────────────────────
     async def process(self, user_input: str,
                       sudo_token: Optional[str] = None) -> str:
-        if not user_input.strip():
+        user_input = (user_input or "").strip()
+        if not user_input:
             return ""
 
-        # Stabilitäts-Fast-Path:
-        # Triviale Begrüßungen lokal beantworten, ohne Executor/Tools/Provider.
+        # HARTE Routing-Grenze:
+        # Lightweight-Klassen werden lokal beantwortet und verlassen die Pipeline sofort.
         interaction_class = classify_interaction(user_input)
         if is_lightweight_local_class(interaction_class):
             return local_class_response(interaction_class, user_input)

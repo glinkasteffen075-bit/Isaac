@@ -54,6 +54,10 @@ def classify_interaction(text: str) -> str:
         if ":" in (text or "") or word_count >= 3:
             return InteractionClass.TOOL_REQUEST
 
+    # Fragen sind standardmäßig normaler Chat, außer klarer Status-/Tool-Signal oben.
+    if has_question:
+        return InteractionClass.NORMAL_CHAT
+
     if normalized in _CLARIFY_MARKERS or (
         word_count <= 6 and
         any(x in normalized for x in ("nur", "test", "begrüßung", "begruessung"))
@@ -79,7 +83,6 @@ def is_lightweight_local_class(interaction_class: str) -> bool:
         InteractionClass.SOCIAL_GREETING,
         InteractionClass.SOCIAL_ACKNOWLEDGMENT,
         InteractionClass.SHORT_CLARIFICATION,
-        InteractionClass.AMBIGUOUS_SHORT,
     }
 
 

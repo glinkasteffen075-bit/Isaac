@@ -33,7 +33,7 @@ from logic     import get_logic, QualityScore, FollowUpDecision
 from relay     import get_relay
 from tool_runtime import select_live_tool_for_task, run_selected_tool
 from task_tool_state import get_task_tool_state_store
-from low_complexity import is_low_complexity_local_input
+from low_complexity import classify_interaction, is_lightweight_local_class
 
 log = logging.getLogger("Isaac.Executor")
 
@@ -352,7 +352,7 @@ class Executor:
     def _should_try_tool(self, task: Task, prompt: str, iteration: int) -> bool:
         if task.typ in (TaskType.FILE, TaskType.BROADCAST, TaskType.SPLIT, TaskType.PIPELINE):
             return False
-        if task.typ == TaskType.CHAT and is_low_complexity_local_input(prompt):
+        if task.typ == TaskType.CHAT and is_lightweight_local_class(classify_interaction(prompt)):
             return False
         p = (prompt or '').lower()
         hotwords = ("suche", "search", "recherche", "internet", "web", "browser", "github", "api", "tool", "mcp", "wetter", "resource", "datei")
@@ -472,7 +472,7 @@ class Executor:
                 break
 
             # Kein Follow-up/Provider-Switching für triviale Kurz-Chats.
-            if task.typ == TaskType.CHAT and is_low_complexity_local_input(task.beschreibung):
+            if task.typ == TaskType.CHAT and is_lightweight_local_class(classify_interaction(task.beschreibung)):
                 break
 
             decision = self.logic.decide_followup(antwort, task.prompt, score, iteration, prov, task.id)

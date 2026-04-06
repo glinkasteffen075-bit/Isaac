@@ -44,7 +44,13 @@ from ki_skills      import get_skill_router
 from monitor_server import get_monitor, set_kernel, DashboardHTTPServer
 from meaning        import get_meaning
 from values         import get_values
-from low_complexity import is_low_complexity_local_input, local_fast_response
+from low_complexity import (
+    classify_interaction,
+    is_lightweight_local_class,
+    is_low_complexity_local_input,
+    local_class_response,
+    local_fast_response,
+)
 
 log = logging.getLogger("Isaac.Kernel")
 
@@ -170,8 +176,9 @@ class IsaacKernel:
 
         # Stabilitäts-Fast-Path:
         # Triviale Begrüßungen lokal beantworten, ohne Executor/Tools/Provider.
-        if is_low_complexity_local_input(user_input):
-            return local_fast_response(user_input)
+        interaction_class = classify_interaction(user_input)
+        if is_lightweight_local_class(interaction_class):
+            return local_class_response(interaction_class, user_input)
 
         t0 = time.monotonic()
 

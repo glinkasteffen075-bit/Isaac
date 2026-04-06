@@ -136,6 +136,11 @@ class Task:
     log_entries:   list       = field(default_factory=list)
     used_tools:    list       = field(default_factory=list)
     tool_strategy: dict       = field(default_factory=dict)
+    interaction_class: str    = ""
+    allow_tools: bool         = True
+    allow_followup: bool      = True
+    allow_provider_switch: bool = True
+    retrieved_context: dict   = field(default_factory=dict)
 
     # Watchdog
     _last_watchdog_progress: float = 0.0
@@ -215,7 +220,12 @@ class Executor:
                     provider: Optional[str] = None,
                     parent_id: Optional[str] = None,
                     system_prompt: str = "",
-                    sudo_aktiv: bool = False) -> Task:
+                    sudo_aktiv: bool = False,
+                    interaction_class: str = "",
+                    allow_tools: bool = True,
+                    allow_followup: bool = True,
+                    allow_provider_switch: bool = True,
+                    retrieved_context: Optional[dict] = None) -> Task:
         task = Task(
             id            = self.next_task_id(),
             typ           = typ,
@@ -226,6 +236,11 @@ class Executor:
             parent_id     = parent_id,
             system_prompt = system_prompt,
             sudo_aktiv    = sudo_aktiv,
+            interaction_class = interaction_class,
+            allow_tools   = allow_tools,
+            allow_followup = allow_followup,
+            allow_provider_switch = allow_provider_switch,
+            retrieved_context = retrieved_context or {},
         )
         self._tasks[task.id] = task
         AuditLog.task(task.id, "created", task.beschreibung[:100])
@@ -350,10 +365,15 @@ class Executor:
             self._notify(task)
 
     def _should_try_tool(self, task: Task, prompt: str, iteration: int) -> bool:
+        if not task.allow_tools:
+            return False
         if task.typ in (TaskType.FILE, TaskType.BROADCAST, TaskType.SPLIT, TaskType.PIPELINE):
             return False
-        if task.typ == TaskType.CHAT and is_lightweight_local_class(classify_interaction(prompt)):
-            return False
+        current_class = task.interaction_class or classify_interaction(prompt)
+        if task.typ == TaskType.CHAT:
+            if is_lightweight_local_class(current_class):
+                return False
+            return current_class == "TOOL_REQUEST"
         p = (prompt or '').lower()
         hotwords = ("suche", "search", "recherche", "internet", "web", "browser", "github", "api", "tool", "mcp", "wetter", "resource", "datei")
         return iteration == 0 or any(hw in p for hw in hotwords)
@@ -475,6 +495,9 @@ class Executor:
             if task.typ == TaskType.CHAT and is_lightweight_local_class(classify_interaction(task.beschreibung)):
                 break
 
+            if not task.allow_followup:
+                break
+
             decision = self.logic.decide_followup(antwort, task.prompt, score, iteration, prov, task.id)
             task.followup = decision
             task.status = TaskStatus.FOLLOWUP
@@ -493,7 +516,7 @@ class Executor:
                 antwort = self._aggregate(results)
                 break
 
-            if decision.switch_provider or stale_rounds >= 1:
+            if task.allow_provider_switch and (decision.switch_provider or stale_rounds >= 1):
                 from watchdog import get_blacklist
                 ranked = [p for p in get_blacklist().ranked_providers(prov) if p != prov]
                 if ranked:

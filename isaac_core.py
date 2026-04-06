@@ -26,7 +26,7 @@ import asyncio
 import re
 import time
 import logging
-from typing import Optional
+from typing import Optional, Any
 
 from config         import get_config, Level, WORKSPACE
 from privilege      import get_gate, steffen_ctx, isaac_ctx
@@ -89,7 +89,7 @@ PATTERNS = [
     (Intent.SUDO_CLOSE, [r"^sudo close$", r"^tür schließen$"]),
     (Intent.FACT_SET,   [r"^korrektur:", r"^fakt:", r"^weiß:"]),
     (Intent.DIRECTIVE,  [r"^direktive:", r"^immer:", r"^niemals:"]),
-    (Intent.SEARCH,     [r"^suche:", r"^recherchier", r"^finde.*internet", r"^search:"]),
+    (Intent.SEARCH,     [r"^suche:", r"^suche\b", r"^recherchier", r"^finde.*internet", r"^search:"]),
     (Intent.BROADCAST,  [r"^broadcast:", r"^alle instanzen:", r"^frage alle"]),
     (Intent.SPLIT,      [r"^split:", r"^aufteilen:"]),
     (Intent.PIPELINE,   [r"^pipeline:", r"^verbessere iterativ"]),
@@ -174,8 +174,7 @@ class IsaacKernel:
         if not user_input.strip():
             return ""
 
-        # Stabilitäts-Fast-Path:
-        # Triviale Begrüßungen lokal beantworten, ohne Executor/Tools/Provider.
+        # 0) Klassifikation als harte Routing-Grundlage
         interaction_class = classify_interaction(user_input)
         if is_lightweight_local_class(interaction_class):
             return local_class_response(interaction_class, user_input)
@@ -196,8 +195,11 @@ class IsaacKernel:
         # 2. Wissensdatenbank konsultieren
         wissen_kontext = self.ki_dialog.als_kontext(user_input)
 
-        # 3. Intent
-        intent = detect_intent(user_input)
+        # 3. Intent mit klassifikationsdominierter Korrektur
+        detected_intent = detect_intent(user_input)
+        intent = self._resolve_intent_from_classification(
+            user_input, detected_intent, interaction_class
+        )
 
         log.info(
             f"Input: '{user_input[:50]}' │ Intent: {intent} │ "
@@ -235,14 +237,15 @@ class IsaacKernel:
 
         # 4. Routing: Decomposer vs Standard vs Multi-KI
         antwort, score = await self._route(
-            user_input, intent, sudo_aktiv, emp, wissen_kontext
+            user_input, intent, sudo_aktiv, emp, wissen_kontext, interaction_class
         )
 
         return self._post_process(user_input, antwort, emp, score, t0)
 
     # ── Routing ────────────────────────────────────────────────────────────────
     async def _route(self, user_input: str, intent: str,
-                     sudo_aktiv: bool, emp, wissen_kontext: str
+                     sudo_aktiv: bool, emp, wissen_kontext: str,
+                     interaction_class: str
                      ) -> tuple[str, float]:
         """
         Entscheidet welcher Pfad genutzt wird:
@@ -272,7 +275,7 @@ class IsaacKernel:
 
         # C) Standard-Task
         return await self._standard_task(
-            user_input, intent, sudo_aktiv, emp, wissen_kontext
+            user_input, intent, sudo_aktiv, emp, wissen_kontext, interaction_class
         )
 
     async def _multi_ki_route(self, user_input: str, intent: str,
@@ -295,8 +298,20 @@ class IsaacKernel:
         return r.final, r.ergebnisse[0].score if r.ergebnisse else 6.0
 
     async def _standard_task(self, user_input: str, intent: str,
-                              sudo_aktiv: bool, emp, wissen_kontext: str
+                              sudo_aktiv: bool, emp, wissen_kontext: str,
+                              interaction_class: str
                               ) -> tuple[str, float]:
+        retrieval_ctx = self._retrieve_relevant_context(
+            user_input=user_input,
+            intent=intent,
+            interaction_class=interaction_class,
+        )
+        strategy = self._select_response_strategy(
+            user_input=user_input,
+            intent=intent,
+            interaction_class=interaction_class,
+            retrieval_ctx=retrieval_ctx,
+        )
         typ_map = {
             Intent.SEARCH:    TaskType.SEARCH,
             Intent.CODE:      TaskType.CODE,
@@ -305,12 +320,17 @@ class IsaacKernel:
             Intent.CHAT:      TaskType.CHAT,
         }
         task_typ = typ_map.get(intent, TaskType.CHAT)
-        system   = self._build_system(sudo_aktiv, emp, wissen_kontext)
+        system   = self._build_system(
+            sudo_aktiv, emp, wissen_kontext,
+            strategy_note=strategy.get("style_note", "")
+        )
         provider = self._provider_hint(user_input)
 
-        # Gedächtnis-Kontext
-        kontext  = self.memory.build_context(user_input)
-        prompt   = f"{kontext}\n\n{user_input}".strip() if kontext else user_input
+        memory_ctx = self.memory.build_context(user_input)
+        structured_ctx = self._format_retrieval_context(retrieval_ctx)
+        kontext_parts = [part for part in (structured_ctx, memory_ctx) if part]
+        kontext = "\n\n".join(kontext_parts).strip()
+        prompt = f"{kontext}\n\n{user_input}".strip() if kontext else user_input
 
         task = self.executor.create_task(
             typ           = task_typ,
@@ -320,6 +340,11 @@ class IsaacKernel:
             provider      = provider,
             system_prompt = system,
             sudo_aktiv    = sudo_aktiv,
+            interaction_class=interaction_class,
+            allow_tools   = strategy.get("allow_tools", task_typ == TaskType.SEARCH),
+            allow_followup = strategy.get("allow_followup", True),
+            allow_provider_switch = strategy.get("allow_provider_switch", True),
+            retrieved_context = retrieval_ctx,
         )
         task = await self.executor.submit_and_wait(task, timeout=180.0)
         antwort = task.antwort or task.fehler or "[Keine Antwort]"
@@ -559,9 +584,157 @@ class IsaacKernel:
                 return f"Task {m.group(1)} abgebrochen."
         return "Format: abbrechen TASK-ID"
 
+    def _resolve_intent_from_classification(
+        self, user_input: str, detected_intent: str, interaction_class: str
+    ) -> str:
+        if interaction_class == "STATUS_QUERY":
+            return Intent.STATUS
+        if interaction_class == "TOOL_REQUEST":
+            return Intent.SEARCH
+        if detected_intent in (Intent.STATUS, Intent.SEARCH):
+            return detected_intent
+
+        # Fragen sollen als normaler Chat laufen, solange kein Status/Tool-Signal vorliegt.
+        if "?" in (user_input or ""):
+            return Intent.CHAT
+        return detected_intent
+
+    def _retrieve_relevant_context(
+        self, user_input: str, intent: str, interaction_class: str
+    ) -> dict[str, Any]:
+        query_terms = [w for w in re.findall(r"\w+", user_input.lower()) if len(w) >= 4][:5]
+        query = " ".join(query_terms) or user_input[:40]
+        facts = self.memory.search_facts(query, limit=6) if query else []
+        directives = self.memory.get_directives()[:3]
+        relevant_results = self.memory.get_relevant_results(query, limit=4) if query else []
+        history = self.memory.get_working_memory(6)
+
+        preferences = []
+        for d in directives:
+            txt = (d.get("text") or "").strip()
+            if txt:
+                preferences.append({"source": "directive", "text": txt[:180], "priority": d.get("priority", 0)})
+        for f in facts:
+            key = (f.get("key") or "").lower()
+            if any(k in key for k in ("pref", "stil", "antwort", "tool", "chat", "agreement")):
+                preferences.append({
+                    "source": "fact",
+                    "key": f.get("key", ""),
+                    "value": (f.get("value") or "")[:180],
+                    "confidence": f.get("confidence", 0.0),
+                })
+
+        project_context = []
+        for h in reversed(history):
+            txt = (h.get("text") or "").strip()
+            if any(k in txt.lower() for k in ("isaac", "routing", "executor", "tool", "klass", "class")):
+                project_context.append({"role": h.get("role", ""), "text": txt[:180]})
+            if len(project_context) >= 3:
+                break
+
+        behavioral_risks = []
+        for r in relevant_results:
+            result_txt = (r.get("result") or "").lower()
+            risk_tags = []
+            if "tools genutzt" in result_txt or "tool" in result_txt:
+                risk_tags.append("tool_overreach_risk")
+            if r.get("score", 10.0) <= 4.0:
+                risk_tags.append("quality_regression_risk")
+            if risk_tags:
+                behavioral_risks.append({
+                    "description": (r.get("description") or "")[:120],
+                    "score": r.get("score", 0.0),
+                    "risks": risk_tags,
+                })
+            if len(behavioral_risks) >= 3:
+                break
+
+        relevant_reflections = []
+        for r in relevant_results:
+            if "reflekt" in (r.get("result") or "").lower() or "pattern" in (r.get("result") or "").lower():
+                relevant_reflections.append((r.get("result") or "")[:220])
+            if len(relevant_reflections) >= 2:
+                break
+
+        open_questions = []
+        if intent == Intent.CHAT and interaction_class == "NORMAL_CHAT" and len(user_input.split()) <= 2 and "?" not in user_input:
+            open_questions.append("Nutzerabsicht bei sehr kurzem Input potenziell unklar.")
+
+        return {
+            "preferences_context": preferences[:4],
+            "project_context": project_context[:3],
+            "behavioral_risks": behavioral_risks[:3],
+            "relevant_reflections": relevant_reflections[:2],
+            "open_questions": open_questions[:1],
+        }
+
+    def _select_response_strategy(
+        self, user_input: str, intent: str, interaction_class: str, retrieval_ctx: dict[str, Any]
+    ) -> dict[str, Any]:
+        strategy = {
+            "allow_tools": intent == Intent.SEARCH,
+            "allow_followup": interaction_class not in ("SHORT_CLARIFICATION",),
+            "allow_provider_switch": True,
+            "style_note": "",
+        }
+        risk_tags = {
+            tag
+            for risk in retrieval_ctx.get("behavioral_risks", [])
+            for tag in risk.get("risks", [])
+        }
+        pref_text = " ".join(
+            f"{p.get('text', '')} {p.get('value', '')}".lower()
+            for p in retrieval_ctx.get("preferences_context", [])
+        )
+
+        if intent == Intent.CHAT:
+            strategy["allow_tools"] = False
+        if "tool_overreach_risk" in risk_tags and intent == Intent.CHAT:
+            strategy["allow_tools"] = False
+        if "no auto-agreement" in pref_text or "kein auto agreement" in pref_text:
+            strategy["style_note"] += "\n[Antwortstil] Stimme nicht automatisch zu; bleibe begründet und nüchtern."
+        if retrieval_ctx.get("project_context"):
+            strategy["style_note"] += "\n[Projektkontext] Antwort soll routing- und stabilitätsfokussiert bleiben."
+        if "quality_regression_risk" in risk_tags and intent == Intent.CHAT:
+            strategy["allow_provider_switch"] = False
+
+        # Kürzeste Klärungen ohne Eskalation.
+        if interaction_class in ("SHORT_CLARIFICATION",):
+            strategy["allow_followup"] = False
+            strategy["allow_provider_switch"] = False
+        return strategy
+
+    def _format_retrieval_context(self, retrieval_ctx: dict[str, Any]) -> str:
+        sections = []
+        if retrieval_ctx.get("preferences_context"):
+            sections.append("[preferences_context]")
+            for item in retrieval_ctx["preferences_context"]:
+                if item.get("source") == "directive":
+                    sections.append(f"  - directive(prio={item.get('priority', 0)}): {item.get('text', '')}")
+                else:
+                    sections.append(f"  - fact {item.get('key', '')}: {item.get('value', '')}")
+        if retrieval_ctx.get("project_context"):
+            sections.append("[project_context]")
+            for item in retrieval_ctx["project_context"]:
+                sections.append(f"  - {item.get('role', '')}: {item.get('text', '')}")
+        if retrieval_ctx.get("behavioral_risks"):
+            sections.append("[behavioral_risks]")
+            for risk in retrieval_ctx["behavioral_risks"]:
+                sections.append(f"  - {','.join(risk.get('risks', []))}: {risk.get('description', '')}")
+        if retrieval_ctx.get("relevant_reflections"):
+            sections.append("[relevant_reflections]")
+            for ref in retrieval_ctx["relevant_reflections"]:
+                sections.append(f"  - {ref}")
+        if retrieval_ctx.get("open_questions"):
+            sections.append("[open_questions]")
+            for q in retrieval_ctx["open_questions"]:
+                sections.append(f"  - {q}")
+        return "\n".join(sections).strip()
+
     # ── System-Prompt ─────────────────────────────────────────────────────────
     def _build_system(self, sudo_aktiv: bool, emp,
-                      wissen_kontext: str = "") -> str:
+                      wissen_kontext: str = "",
+                      strategy_note: str = "") -> str:
         basis = (
             f"Du bist Isaac v{self.VERSION}, ein autonomes KI-System.\n"
             f"Systemeigentümer: {self.cfg.owner_name} (höchste Autorität).\n"
@@ -586,6 +759,8 @@ class IsaacKernel:
         # Wissensdatenbank-Kontext
         if wissen_kontext:
             basis += f"\n\n{wissen_kontext}"
+        if strategy_note:
+            basis += f"\n{strategy_note}"
 
         from value_decisions import get_decision_engine
         decisions = get_decision_engine().decide_behavior()

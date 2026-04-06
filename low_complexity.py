@@ -21,8 +21,9 @@ _CLARIFY_MARKERS = {
     "ist nur eine begrüßung", "war nur ein test", "nur kurz hallo", "ich wollte nur testen ob du antwortest"
 }
 _STATUS_MARKERS = {"status", "info", "hilfe"}
-_TOOL_PREFIXES = ("suche:", "search:", "recherchiere:", "finde:")
+_TOOL_PREFIXES = ("suche:", "suche ", "search:", "search ", "recherchiere:", "recherchiere ", "finde:")
 _TOOL_MARKERS = ("internet", "web", "browser", "wetter", "github", "api", "tool", "mcp", "suche", "search")
+_ACTION_SHORT_MARKERS = ("mach", "weiter", "fortsetzen", "hilfe", "erklär", "erklär", "wer", "was", "wie", "warum")
 
 
 def normalize_low_complexity(text: str) -> str:
@@ -68,7 +69,7 @@ def classify_interaction(text: str) -> str:
     if word_count <= 3 and any(g in normalized for g in ("hallo", "hi", "hey", "moin")):
         return InteractionClass.SOCIAL_GREETING
 
-    if word_count <= 2 and not has_question:
+    if word_count <= 2 and not has_question and not any(m in normalized for m in _ACTION_SHORT_MARKERS):
         return InteractionClass.AMBIGUOUS_SHORT
 
     return InteractionClass.NORMAL_CHAT
@@ -79,7 +80,6 @@ def is_lightweight_local_class(interaction_class: str) -> bool:
         InteractionClass.SOCIAL_GREETING,
         InteractionClass.SOCIAL_ACKNOWLEDGMENT,
         InteractionClass.SHORT_CLARIFICATION,
-        InteractionClass.AMBIGUOUS_SHORT,
     }
 
 

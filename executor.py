@@ -33,7 +33,7 @@ from logic     import get_logic, QualityScore, FollowUpDecision
 from relay     import get_relay
 from tool_runtime import select_live_tool_for_task, run_selected_tool
 from task_tool_state import get_task_tool_state_store
-from low_complexity import classify_interaction, is_lightweight_local_class
+from low_complexity import is_lightweight_local_class
 
 log = logging.getLogger("Isaac.Executor")
 
@@ -369,14 +369,12 @@ class Executor:
             return False
         if task.typ in (TaskType.FILE, TaskType.BROADCAST, TaskType.SPLIT, TaskType.PIPELINE):
             return False
-        current_class = task.interaction_class or classify_interaction(prompt)
+        current_class = task.interaction_class
         if task.typ == TaskType.CHAT:
             if is_lightweight_local_class(current_class):
                 return False
             return current_class == "TOOL_REQUEST"
-        p = (prompt or '').lower()
-        hotwords = ("suche", "search", "recherche", "internet", "web", "browser", "github", "api", "tool", "mcp", "wetter", "resource", "datei")
-        return iteration == 0 or any(hw in p for hw in hotwords)
+        return True
 
     def _tool_context_block(self, tool_name: str, tool_kind: str, via: str, result: dict) -> str:
         content = (result.get('content') or result.get('error') or '').strip()[:2200]
@@ -492,7 +490,7 @@ class Executor:
                 break
 
             # Kein Follow-up/Provider-Switching für triviale Kurz-Chats.
-            if task.typ == TaskType.CHAT and is_lightweight_local_class(classify_interaction(task.beschreibung)):
+            if task.typ == TaskType.CHAT and is_lightweight_local_class(task.interaction_class):
                 break
 
             if not task.allow_followup:

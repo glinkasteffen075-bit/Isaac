@@ -1,0 +1,75 @@
+ISAAC — AKTUELLER PHASENSTAND UND ARBEITSZIEL
+==============================================
+
+AKTUELLER STAND
+---------------
+Die Architekturarbeit ist bereits weit fortgeschritten.
+Es gibt einen starken Konsens über die Kernprobleme und die Reihenfolge der nächsten Schritte.
+
+Aktuell gelten diese Phasen:
+
+PHASE 1 — STABILIZE
+-------------------
+Ziel:
+- executor hört auf, Tool-Nutzung selbst neu zu entscheiden
+- classification wird explizit und durchgetragen
+- strategy wird explizit und inspectable
+- keine breite Retrieval- oder Memory-Umgestaltung in dieser Phase
+
+Substeps:
+- Step 1.1 Remove executor-side autonomous tool re-decision
+- Step 1.2 Introduce ClassificationResult as explicit carried contract
+- Step 1.3 Introduce explicit Strategy object/dataclass and pass it through task creation
+
+PHASE 2 — ALIGN ARCHITECTURE
+----------------------------
+Ziel:
+- retrieval-before-strategy sauber und eindeutig machen
+- strukturierte Retrieval-Daten aus memory
+- isaac_core besitzt Prompt-/Kontext-Komposition
+- genau ein autoritativer Retrieval-Pfad
+- strategy nutzt Retrieval vor Task-Erstellung
+
+Substeps:
+- Step 2.1 Structured retrieval contract in memory
+- Step 2.2 Replace double retrieval in isaac_core
+- Step 2.3 Move prompt/context formatting into isaac_core
+- Step 2.4 Ensure strategy uses retrieved context before task creation
+
+PHASE 3 — REFINE
+----------------
+Später:
+- Qualitätsmetriken verfeinern
+- Übergangs-Helpers abbauen
+- Persistence-Ownership glätten, falls noch nötig
+- kontrollierte Hooks für Inquiry/Learning vorbereiten
+
+SPÄTER, ABER NICHT JETZT
+------------------------
+- inquiry / education phase
+- learning loops
+- feedback adaptation
+- trust modeling
+- weitergehende typed-memory- und evolution-layer
+
+AKTIVES ARBEITSZIEL
+-------------------
+Wenn der aktive Prompt Phase 1 ist:
+- fokussiere ausschließlich Phase 1
+
+Wenn der aktive Prompt Phase 2 ist:
+- fokussiere ausschließlich Phase 2
+- setze voraus, dass Phase 1 bereits vorhanden oder im Codezustand erkennbar ist
+- wenn Phase 1 fehlt, dokumentiere den Blocker sauber statt Scope zu erweitern
+
+WICHTIG
+-------
+Dieses Projekt soll nicht "irgendwie besser" gemacht werden.
+Es soll architektonisch korrekt und schichtweise stabilisiert werden.
+
+Der richtige Erfolg ist:
+- richtige Reihenfolge
+- klare Ownership
+- weniger implizite Entscheidungen
+- weniger Drift
+- mehr Nachvollziehbarkeit

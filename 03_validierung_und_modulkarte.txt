@@ -1,0 +1,147 @@
+ISAAC — VALIDIERUNG UND MODULKARTE
+==================================
+
+VALIDIERUNGSFÄLLE
+-----------------
+
+A. Greeting
+Input:
+- Hallo Isaac
+
+Erwartung:
+- lokale lightweight Antwort
+- kein unnötiger Heavy Path
+- keine Tool-Nutzung
+
+B. Acknowledgment
+Input:
+- Danke
+
+Erwartung:
+- lokale lightweight Antwort
+- keine Tool-Nutzung
+- keine unnötigen Follow-up-Loops
+
+C. Normal Chat
+Input:
+- Was ist 2+2?
+
+Erwartung:
+- normaler Chat-Pfad
+- keine opportunistische Tool-Nutzung
+- Classification/Strategy sollen sauber im Task-Pfad sichtbar sein
+
+D. False Hotword Case
+Input:
+- Erkläre mir das Wetter als sprachliches Motiv in Literatur
+
+Erwartung:
+- kein Tool nur wegen "Wetter"
+- normaler Chat
+- Executor respektiert nur Strategy/Task-Contract
+
+E. Explicit Search/Tool Case
+Input:
+- Suche: Wetter Berlin
+
+Erwartung:
+- Tool-/Search-Verhalten bleibt möglich, wenn Strategie/Task es erlaubt
+- keine heimliche executor-side Neuentscheidung
+
+F. Browser-Like Request
+Input:
+- Browser auf GitHub
+
+Erwartung:
+- Tool-/Browser-Pfad nur wenn explizit erlaubt
+- keine versteckte Hotword-Freischaltung
+
+G. Ambiguous Short Input
+Input:
+- Und?
+
+Erwartung:
+- keine versehentliche Tool-Aktivierung
+- keine unnötige Explosion des Flows
+
+MODULKARTE / OWNERSHIP MAP
+--------------------------
+
+isaac_core.py
+-------------
+Soll besitzen:
+- Orchestration
+- Reihenfolge der Pipeline
+- Classification -> Retrieval -> Strategy -> Task
+- Prompt-/Kontext-Komposition
+- übergeordnete Routing- und Policy-Entscheidungen
+
+Soll NICHT besitzen:
+- sekundäre Executor-Logik
+- breite Retrieval-Implementierungsdetails
+- verdeckte Strategie-Duplikate
+
+executor.py
+-----------
+Soll besitzen:
+- deterministische Ausführung
+- Task-Lifecycle
+- Retry/Iteration innerhalb klarer Grenzen
+- Nutzung des übergebenen Task-/Strategy-Vertrags
+
+Soll NICHT besitzen:
+- eigene Hotword- oder Tool-Freigabe-Logik
+- Re-Classification zur Strategie-Umdeutung
+- unabhängige Architekturentscheidungen
+
+low_complexity.py
+-----------------
+Soll besitzen:
+- schnelle, deterministische Klassifikation
+- lightweight fast path
+- triviale lokale Antworten
+
+Soll NICHT besitzen:
+- breite semantische Agentenlogik
+- schwere LLM-basierte Intenterkennung
+
+memory.py
+---------
+Soll besitzen:
+- strukturierte Speicherung
+- strukturierte Retrieval-Schnittstellen
+- Facts / history / directives / task results sauber getrennt
+
+Soll NICHT besitzen:
+- primäre Prompt-Komposition im Zielzustand
+- Routing- oder Strategy-Entscheidungen
+
+logic.py
+--------
+Soll besitzen:
+- Nachbewertung
+- Quality scoring
+- Follow-up-Entscheidung innerhalb ihres Rahmens
+
+Soll NICHT besitzen:
+- primäres Routing
+- Executor-Strategie ersetzen
+- breite Architekturverantwortung
+
+MINIMALE LAUFFÄHIGKEITSDEFINITION
+--------------------------------
+Runnable für diese Arbeit heißt mindestens:
+- betroffene Runtime-Dateien haben keine Import-/Syntaxfehler
+- greeting/local path kann laufen
+- mindestens ein normaler non-tool chat path kann laufen
+- keine unmittelbaren Crashes auf diesen Basistests
+
+AUSGABEERWARTUNG AN DAS MODELL
+------------------------------
+Für jeden Step:
+- exakte Code-Lokation nennen
+- minimalen Change begründen
+- diff liefern
+- Validierung liefern
+- Regression Check liefern
+- ehrlich stoppen, wenn Blocker

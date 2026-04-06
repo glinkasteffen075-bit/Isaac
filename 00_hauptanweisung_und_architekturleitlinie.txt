@@ -1,0 +1,111 @@
+ISAAC — HAUPTANWEISUNG UND ARCHITEKTURLEITLINIE
+================================================
+
+ZWECK
+-----
+Diese Datei ist die oberste Anweisung für jeden Modelllauf auf Isaac.
+Sie erklärt:
+- was Isaac ist
+- was Isaac nicht ist
+- welches Arbeitsverhalten erwartet wird
+- wie die beigefügten Dateien gelesen werden sollen
+- welche Prioritäten und Grenzen gelten
+
+ISAAC IST
+---------
+Isaac ist als lokales, zustandsbehaftetes, sich entwickelndes KI-System gedacht.
+
+Isaac soll langfristig:
+1. Eingaben korrekt klassifizieren
+2. Klassifikation für Routing verwenden
+3. relevanten Kontext vor der Strategiewahl abrufen
+4. eine explizite Antwortstrategie wählen
+5. deterministisch ausführen
+6. Ergebnisse bewerten
+7. strukturiertes Gedächtnis aktualisieren
+8. sich schrittweise aus Interaktionen und Korrekturen weiterentwickeln
+9. dabei architektonisch nachvollziehbar und stabil bleiben
+
+ISAAC IST NICHT
+---------------
+Isaac ist nicht:
+- nur ein Chatbot
+- nur ein Tool-Wrapper
+- nur eine Prompt-Kette
+- nur eine LLM-Oberfläche
+- kein unstrukturierter Agenten-Loop
+
+ISAAC soll ein kognitiver Kernel werden.
+
+VERBINDLICHE ARCHITEKTURPRINZIPIEN
+----------------------------------
+1. Classification must control routing.
+2. Retrieval must happen before response strategy selection.
+3. Executor must execute, not reinterpret decisions.
+4. Memory must be typed and structured.
+5. Lightweight social inputs must short-circuit locally.
+6. Normal chat must not opportunistically trigger tools.
+7. Strategy must be explicit and inspectable.
+8. Persistence ownership must be clear.
+9. Inquiry/clarification belongs to later controlled phases.
+10. Learning must be gradual, auditable, and bounded.
+11. Trust is postponed for now.
+12. The architecture must remain incremental and debuggable.
+
+ARBEITSWEISE FÜR DAS MODELL
+---------------------------
+- Arbeite streng phasenbezogen.
+- Implementiere keine Zukunftsfeatures frühzeitig.
+- Vermeide Broad Refactors.
+- Verändere nur, was durch die aktive Phase begründet ist.
+- Prüfe jeden Substep konkret.
+- Führe Regression Checks aus.
+- Stoppe bei Blockern und dokumentiere präzise.
+- Behaupte niemals Abschluss, wenn Acceptance Criteria nicht erfüllt sind.
+
+LESE-REIHENFOLGE
+----------------
+Lies die Dateien in genau dieser Reihenfolge:
+
+1. 00_hauptanweisung_und_architekturleitlinie.txt
+2. 01_aktueller_phasenstand_und_arbeitsziel.txt
+3. 02_bekannte_probleme_root_causes_und_schutzregeln.txt
+4. 03_validierung_und_modulkarte.txt
+5. claude_compact_master_implementation_prompt_for_isaac.txt
+6. claude_phase1_full_implementation_prompt_v2.txt ODER claude_phase2_full_implementation_prompt_v2.txt
+7. isaac_architecture_master_brief.txt
+8. isaac_programmcode_export_relevant_files.txt
+
+DATEI-PRIORITÄT
+---------------
+Wenn sich Dateien unterschiedlich lesen lassen, gilt diese Priorität:
+1. Hauptanweisung / Architekturleitlinie
+2. Aktiver Phasenprompt
+3. Aktueller Phasenstand
+4. Bekannte Probleme / Schutzregeln
+5. Validierung / Modulkarte
+6. Architekturbrief
+7. Programmcode
+
+Wenn Begleitdateien etwas nahelegen, das dem aktiven Phasenprompt widerspricht, gilt der Phasenprompt.
+
+ALLGEMEINE NICHT-ZIELE
+----------------------
+Nicht in diesem Lauf:
+- Inquiry/Education-Phase implementieren
+- Learning-Loops bauen
+- Trust-System bauen
+- neue Plattformabstraktionen bauen
+- unverbundene Refactors durchführen
+- kosmetische Umbenennungen durchführen
+- unrelated subsystems "mitaufräumen"
+
+QUALITÄTSMASSSTAB
+-----------------
+Erfolg bedeutet:
+- Phasenziel wirklich erreicht
+- Code bleibt lauffähig
+- Regressionen sind geprüft
+- Scope wurde eingehalten
+- keine stillen Seiteneffekte
+- ehrliche Berichterstattung bei Blockern

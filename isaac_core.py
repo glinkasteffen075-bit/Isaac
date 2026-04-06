@@ -44,6 +44,7 @@ from ki_skills      import get_skill_router
 from monitor_server import get_monitor, set_kernel, DashboardHTTPServer
 from meaning        import get_meaning
 from values         import get_values
+from low_complexity import is_low_complexity_local_input, local_fast_response
 
 log = logging.getLogger("Isaac.Kernel")
 
@@ -99,7 +100,6 @@ PATTERNS = [
     (Intent.RESUME,     [r"^weiter$", r"^fortsetzen$"]),
     (Intent.CANCEL,     [r"^abbrechen\s+\w+"]),
 ]
-
 
 def detect_intent(text: str) -> str:
     tl = text.lower().strip()
@@ -167,6 +167,11 @@ class IsaacKernel:
                       sudo_token: Optional[str] = None) -> str:
         if not user_input.strip():
             return ""
+
+        # Stabilitäts-Fast-Path:
+        # Triviale Begrüßungen lokal beantworten, ohne Executor/Tools/Provider.
+        if is_low_complexity_local_input(user_input):
+            return local_fast_response(user_input)
 
         t0 = time.monotonic()
 
@@ -312,6 +317,13 @@ class IsaacKernel:
         task = await self.executor.submit_and_wait(task, timeout=180.0)
         antwort = task.antwort or task.fehler or "[Keine Antwort]"
         score   = task.score.total if task.score else 0.0
+
+        # Stabiles lokales Fallback für triviale Inputs, falls Provider ausfallen.
+        if task.typ == TaskType.CHAT and is_low_complexity_local_input(user_input):
+            if ("[RELAY] Alle Provider fehlgeschlagen" in antwort or
+                    not task.provider_used or score <= 1.0):
+                antwort = local_fast_response(user_input)
+                score = max(score, 6.0)
 
         if score >= 8.0:
             self.meaning.record_impact("Steffen", f"antwort_{task.typ.value}", "positive", weight=(score - 7) / 3, reason=f"Score {score:.1f}")

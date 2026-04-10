@@ -1,6 +1,10 @@
 ISAAC DEPLOY PACKAGE – START HIER
 =================================
 
+Verbindliche Arbeitsanweisung für Codex:
+  zuerst lesen:
+  00b_arbeitsanweisung_kodex_isaac_evo2.txt
+
 Kanonischer Einstieg:
   python3 isaac_core.py
 

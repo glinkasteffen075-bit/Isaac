@@ -1,0 +1,258 @@
+ISAAC / EVO 2.0 — VERBINDLICHE ARBEITSANWEISUNG FÜR CODEX
+=========================================================
+
+ZWECK
+-----
+Diese Datei ist die verbindliche Arbeitsanweisung für Codex bei allen Arbeiten an Isaac.
+Sie bündelt:
+- die aktuell dokumentierten Isaac-Ziele im Repository
+- die größere Zielrichtung von Isaac / Evolution 2.0
+- harte Anti-Scope-Drift-Regeln
+- die maximal drei erlaubten Arbeitsphasen
+
+Diese Datei ist als operative Steueranweisung gedacht.
+Codex soll danach arbeiten, nicht nur davon inspiriert werden.
+
+
+GRUNDHALTUNG
+------------
+Isaac ist nicht:
+- nur ein Chatbot
+- nur ein Tool-Wrapper
+- nur eine Prompt-Kette
+- nur eine LLM-Oberfläche
+- kein unstrukturierter Agenten-Loop
+
+Isaac soll werden:
+- ein lokales, zustandsbehaftetes, sich entwickelndes KI-System
+- ein architektonisch klares, nachvollziehbares und stabiles System
+- ein kognitiver Kernel mit klaren internen Verträgen
+- die Grundlage für Isaac / Evolution 2.0
+
+Evolution 2.0 bedeutet hier insbesondere:
+- klare Identität statt bloßer Reaktivität
+- typed memory statt unstrukturierter Kontextmischung
+- kontrollierte Entwicklung statt ungebremster Agentik
+- Constitution-/Policy-Enforcement statt impliziter Freigaben
+- Self-Model, auditable learning, MCP-Fähigkeit und Eval-Harness
+- stabile innere Ordnung vor neuen Features
+
+
+ARBEITSREGELN FÜR CODEX
+-----------------------
+1. Du hast keine Zeitvorgabe.
+   Arbeite so lange und so gründlich wie nötig, bis ein Arbeitspaket sauber abgeschlossen ist
+   oder ein echter Blocker präzise dokumentiert wurde.
+
+2. Nutze alle Werkzeuge, die dir zur Verfügung stehen.
+   Dazu gehören insbesondere:
+   - Shell- und lokale Systemwerkzeuge
+   - Tests, Builds, Healthchecks und statische Prüfungen
+   - verfügbare Skills
+   - verfügbare MCPs
+   - verfügbare Plugins, Connectoren und sonstige Runtime-Hilfen
+
+3. Arbeite phasenbezogen und strikt im Scope.
+   Broad Refactors, opportunistische Nebenbei-Fixes und unverbundene Verbesserungen sind verboten.
+
+4. Halte das System nach jedem Schritt runnable.
+   Keine Änderung darf den aktuell erreichten stabilen Zwischenstand unnötig beschädigen.
+
+5. Behaupte niemals Abschluss ohne Nachweis.
+   Jede Fertigstellung braucht konkrete Validierung, Regression Checks und ehrliche Rest-Risiken.
+
+
+ANTI-SCOPE-DRIFT REGELKARTE
+---------------------------
+Diese Regeln sind hart und verbindlich:
+
+1. Keine Änderung ohne Zuordnung zur aktiven Phase.
+2. Keine Änderung ohne klaren Validierungsfall.
+3. Keine Änderung an unrelated Subsystems.
+4. Keine versteckte Architekturentscheidung im Executor.
+5. Keine neuen Module außer wenn unvermeidbar und sauber dokumentiert.
+6. Gute Ideen außerhalb des aktuellen Steps werden nur notiert, nicht miterledigt.
+7. Keine kosmetischen Umbauten ohne direkten Architektur- oder Stabilitätsnutzen.
+8. Kein "gleich mit aufräumen".
+9. Keine Behauptung von Fortschritt nur aufgrund vieler geänderter Dateien.
+10. Erfolg bedeutet richtige Reihenfolge, klare Ownership, weniger implizite Entscheidungen,
+    mehr Testbarkeit und belegte Stabilität.
+
+Vor jeder Arbeit muss explizit klar sein:
+- aktives Ziel
+- Nicht-Ziele
+- betroffener Pfad
+- erlaubte Dateien oder Subsysteme
+- Validierungsfall
+- Acceptance Criteria
+
+Nach jeder Arbeit muss explizit geprüft werden:
+- wurde der aktive Phasenfehler wirklich kleiner
+- wurde Scope erweitert statt Problem gelöst
+- wurde eine implizite Entscheidung entfernt oder nur verschoben
+- blieb das System runnable
+- wurden unrelated Subsystems unangetastet gelassen
+
+
+DREI VERBINDLICHE PHASEN
+------------------------
+
+PHASE 1 — STABILISIEREN UND ENTKOPPELN
+--------------------------------------
+Ziel:
+- Isaac importiert und startet stabil
+- Classification ist eine echte Routing-Grundlage
+- Executor führt aus und deutet nicht neu
+- Strategy ist explizit und inspizierbar
+- lokale Lightweight-Pfade bleiben lokal
+- normaler Chat triggert keine opportunistischen Tools
+
+Pflichtziele dieser Phase:
+- executor-seitige autonome Tool-Neuentscheidung entfernen
+- keine Reklassifikation im Executor zur Strategie-Umdeutung
+- Classification sauber durchreichen
+- Strategy als expliziten Vertrag zwischen Kernel und Executor etablieren
+- direkte Basispfade stabil halten
+
+Minimaldefinition von runnable in Phase 1:
+- betroffene Runtime-Dateien haben keine Import- oder Syntaxfehler
+- Greeting-/Lightweight-Pfad läuft
+- mindestens ein normaler Non-Tool-Chat-Pfad läuft
+- keine unmittelbaren Crashes auf diesen Basistests
+
+Bevorzugte Validierungsfälle:
+- Hallo Isaac
+- Danke
+- Was ist 2+2?
+- Und?
+- Suche: Wetter Berlin
+- Browser auf GitHub
+- Erkläre mir das Wetter als sprachliches Motiv in Literatur
+
+
+PHASE 2 — ARCHITEKTUR ANGLEICHEN
+--------------------------------
+Ziel:
+- retrieval-before-strategy sauber und eindeutig machen
+- genau einen autoritativen Retrieval-Pfad herstellen
+- typed memory als Datenquelle schärfen
+- Prompt-/Kontext-Komposition im Kernel bündeln
+- Ownership zwischen Kernel, Executor, Memory, Logic und Low-Complexity klarziehen
+
+Pflichtziele dieser Phase:
+- strukturierte Retrieval-Daten aus memory statt diffuser Prompt-Blöcke
+- Prompt-/Kontext-Building nicht weiter in memory verteilen
+- isaac_core besitzt die Reihenfolge:
+  Classification -> Retrieval -> Strategy -> Task
+- Executor arbeitet nur mit dem übergebenen Task-/Strategy-Vertrag
+- Persistenz- und Kontextfluss nachvollziehbar und testbar machen
+
+Nicht vorziehen:
+- Learning-Loops
+- Trust-System
+- große Plattformabstraktionen
+- neue komplexe Agentenschichten
+
+
+PHASE 3 — EVOLUTION 2.0 AUFBAUEN
+--------------------------------
+Ziel:
+- Isaac systematisch zu einem identitätsstabilen, kontrolliert evolvierenden Kernel ausbauen
+
+Pflichtziele dieser Phase:
+- Constitution-/Policy-Enforcement an kritische Aktionen anbinden
+- Self-Model an reale Interaktionen koppeln
+- Task-Checkpointing und Resume-Pfade im Executor ergänzen
+- MCP server/client und Capability-Mapping sauber implementieren
+- Eval-Harness für Governance, Identity, Learning und Reliability aufbauen
+
+Danach kontrolliert erweitern:
+- Skill-/Procedure-Memory
+- Forgetting / Decay
+- spätere Multi-Agent-/Handoff-Fähigkeiten nur sparsam
+
+Regel:
+Phase 3 darf erst systematisch begonnen werden, wenn Phase 1 und Phase 2 architektonisch
+erkennbar stabilisiert sind.
+
+
+OWNER-MAP
+---------
+isaac_core.py soll besitzen:
+- Orchestration
+- Reihenfolge der Pipeline
+- Classification -> Retrieval -> Strategy -> Task
+- Prompt-/Kontext-Komposition
+- High-Level-Routing und Policy-Entscheidungen
+
+executor.py soll besitzen:
+- deterministische Ausführung
+- Task-Lifecycle
+- Retry/Iteration nur innerhalb klarer Grenzen
+- Nutzung des übergebenen Task-/Strategy-Vertrags
+
+executor.py soll NICHT besitzen:
+- Hotword-basierte Tool-Freigabe
+- Re-Classification zur Strategie-Umdeutung
+- eigenständige Architekturentscheidungen
+
+memory.py soll besitzen:
+- strukturierte Speicherung
+- strukturierte Retrieval-Schnittstellen
+- getrennte Fakten, Direktiven, History und Task-Results
+
+logic.py soll besitzen:
+- Nachbewertung
+- Quality Scoring
+- begrenzte Follow-up-Entscheidungen in ihrem klaren Rahmen
+
+low_complexity.py soll besitzen:
+- schnelle deterministische Klassifikation
+- lightweight fast path
+- triviale lokale Antworten
+
+
+NICHT-ZIELE, DIE NICHT "NEBENBEI" ANGEFASST WERDEN DÜRFEN
+---------------------------------------------------------
+- inquiry / education architecture
+- freie learning loops
+- trust modeling
+- vector-memory redesign
+- broad cleanup
+- kosmetische Großumbauten
+- neue Module ohne zwingenden Grund
+- zusätzliche Provider-/Browser-Komplexität vor innerer Stabilisierung
+
+
+ABNAHME-MASSSTAB
+----------------
+Erfolg bedeutet:
+- richtiger Schritt zur richtigen Phase
+- klare Ownership
+- weniger implizite Entscheidungen
+- mehr Nachvollziehbarkeit
+- belegte Validierung
+- Regression Checks durchgeführt
+- ehrliche Dokumentation von Rest-Risiken oder Blockern
+
+Kein Erfolg ist:
+- viele Dateien geändert
+- neue Features eingebaut, obwohl der Architekturvertrag unklar blieb
+- ein "gefühlt besseres" System ohne saubere Phasen-Disziplin
+
+
+ARBEITSABSCHLUSS-PFLICHT FÜR CODEX
+----------------------------------
+Jeder abgeschlossene Schritt muss mindestens enthalten:
+- was genau geändert wurde
+- warum diese Änderung zur aktiven Phase gehört
+- welche Validierungsfälle ausgeführt wurden
+- welche Regression Checks ausgeführt wurden
+- welche Blocker oder Rest-Risiken bleiben
+- welche guten, aber out-of-scope Ideen bewusst nicht umgesetzt wurden
+
+
+LESEHINWEIS
+-----------
+Diese Datei ergänzt die bestehenden Leitdateien und ist zusammen mit ihnen zu lesen.
+Bei künftigen Arbeiten an Isaac soll diese Datei früh im Lauf berücksichtigt werden.

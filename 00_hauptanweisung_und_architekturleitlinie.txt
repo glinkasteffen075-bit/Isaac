@@ -68,13 +68,14 @@ LESE-REIHENFOLGE
 Lies die Dateien in genau dieser Reihenfolge:
 
 1. 00_hauptanweisung_und_architekturleitlinie.txt
-2. 01_aktueller_phasenstand_und_arbeitsziel.txt
-3. 02_bekannte_probleme_root_causes_und_schutzregeln.txt
-4. 03_validierung_und_modulkarte.txt
-5. claude_compact_master_implementation_prompt_for_isaac.txt
-6. claude_phase1_full_implementation_prompt_v2.txt ODER claude_phase2_full_implementation_prompt_v2.txt
-7. isaac_architecture_master_brief.txt
-8. isaac_programmcode_export_relevant_files.txt
+2. 00b_arbeitsanweisung_kodex_isaac_evo2.txt
+3. 01_aktueller_phasenstand_und_arbeitsziel.txt
+4. 02_bekannte_probleme_root_causes_und_schutzregeln.txt
+5. 03_validierung_und_modulkarte.txt
+6. claude_compact_master_implementation_prompt_for_isaac.txt
+7. claude_phase1_full_implementation_prompt_v2.txt ODER claude_phase2_full_implementation_prompt_v2.txt
+8. isaac_architecture_master_brief.txt
+9. isaac_programmcode_export_relevant_files.txt
 
 DATEI-PRIORITÄT
 ---------------

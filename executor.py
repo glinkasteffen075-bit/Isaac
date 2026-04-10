@@ -33,7 +33,7 @@ from logic     import get_logic, QualityScore, FollowUpDecision
 from relay     import get_relay
 from tool_runtime import select_live_tool_for_task, run_selected_tool
 from task_tool_state import get_task_tool_state_store
-from low_complexity import is_lightweight_local_class
+from low_complexity import ClassificationResult, is_lightweight_local_class
 
 log = logging.getLogger("Isaac.Executor")
 
@@ -108,6 +108,22 @@ class TaskType(Enum):
     PIPELINE   = "pipeline"    # Multi-KI iterativ
 
 
+@dataclass(frozen=True)
+class Strategy:
+    allow_tools: bool = True
+    allow_followup: bool = True
+    allow_provider_switch: bool = True
+    style_note: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "allow_tools": self.allow_tools,
+            "allow_followup": self.allow_followup,
+            "allow_provider_switch": self.allow_provider_switch,
+            "style_note": self.style_note,
+        }
+
+
 @dataclass
 class Task:
     id:            str
@@ -136,10 +152,9 @@ class Task:
     log_entries:   list       = field(default_factory=list)
     used_tools:    list       = field(default_factory=list)
     tool_strategy: dict       = field(default_factory=dict)
+    strategy:      Strategy   = field(default_factory=Strategy)
     interaction_class: str    = ""
-    allow_tools: bool         = True
-    allow_followup: bool      = True
-    allow_provider_switch: bool = True
+    classification: Optional[ClassificationResult] = None
     retrieved_context: dict   = field(default_factory=dict)
 
     # Watchdog
@@ -174,8 +189,28 @@ class Task:
             "log":           self.log_entries[-10:],
             "used_tools":    self.used_tools[-8:],
             "tool_strategy": self.tool_strategy or {},
+            "strategy":      self.strategy.as_dict(),
+            "classification": self.classification.as_dict() if self.classification else None,
             "sudo":          self.sudo_aktiv,
         }
+
+    @property
+    def allow_tools(self) -> bool:
+        return self.strategy.allow_tools
+
+    @property
+    def allow_followup(self) -> bool:
+        return self.strategy.allow_followup
+
+    @property
+    def allow_provider_switch(self) -> bool:
+        return self.strategy.allow_provider_switch
+
+    @property
+    def current_interaction_class(self) -> str:
+        if self.classification:
+            return self.classification.interaction_class
+        return self.interaction_class
 
 
 class Executor:
@@ -221,11 +256,18 @@ class Executor:
                     parent_id: Optional[str] = None,
                     system_prompt: str = "",
                     sudo_aktiv: bool = False,
+                    strategy: Optional[Strategy] = None,
                     interaction_class: str = "",
+                    classification: Optional[ClassificationResult] = None,
                     allow_tools: bool = True,
                     allow_followup: bool = True,
                     allow_provider_switch: bool = True,
                     retrieved_context: Optional[dict] = None) -> Task:
+        strategy = strategy or Strategy(
+            allow_tools=allow_tools,
+            allow_followup=allow_followup,
+            allow_provider_switch=allow_provider_switch,
+        )
         task = Task(
             id            = self.next_task_id(),
             typ           = typ,
@@ -236,10 +278,9 @@ class Executor:
             parent_id     = parent_id,
             system_prompt = system_prompt,
             sudo_aktiv    = sudo_aktiv,
+            strategy      = strategy,
             interaction_class = interaction_class,
-            allow_tools   = allow_tools,
-            allow_followup = allow_followup,
-            allow_provider_switch = allow_provider_switch,
+            classification = classification,
             retrieved_context = retrieved_context or {},
         )
         self._tasks[task.id] = task
@@ -369,7 +410,7 @@ class Executor:
             return False
         if task.typ in (TaskType.FILE, TaskType.BROADCAST, TaskType.SPLIT, TaskType.PIPELINE):
             return False
-        current_class = task.interaction_class
+        current_class = task.current_interaction_class
         if task.typ == TaskType.CHAT:
             if is_lightweight_local_class(current_class):
                 return False
@@ -490,7 +531,7 @@ class Executor:
                 break
 
             # Kein Follow-up/Provider-Switching für triviale Kurz-Chats.
-            if task.typ == TaskType.CHAT and is_lightweight_local_class(task.interaction_class):
+            if task.typ == TaskType.CHAT and is_lightweight_local_class(task.current_interaction_class):
                 break
 
             if not task.allow_followup:

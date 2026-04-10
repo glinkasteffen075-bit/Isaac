@@ -32,7 +32,7 @@ from config         import get_config, Level, WORKSPACE
 from privilege      import get_gate, steffen_ctx, isaac_ctx
 from audit          import AuditLog, setup_privilege_audit
 from memory         import get_memory
-from executor       import get_executor, TaskType, TaskStatus
+from executor       import get_executor, TaskType, TaskStatus, Strategy
 from relay          import get_relay
 from logic          import get_logic
 from empathie       import get_empathie
@@ -45,7 +45,9 @@ from monitor_server import get_monitor, set_kernel, DashboardHTTPServer
 from meaning        import get_meaning
 from values         import get_values
 from low_complexity import (
+    ClassificationResult,
     classify_interaction,
+    classify_interaction_result,
     is_lightweight_local_class,
     is_low_complexity_local_input,
     local_class_response,
@@ -89,7 +91,6 @@ PATTERNS = [
     (Intent.SUDO_CLOSE, [r"^sudo close$", r"^tür schließen$"]),
     (Intent.FACT_SET,   [r"^korrektur:", r"^fakt:", r"^weiß:"]),
     (Intent.DIRECTIVE,  [r"^direktive:", r"^immer:", r"^niemals:"]),
-    (Intent.SEARCH,     [r"^suche:", r"^suche\b", r"^recherchier", r"^finde.*internet", r"^search:"]),
     (Intent.BROADCAST,  [r"^broadcast:", r"^alle instanzen:", r"^frage alle"]),
     (Intent.SPLIT,      [r"^split:", r"^aufteilen:"]),
     (Intent.PIPELINE,   [r"^pipeline:", r"^verbessere iterativ"]),
@@ -101,7 +102,6 @@ PATTERNS = [
     (Intent.URL_ADD,    [r"^url:", r"^instanz:", r"^füge.*url"]),
     (Intent.KI_STATUS,  [r"^ki status$", r"^instanzen$", r"^meinungen$"]),
     (Intent.MEINUNG,    [r"^meinung:", r"^was denkst du über", r"^isaac.*meinung"]),
-    (Intent.STATUS,     [r"^status$", r"^info$", r"^hilfe$"]),
     (Intent.PAUSE,      [r"^pause$", r"^stopp$"]),
     (Intent.RESUME,     [r"^weiter$", r"^fortsetzen$"]),
     (Intent.CANCEL,     [r"^abbrechen\s+\w+"]),
@@ -175,7 +175,8 @@ class IsaacKernel:
             return ""
 
         # 0) Klassifikation als harte Routing-Grundlage
-        interaction_class = classify_interaction(user_input)
+        classification = classify_interaction_result(user_input)
+        interaction_class = classification.interaction_class
         if is_lightweight_local_class(interaction_class):
             return local_class_response(interaction_class, user_input)
 
@@ -340,10 +341,9 @@ class IsaacKernel:
             provider      = provider,
             system_prompt = system,
             sudo_aktiv    = sudo_aktiv,
+            strategy      = strategy,
             interaction_class=interaction_class,
-            allow_tools   = strategy.get("allow_tools", task_typ == TaskType.SEARCH),
-            allow_followup = strategy.get("allow_followup", True),
-            allow_provider_switch = strategy.get("allow_provider_switch", True),
+            classification=classification,
             retrieved_context = retrieval_ctx,
         )
         task = await self.executor.submit_and_wait(task, timeout=180.0)
@@ -591,13 +591,34 @@ class IsaacKernel:
             return Intent.STATUS
         if interaction_class == "TOOL_REQUEST":
             return Intent.SEARCH
-        if detected_intent in (Intent.STATUS, Intent.SEARCH):
+
+        explicit_command_intents = {
+            Intent.SUDO_OPEN,
+            Intent.SUDO_CLOSE,
+            Intent.FACT_SET,
+            Intent.DIRECTIVE,
+            Intent.BROADCAST,
+            Intent.SPLIT,
+            Intent.PIPELINE,
+            Intent.DECOMPOSE,
+            Intent.CODE,
+            Intent.FILE,
+            Intent.TRANSLATE,
+            Intent.LOGIN_ADD,
+            Intent.URL_ADD,
+            Intent.KI_STATUS,
+            Intent.MEINUNG,
+            Intent.PAUSE,
+            Intent.RESUME,
+            Intent.CANCEL,
+        }
+        if detected_intent in explicit_command_intents:
             return detected_intent
 
         # Fragen sollen als normaler Chat laufen, solange kein Status/Tool-Signal vorliegt.
         if "?" in (user_input or ""):
             return Intent.CHAT
-        return detected_intent
+        return Intent.CHAT
 
     def _retrieve_relevant_context(
         self, user_input: str, intent: str, interaction_class: str
@@ -670,13 +691,11 @@ class IsaacKernel:
 
     def _select_response_strategy(
         self, user_input: str, intent: str, interaction_class: str, retrieval_ctx: dict[str, Any]
-    ) -> dict[str, Any]:
-        strategy = {
-            "allow_tools": intent == Intent.SEARCH,
-            "allow_followup": interaction_class not in ("SHORT_CLARIFICATION",),
-            "allow_provider_switch": True,
-            "style_note": "",
-        }
+    ) -> Strategy:
+        allow_tools = intent == Intent.SEARCH
+        allow_followup = interaction_class not in ("SHORT_CLARIFICATION",)
+        allow_provider_switch = True
+        style_note = ""
         risk_tags = {
             tag
             for risk in retrieval_ctx.get("behavioral_risks", [])
@@ -688,21 +707,26 @@ class IsaacKernel:
         )
 
         if intent == Intent.CHAT:
-            strategy["allow_tools"] = False
+            allow_tools = False
         if "tool_overreach_risk" in risk_tags and intent == Intent.CHAT:
-            strategy["allow_tools"] = False
+            allow_tools = False
         if "no auto-agreement" in pref_text or "kein auto agreement" in pref_text:
-            strategy["style_note"] += "\n[Antwortstil] Stimme nicht automatisch zu; bleibe begründet und nüchtern."
+            style_note += "\n[Antwortstil] Stimme nicht automatisch zu; bleibe begründet und nüchtern."
         if retrieval_ctx.get("project_context"):
-            strategy["style_note"] += "\n[Projektkontext] Antwort soll routing- und stabilitätsfokussiert bleiben."
+            style_note += "\n[Projektkontext] Antwort soll routing- und stabilitätsfokussiert bleiben."
         if "quality_regression_risk" in risk_tags and intent == Intent.CHAT:
-            strategy["allow_provider_switch"] = False
+            allow_provider_switch = False
 
         # Kürzeste Klärungen ohne Eskalation.
         if interaction_class in ("SHORT_CLARIFICATION",):
-            strategy["allow_followup"] = False
-            strategy["allow_provider_switch"] = False
-        return strategy
+            allow_followup = False
+            allow_provider_switch = False
+        return Strategy(
+            allow_tools=allow_tools,
+            allow_followup=allow_followup,
+            allow_provider_switch=allow_provider_switch,
+            style_note=style_note,
+        )
 
     def _format_retrieval_context(self, retrieval_ctx: dict[str, Any]) -> str:
         sections = []

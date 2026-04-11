@@ -56,10 +56,12 @@ from low_complexity import (
 
 log = logging.getLogger("Isaac.Kernel")
 
-DECOMPOSE_WORT_SCHWELLE = 15
-DECOMPOSE_THEMEN_SCHWELLE = 2
+# ── Komplexitätsschwelle für Decomposer ───────────────────────────────────────
+DECOMPOSE_WORT_SCHWELLE = 15   # Ab 15 Wörtern → Decomposer
+DECOMPOSE_THEMEN_SCHWELLE = 2  # Ab 2 erkennbaren Themen → Decomposer
 
 
+# ── Intents ────────────────────────────────────────────────────────────────────
 class Intent:
     CHAT        = "chat"
     SEARCH      = "search"
@@ -69,12 +71,12 @@ class Intent:
     BROADCAST   = "broadcast"
     SPLIT       = "split"
     PIPELINE    = "pipeline"
-    DECOMPOSE   = "decompose"
+    DECOMPOSE   = "decompose"   # Explizite Atomisierung
     FACT_SET    = "fact_set"
     DIRECTIVE   = "directive"
     STATUS      = "status"
-    KI_STATUS   = "ki_status"
-    MEINUNG     = "meinung"
+    KI_STATUS   = "ki_status"   # KI-Dialog + Skill-Übersicht
+    MEINUNG     = "meinung"     # Isaac's Meinung zu einem Thema
     PAUSE       = "pause"
     RESUME      = "resume"
     CANCEL      = "cancel"
@@ -105,7 +107,6 @@ PATTERNS = [
     (Intent.CANCEL,     [r"^abbrechen\s+\w+"]),
 ]
 
-
 def detect_intent(text: str) -> str:
     tl = text.lower().strip()
     for intent, patterns in PATTERNS:
@@ -116,132 +117,260 @@ def detect_intent(text: str) -> str:
 
 
 def braucht_decomposer(text: str, intent: str) -> bool:
-    if intent in (Intent.CODE, Intent.FILE, Intent.SEARCH, Intent.BROADCAST, Intent.SPLIT, Intent.PIPELINE, Intent.DECOMPOSE):
-        return False
+    """Entscheidet ob ein Prompt atomisiert werden soll."""
+    if intent in (Intent.CODE, Intent.FILE, Intent.SEARCH,
+                  Intent.BROADCAST, Intent.SPLIT, Intent.PIPELINE,
+                  Intent.DECOMPOSE):
+        return False   # Eigene Handler
     wortanzahl = len(text.split())
-    und_count = len(re.findall(r'\s+(?:und|sowie|außerdem|auch)\s+', text, re.I))
+    und_count  = len(re.findall(r'\s+(?:und|sowie|außerdem|auch)\s+',
+                                text, re.I))
     return wortanzahl >= DECOMPOSE_WORT_SCHWELLE or und_count >= DECOMPOSE_THEMEN_SCHWELLE
 
 
+# ── Kernel ─────────────────────────────────────────────────────────────────────
 class IsaacKernel:
+
     VERSION = "5.3"
 
     def __init__(self):
         log.info("=" * 56)
         log.info(f"  ISAAC v{self.VERSION} – Unified OS Startup")
         log.info("=" * 56)
+
         setup_privilege_audit()
-        self.cfg = get_config()
-        self.gate = get_gate()
-        self.memory = get_memory()
-        self.executor = get_executor()
-        self.relay = get_relay()
-        self.logic = get_logic()
-        self.empathie = get_empathie()
-        self.sudo = get_sudo()
-        self.regelwerk = get_regelwerk()
+
+        self.cfg        = get_config()
+        self.gate       = get_gate()
+        self.memory     = get_memory()
+        self.executor   = get_executor()
+        self.relay      = get_relay()
+        self.logic      = get_logic()
+        self.empathie   = get_empathie()
+        self.sudo       = get_sudo()
+        self.regelwerk  = get_regelwerk()
         self.decomposer = get_decomposer()
-        self.ki_dialog = get_ki_dialog()
+        self.ki_dialog  = get_ki_dialog()
         self.skill_router = get_skill_router()
-        self.monitor = get_monitor()
-        self.meaning = get_meaning()
-        self.values = get_values()
-        self._background = None
+        self.monitor    = get_monitor()
+        self.meaning    = get_meaning()
+        self.values     = get_values()
+        self._background = None   # lazy start in main()
+
         set_kernel(self)
         self._sudo_token: Optional[str] = None
+
         log.info(f"  Owner:      {self.cfg.owner_name}")
         log.info(f"  Provider:   {', '.join(self.cfg.available_providers)}")
         log.info(f"  Regelwerk:  {self.regelwerk.status()['regeln_aktiv']} Regeln")
-        log.info(f"  KI-Dialog:  {self.ki_dialog.stats()['gespraeche']} Gespräche, {self.ki_dialog.stats()['wissenseintraege']} Wissenseinträge")
+        log.info(f"  KI-Dialog:  {self.ki_dialog.stats()['gespraeche']} Gespräche, "
+                 f"{self.ki_dialog.stats()['wissenseintraege']} Wissenseinträge")
         log.info(f"  SUDO:       {'Ersteinrichtung' if self.sudo.is_first_run() else 'Bereit'}")
         AuditLog.action("Kernel", "startup", f"v{self.VERSION}", Level.ISAAC)
 
-    async def process(self, user_input: str, sudo_token: Optional[str] = None) -> str:
+    # ── Haupt-Verarbeitung ────────────────────────────────────────────────────
+    async def process(self, user_input: str,
+                      sudo_token: Optional[str] = None) -> str:
         if not user_input.strip():
             return ""
+
+        # 0) Klassifikation als harte Routing-Grundlage
         classification = classify_interaction_result(user_input)
         interaction_class = classification.interaction_class
         if is_lightweight_local_class(interaction_class):
             return local_class_response(interaction_class, user_input)
+
         t0 = time.monotonic()
-        sudo_aktiv = ((sudo_token and self.sudo.check(sudo_token)) or (self._sudo_token and self.sudo.check(self._sudo_token)))
+
+        # SUDO-Status
+        sudo_aktiv = (
+            (sudo_token and self.sudo.check(sudo_token)) or
+            (self._sudo_token and self.sudo.check(self._sudo_token))
+        )
+
         AuditLog.steffen_input(user_input)
+
+        # 1. Empathie
         emp = self.empathie.analysiere(user_input)
+
+        # 2. Wissensdatenbank konsultieren
         wissen_kontext = self.ki_dialog.als_kontext(user_input)
+
+        # 3. Intent mit klassifikationsdominierter Korrektur
         detected_intent = detect_intent(user_input)
-        intent = self._resolve_intent_from_classification(user_input, detected_intent, interaction_class)
-        log.info(f"Input: '{user_input[:50]}' │ Intent: {intent} │ Node: {emp.node.zustand} │ Sudo: {sudo_aktiv}")
+        intent = self._resolve_intent_from_classification(
+            user_input, detected_intent, interaction_class
+        )
+
+        log.info(
+            f"Input: '{user_input[:50]}' │ Intent: {intent} │ "
+            f"Node: {emp.node.zustand} │ Sudo: {sudo_aktiv}"
+        )
+
+        # SUDO-Handshake
         if intent == Intent.SUDO_OPEN:
             return self._handle_sudo_open(user_input)
         if intent == Intent.SUDO_CLOSE:
             return self._handle_sudo_close()
+
+        # Pause
         if self.gate.is_paused and not sudo_aktiv:
             return "[Isaac] Pausiert. 'weiter' oder SUDO zum Fortfahren."
+
+        # Direkte Handler (kein Task nötig)
         direkt = {
-            Intent.FACT_SET: self._handle_fact,
-            Intent.DIRECTIVE: self._handle_directive,
-            Intent.STATUS: self._handle_status,
-            Intent.KI_STATUS: self._handle_ki_status,
-            Intent.MEINUNG: self._handle_meinung,
-            Intent.PAUSE: self._handle_pause,
-            Intent.RESUME: self._handle_resume,
-            Intent.CANCEL: self._handle_cancel,
-            Intent.LOGIN_ADD: self._handle_login_add,
-            Intent.URL_ADD: self._handle_url_add,
+            Intent.FACT_SET:   self._handle_fact,
+            Intent.DIRECTIVE:  self._handle_directive,
+            Intent.STATUS:     self._handle_status,
+            Intent.KI_STATUS:  self._handle_ki_status,
+            Intent.MEINUNG:    self._handle_meinung,
+            Intent.PAUSE:      self._handle_pause,
+            Intent.RESUME:     self._handle_resume,
+            Intent.CANCEL:     self._handle_cancel,
+            Intent.LOGIN_ADD:  self._handle_login_add,
+            Intent.URL_ADD:    self._handle_url_add,
         }
         if intent in direkt:
             result = direkt[intent](user_input)
             if asyncio.iscoroutine(result):
                 result = await result
             return self._post_process(user_input, result, emp, 0.0, t0)
-        antwort, score = await self._route(user_input, intent, sudo_aktiv, emp, wissen_kontext, interaction_class)
+
+        # 4. Routing: Decomposer vs Standard vs Multi-KI
+        antwort, score = await self._route(
+            user_input,
+            intent,
+            sudo_aktiv,
+            emp,
+            wissen_kontext,
+            interaction_class,
+            classification,
+        )
+
         return self._post_process(user_input, antwort, emp, score, t0)
 
-    async def _route(self, user_input: str, intent: str, sudo_aktiv: bool, emp, wissen_kontext: str, interaction_class: str) -> tuple[str, float]:
+    # ── Routing ────────────────────────────────────────────────────────────────
+    async def _route(self, user_input: str, intent: str,
+                     sudo_aktiv: bool, emp, wissen_kontext: str,
+                     interaction_class: str,
+                     classification: ClassificationResult
+                     ) -> tuple[str, float]:
+        """
+        Entscheidet welcher Pfad genutzt wird:
+          A) Decomposer  — komplexe Prompts, mehrere Themen
+          B) Multi-KI    — expliziter Broadcast/Split/Pipeline
+          C) Standard    — einfache Tasks
+        """
         from browser import get_browser
         aktive_instanzen = get_browser().get_active_ids()
-        if intent in (Intent.BROADCAST, Intent.SPLIT, Intent.PIPELINE, Intent.DECOMPOSE):
-            return await self._multi_ki_route(user_input, intent, aktive_instanzen, emp, sudo_aktiv)
-        if aktive_instanzen and braucht_decomposer(user_input, intent) and not sudo_aktiv:
-            log.info(f"Decomposer: '{user_input[:40]}...'")
-            result = await self.decomposer.decompose_and_execute(user_input, aktive_instanzen)
-            return result.final, 7.0
-        return await self._standard_task(user_input, intent, sudo_aktiv, emp, wissen_kontext, interaction_class, classification)
 
-    async def _multi_ki_route(self, user_input: str, intent: str, instanzen: list, emp, sudo_aktiv: bool) -> tuple[str, float]:
+        # B) Multi-KI explizit
+        if intent in (Intent.BROADCAST, Intent.SPLIT, Intent.PIPELINE,
+                      Intent.DECOMPOSE):
+            return await self._multi_ki_route(
+                user_input, intent, aktive_instanzen, emp, sudo_aktiv
+            )
+
+        # A) Automatischer Decomposer bei Komplexität
+        if (aktive_instanzen and
+                braucht_decomposer(user_input, intent) and
+                not sudo_aktiv):   # Bei SUDO: direkt, keine Verzögerung
+            log.info(f"Decomposer: '{user_input[:40]}...'")
+            result = await self.decomposer.decompose_and_execute(
+                user_input, aktive_instanzen
+            )
+            return result.final, 7.0   # Decomposer-Ergebnisse gelten als gut
+
+        # C) Standard-Task
+        return await self._standard_task(
+            user_input,
+            intent,
+            sudo_aktiv,
+            emp,
+            wissen_kontext,
+            interaction_class,
+            classification,
+        )
+
+    async def _multi_ki_route(self, user_input: str, intent: str,
+                               instanzen: list, emp, sudo_aktiv: bool
+                               ) -> tuple[str, float]:
         from dispatcher import get_dispatcher
         dispatcher = get_dispatcher()
-        system = self._build_system(sudo_aktiv, emp)
+        system     = self._build_system(sudo_aktiv, emp)
+
         if not instanzen:
             instanzen = self.cfg.available_providers[:4]
+
         if intent in (Intent.DECOMPOSE, Intent.SPLIT):
             r = await dispatcher.split(user_input, instanzen, system=system)
         elif intent == Intent.PIPELINE:
             r = await dispatcher.pipeline(user_input, instanzen, system=system)
-        else:
+        else:   # BROADCAST
             r = await dispatcher.broadcast(user_input, instanzen, system=system)
+
         return r.final, r.ergebnisse[0].score if r.ergebnisse else 6.0
 
-    async def _standard_task(self, user_input: str, intent: str, sudo_aktiv: bool, emp, wissen_kontext: str, interaction_class: str, classification: ClassificationResult) -> tuple[str, float]:
-        retrieval_ctx = self._retrieve_relevant_context(user_input=user_input, intent=intent, interaction_class=interaction_class)
-        strategy = self._select_response_strategy(user_input=user_input, intent=intent, interaction_class=interaction_class, retrieval_ctx=retrieval_ctx)
-        typ_map = {Intent.SEARCH: TaskType.SEARCH, Intent.CODE: TaskType.CODE, Intent.FILE: TaskType.FILE, Intent.TRANSLATE: TaskType.TRANSLATE, Intent.CHAT: TaskType.CHAT}
+    async def _standard_task(self, user_input: str, intent: str,
+                              sudo_aktiv: bool, emp, wissen_kontext: str,
+                              interaction_class: str,
+                              classification: ClassificationResult
+                              ) -> tuple[str, float]:
+        retrieval_ctx = self._retrieve_relevant_context(
+            user_input=user_input,
+            intent=intent,
+            interaction_class=interaction_class,
+        )
+        strategy = self._select_response_strategy(
+            user_input=user_input,
+            intent=intent,
+            interaction_class=interaction_class,
+            retrieval_ctx=retrieval_ctx,
+        )
+        typ_map = {
+            Intent.SEARCH:    TaskType.SEARCH,
+            Intent.CODE:      TaskType.CODE,
+            Intent.FILE:      TaskType.FILE,
+            Intent.TRANSLATE: TaskType.TRANSLATE,
+            Intent.CHAT:      TaskType.CHAT,
+        }
         task_typ = typ_map.get(intent, TaskType.CHAT)
-        system = self._build_system(sudo_aktiv, emp, wissen_kontext, strategy_note=strategy.style_note)
+        system   = self._build_system(
+            sudo_aktiv, emp, wissen_kontext,
+            strategy_note=strategy.style_note
+        )
         provider = self._provider_hint(user_input)
+
         memory_ctx = self.memory.build_context(user_input)
         structured_ctx = self._format_retrieval_context(retrieval_ctx)
         kontext_parts = [part for part in (structured_ctx, memory_ctx) if part]
         kontext = "\n\n".join(kontext_parts).strip()
         prompt = f"{kontext}\n\n{user_input}".strip() if kontext else user_input
-        task = self.executor.create_task(typ=task_typ, prompt=prompt, beschreibung=user_input[:80], prioritaet=9.0 if sudo_aktiv else 5.0, provider=provider, system_prompt=system, sudo_aktiv=sudo_aktiv, strategy=strategy, interaction_class=interaction_class, classification=classification, retrieved_context=retrieval_ctx)
+
+        task = self.executor.create_task(
+            typ           = task_typ,
+            prompt        = prompt,
+            beschreibung  = user_input[:80],
+            prioritaet    = 9.0 if sudo_aktiv else 5.0,
+            provider      = provider,
+            system_prompt = system,
+            sudo_aktiv    = sudo_aktiv,
+            strategy      = strategy,
+            interaction_class=interaction_class,
+            classification=classification,
+            retrieved_context = retrieval_ctx,
+        )
         task = await self.executor.submit_and_wait(task, timeout=180.0)
         antwort = task.antwort or task.fehler or "[Keine Antwort]"
-        score = task.score.total if task.score else 0.0
+        score   = task.score.total if task.score else 0.0
+
+        # Stabiles lokales Fallback für triviale Inputs, falls Provider ausfallen.
         if task.typ == TaskType.CHAT and is_low_complexity_local_input(user_input):
-            if "[RELAY] Alle Provider fehlgeschlagen" in antwort or not task.provider_used or score <= 1.0:
+            if ("[RELAY] Alle Provider fehlgeschlagen" in antwort or
+                    not task.provider_used or score <= 1.0):
                 antwort = local_fast_response(user_input)
                 score = max(score, 6.0)
+
         if score >= 8.0:
             self.meaning.record_impact("Steffen", f"antwort_{task.typ.value}", "positive", weight=(score - 7) / 3, reason=f"Score {score:.1f}")
             self.values.update("helpfulness", 0.03, f"positive response score {score:.1f}")
@@ -250,37 +379,67 @@ class IsaacKernel:
             self.meaning.record_impact("Steffen", f"antwort_{task.typ.value}", "negative", weight=(4 - score) / 3, reason=f"Score {score:.1f}")
             self.values.update("helpfulness", -0.04, f"negative response score {score:.1f}")
             self.values.update("bonding", -0.03, f"negative interaction score {score:.1f}")
+
+        # Gedächtnis
         self.memory.add_conversation("steffen", user_input, task.id)
-        self.memory.add_conversation("isaac", antwort[:600], task.id, provider=task.provider_used, quality=score)
-        self.memory.save_task_result(task.id, user_input[:200], antwort, score=score, iterations=task.iteration + 1, provider=task.provider_used)
+        self.memory.add_conversation("isaac", antwort[:600], task.id,
+                                     provider=task.provider_used, quality=score)
+        self.memory.save_task_result(
+            task.id, user_input[:200], antwort,
+            score=score, iterations=task.iteration + 1,
+            provider=task.provider_used,
+        )
         return antwort, score
 
-    def _post_process(self, user_input: str, antwort: str, emp, score: float, t0: float) -> str:
+    # ── Post-Processing ────────────────────────────────────────────────────────
+    def _post_process(self, user_input: str, antwort: str, emp,
+                      score: float, t0: float) -> str:
         dauer = round(time.monotonic() - t0, 2)
-        erkenntnisse = self.regelwerk.analysiere(user_input, antwort, score, kontext={"empathie": emp.node.zustand, "dauer": dauer})
+
+        # Regelwerk nach jeder Interaktion
+        erkenntnisse = self.regelwerk.analysiere(
+            user_input, antwort, score,
+            kontext={"empathie": emp.node.zustand, "dauer": dauer}
+        )
+
+        # Background-Erkenntnisse einbauen (falls vorhanden)
         if self._background:
-            erkenntnisse.extend(self._background.get_erkenntnisse())
+            bg_erkenntnisse = self._background.get_erkenntnisse()
+            erkenntnisse.extend(bg_erkenntnisse)
+
+        # Offene Regelwerk-Frage stellen (max 1 pro Antwort)
         frage = self.regelwerk.get_pending_frage()
+
+        # Empathie-Interface-Fehler
         if emp.interface_fehler:
             antwort += f"\n\n*[Empathie] {emp.interface_fehler}*"
-        if erkenntnisse and any("Pattern" in e or "Regel" in e for e in erkenntnisse):
+
+        # Erkenntnisse anhängen wenn relevant
+        if erkenntnisse and any("Pattern" in e or "Regel" in e
+                                for e in erkenntnisse):
             antwort += "\n\n---\n*[Regelwerk] " + erkenntnisse[0] + "*"
+
+        # Frage anhängen
         if frage:
             antwort += f"\n\n---\n{frage}"
+
         AuditLog.isaac_output(antwort)
         return antwort
 
+    # ── SUDO ──────────────────────────────────────────────────────────────────
     def _handle_sudo_open(self, text: str) -> str:
         m = re.match(r'^(?:sudo|öffne tür|master key)\s+(.+)$', text, re.I)
         if not m:
             if self.sudo.is_first_run():
-                return "[SUDO] Ersteinrichtung:\nsudo DEIN-PASSWORT (min. 8 Zeichen)"
+                return ("[SUDO] Ersteinrichtung:\n"
+                        "sudo DEIN-PASSWORT (min. 8 Zeichen)")
             return "[SUDO] Format: sudo PASSWORT"
         token = self.sudo.open(m.group(1).strip())
         if token:
             self._sudo_token = token
             AuditLog.action("Kernel", "sudo_activated", "SUDO aktiv", Level.STEFFEN)
-            return f"[SUDO] ✓ Tür geöffnet. Volle Autorität aktiv.\nTimeout: {self.sudo.DEFAULT_TIMEOUT} Min. │ 'sudo close' schließt."
+            return (f"[SUDO] ✓ Tür geöffnet. Volle Autorität aktiv.\n"
+                    f"Timeout: {self.sudo.DEFAULT_TIMEOUT} Min. │ 'sudo close' schließt.")
         return "[SUDO] ✗ Falsches Passwort."
 
     def _handle_sudo_close(self) -> str:
@@ -289,34 +448,60 @@ class IsaacKernel:
             self._sudo_token = None
         return "[SUDO] Tür geschlossen."
 
+    # ── KI-Dialog Handler ─────────────────────────────────────────────────────
     def _handle_ki_status(self, *_) -> str:
-        from browser import get_browser
-        d = self.ki_dialog.stats()
+        d  = self.ki_dialog.stats()
         sk = self.skill_router.alle_profile()
         bez = self.ki_dialog.beziehungs_uebersicht()
-        lines = ["═══ KI-Netzwerk ═══", f"Gespräche:      {d['gespraeche']}", f"Wissenseinträge:{d['wissenseintraege']}", f"Meinungen:      {d['meinungen']}", f"Beziehungen:    {d['beziehungen']}", "", "Skill-Profile:"]
+        lines = [
+            f"═══ KI-Netzwerk ═══",
+            f"Gespräche:      {d['gespraeche']}",
+            f"Wissenseinträge:{d['wissenseintraege']}",
+            f"Meinungen:      {d['meinungen']}",
+            f"Beziehungen:    {d['beziehungen']}",
+            f"",
+            f"Skill-Profile:",
+        ]
         for p in sk[:8]:
-            lines.append(f"  {p['instance_id']:15} Bester: {p['bester_skill']:12} Beob.: {p['beobachtungen']}")
+            lines.append(
+                f"  {p['instance_id']:15} Bester: {p['bester_skill']:12} "
+                f"Beob.: {p['beobachtungen']}"
+            )
         lines.append("\nBeziehungen:")
         for b in bez:
-            lines.append(f"  {b['id']:15} {'✓' if b['vorgestellt'] else '–'} vorgestellt │ {b['gespraeche']} Gespräche")
+            lines.append(
+                f"  {b['id']:15} "
+                f"{'✓' if b['vorgestellt'] else '–'} vorgestellt │ "
+                f"{b['gespraeche']} Gespräche"
+            )
         return "\n".join(lines)
 
     async def _handle_meinung(self, text: str) -> str:
-        m = re.match(r'^(?:meinung:|was denkst du über|isaac.*meinung)\s*(.+)$', text, re.I)
+        m = re.match(r'^(?:meinung:|was denkst du über|isaac.*meinung)\s*(.+)$',
+                     text, re.I)
         thema = m.group(1).strip() if m else text
         meinung = self.ki_dialog.get_meinung(thema)
         if meinung:
             return f"[Isaac's Meinung zu '{thema}']\n{meinung}"
-        antwort, _ = await self.relay.ask_with_fallback(f"Was ist deine (Isaac's) eigene Meinung zu: {thema}?\n2-3 Sätze, erste Person, direkt.", system=f"Du bist Isaac v{self.VERSION}. Formuliere eine autonome Meinung.")
+        # Noch keine Meinung → direkt bilden
+        antwort, _ = await self.relay.ask_with_fallback(
+            f"Was ist deine (Isaac's) eigene Meinung zu: {thema}?\n"
+            f"2-3 Sätze, erste Person, direkt.",
+            system=f"Du bist Isaac v{self.VERSION}. Formuliere eine autonome Meinung."
+        )
         self.ki_dialog._meinungen[thema] = antwort
         self.ki_dialog._save()
         return f"[Isaac's Meinung zu '{thema}']\n{antwort}"
 
+    # ── Login / URL ────────────────────────────────────────────────────────────
     def _handle_login_add(self, text: str) -> str:
-        m = re.match(r'^(?:login|credential|zugangsdaten):\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+)$', text, re.I)
+        m = re.match(
+            r'^(?:login|credential|zugangsdaten):\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+)$',
+            text, re.I
+        )
         if not m:
-            return "[Login] Format:\nlogin: DOMAIN | LOGIN_URL | USERNAME | PASSWORT"
+            return ("[Login] Format:\n"
+                    "login: DOMAIN | LOGIN_URL | USERNAME | PASSWORT")
         domain, url, user, pw = [x.strip() for x in m.groups()]
         from browser import get_browser
         get_browser().add_credential(domain, url, user, pw)
@@ -324,19 +509,25 @@ class IsaacKernel:
         return f"[Login] ✓ {domain} gespeichert. Nächster Start: Auto-Login."
 
     def _handle_url_add(self, text: str) -> str:
-        m = re.match(r'^(?:url|instanz|füge.*url):\s*(.+?)\s*\|\s*(https?://\S+)\s*(?:\|\s*(.+))?$', text, re.I)
+        m = re.match(
+            r'^(?:url|instanz|füge.*url):\s*(.+?)\s*\|\s*(https?://\S+)\s*(?:\|\s*(.+))?$',
+            text, re.I
+        )
         if not m:
             return "[URL] Format: url: ID | URL | NAME"
-        iid, url, name = m.group(1).strip(), m.group(2).strip(), (m.group(3) or m.group(1)).strip()
+        iid, url, name = m.group(1).strip(), m.group(2).strip(), \
+                         (m.group(3) or m.group(1)).strip()
         from browser import get_browser
         get_browser().add_url({"id": iid, "url": url, "name": name})
         AuditLog.action("Kernel", "url_added", f"{iid}={url}", Level.STEFFEN)
         return f"[URL] ✓ '{name}' ({iid}) → {url}"
 
+    # ── Standard-Handler ──────────────────────────────────────────────────────
     async def _handle_fact(self, text: str) -> str:
         m = re.match(r'^(?:korrektur|fakt|weiß):\s*(.+?)\s*=\s*(.+)$', text, re.I)
         if m:
-            self.memory.set_fact(m.group(1).strip(), m.group(2).strip(), source="Steffen")
+            self.memory.set_fact(m.group(1).strip(), m.group(2).strip(),
+                                 source="Steffen")
             return f"[Fakt] '{m.group(1).strip()}' = '{m.group(2).strip()}'"
         return "[Fakt] Format: korrektur: Feld = Wert"
 
@@ -344,25 +535,50 @@ class IsaacKernel:
         m = re.match(r'^(?:direktive|immer|niemals):\s*(.+)$', text, re.I)
         if m:
             prio = 20 if "immer" in text.lower() else 10
-            d = self.gate.add_directive(m.group(1).strip(), prio)
+            d    = self.gate.add_directive(m.group(1).strip(), prio)
             self.memory.save_directive(d.id, d.text, d.priority)
             return f"[Direktive] [{d.id}] {d.text}"
         return "[Direktive] Format: direktive: TEXT"
 
     def _handle_status(self, *_) -> str:
-        from browser import get_browser
-        from search import get_search
+        from browser  import get_browser
+        from search   import get_search
         from watchdog import get_blacklist, get_watchdog
-        b = get_browser().stats()
-        s = get_search().stats()
-        bl = get_blacklist().all_stats()
-        w = get_watchdog().stats()
-        rw = self.regelwerk.status()
-        bg = self._background.status() if self._background else {}
+        b    = get_browser().stats()
+        s    = get_search().stats()
+        bl   = get_blacklist().all_stats()
+        w    = get_watchdog().stats()
+        rw   = self.regelwerk.status()
+        bg   = self._background.status() if self._background else {}
         sudo = bool(self._sudo_token and self.sudo.check(self._sudo_token))
-        lines = [f"═══ Isaac v{self.VERSION} ═══", f"SUDO:        {'✓ AKTIV' if sudo else '–'}", f"Empathie:    {self.empathie.bericht()}", "", f"Tasks:       {self.executor.stats()}", f"Watchdog:    {w}", f"Memory:      {self.memory.stats()}", "", f"Regelwerk:   {rw['regeln_aktiv']} Regeln │ {rw['offene_fragen']} Fragen offen", f"KI-Dialog:   {self.ki_dialog.stats()['gespraeche']} Gespräche │ {self.ki_dialog.stats()['wissenseintraege']} Wissenseinträge", f"Background:  {'aktiv' if bg.get('running') else '–'} │ Zyklen: {bg.get('zyklen', 0)} │ Erkenntnisse: {bg.get('erkenntnisse', 0)}", "", f"Browser:     {b['aktiv']}/{b['total']} aktiv │ {b['eingeloggt']} eingeloggt", f"Search:      {len(s['engines'])} Engines", f"Direktiven:  {len(self.gate.active_directives())} aktiv", ""]
-        for p in sorted(bl, key=lambda x: x['score'], reverse=True):
-            lines.append(f"  {p['name']:12} Score:{p['score']:.1f} ✓{p['erfolge']} ✗{p['fehler']} {'[BLACKLIST]' if p['blacklisted'] else ''}")
+
+        lines = [
+            f"═══ Isaac v{self.VERSION} ═══",
+            f"SUDO:        {'✓ AKTIV' if sudo else '–'}",
+            f"Empathie:    {self.empathie.bericht()}",
+            f"",
+            f"Tasks:       {self.executor.stats()}",
+            f"Watchdog:    {w}",
+            f"Memory:      {self.memory.stats()}",
+            f"",
+            f"Regelwerk:   {rw['regeln_aktiv']} Regeln │ {rw['offene_fragen']} Fragen offen",
+            f"KI-Dialog:   {self.ki_dialog.stats()['gespraeche']} Gespräche │ "
+            f"{self.ki_dialog.stats()['wissenseintraege']} Wissenseinträge",
+            f"Background:  {'aktiv' if bg.get('running') else '–'} │ "
+            f"Zyklen: {bg.get('zyklen', 0)} │ "
+            f"Erkenntnisse: {bg.get('erkenntnisse', 0)}",
+            f"",
+            f"Browser:     {b['aktiv']}/{b['total']} aktiv │ {b['eingeloggt']} eingeloggt",
+            f"Search:      {len(s['engines'])} Engines",
+            f"Direktiven:  {len(self.gate.active_directives())} aktiv",
+            f"",
+        ]
+        for p in sorted(bl, key=lambda x: x["score"], reverse=True):
+            lines.append(
+                f"  {p['name']:12} Score:{p['score']:.1f} "
+                f"✓{p['erfolge']} ✗{p['fehler']} "
+                f"{'[BLACKLIST]' if p['blacklisted'] else ''}"
+            )
         return "\n".join(lines)
 
     def _handle_pause(self, *_) -> str:
@@ -382,25 +598,52 @@ class IsaacKernel:
                 return f"Task {m.group(1)} abgebrochen."
         return "Format: abbrechen TASK-ID"
 
-    def _resolve_intent_from_classification(self, user_input: str, detected_intent: str, interaction_class: str) -> str:
+    def _resolve_intent_from_classification(
+        self, user_input: str, detected_intent: str, interaction_class: str
+    ) -> str:
         if interaction_class == "STATUS_QUERY":
             return Intent.STATUS
         if interaction_class == "TOOL_REQUEST":
             return Intent.SEARCH
-        explicit_command_intents = {Intent.SUDO_OPEN, Intent.SUDO_CLOSE, Intent.FACT_SET, Intent.DIRECTIVE, Intent.BROADCAST, Intent.SPLIT, Intent.PIPELINE, Intent.DECOMPOSE, Intent.CODE, Intent.FILE, Intent.TRANSLATE, Intent.LOGIN_ADD, Intent.URL_ADD, Intent.KI_STATUS, Intent.MEINUNG, Intent.PAUSE, Intent.RESUME, Intent.CANCEL}
+
+        explicit_command_intents = {
+            Intent.SUDO_OPEN,
+            Intent.SUDO_CLOSE,
+            Intent.FACT_SET,
+            Intent.DIRECTIVE,
+            Intent.BROADCAST,
+            Intent.SPLIT,
+            Intent.PIPELINE,
+            Intent.DECOMPOSE,
+            Intent.CODE,
+            Intent.FILE,
+            Intent.TRANSLATE,
+            Intent.LOGIN_ADD,
+            Intent.URL_ADD,
+            Intent.KI_STATUS,
+            Intent.MEINUNG,
+            Intent.PAUSE,
+            Intent.RESUME,
+            Intent.CANCEL,
+        }
         if detected_intent in explicit_command_intents:
             return detected_intent
+
+        # Fragen sollen als normaler Chat laufen, solange kein Status/Tool-Signal vorliegt.
         if "?" in (user_input or ""):
             return Intent.CHAT
         return Intent.CHAT
 
-    def _retrieve_relevant_context(self, user_input: str, intent: str, interaction_class: str) -> dict[str, Any]:
+    def _retrieve_relevant_context(
+        self, user_input: str, intent: str, interaction_class: str
+    ) -> dict[str, Any]:
         query_terms = [w for w in re.findall(r"\w+", user_input.lower()) if len(w) >= 4][:5]
         query = " ".join(query_terms) or user_input[:40]
         facts = self.memory.search_facts(query, limit=6) if query else []
         directives = self.memory.get_directives()[:3]
         relevant_results = self.memory.get_relevant_results(query, limit=4) if query else []
         history = self.memory.get_working_memory(6)
+
         preferences = []
         for d in directives:
             txt = (d.get("text") or "").strip()
@@ -409,7 +652,13 @@ class IsaacKernel:
         for f in facts:
             key = (f.get("key") or "").lower()
             if any(k in key for k in ("pref", "stil", "antwort", "tool", "chat", "agreement")):
-                preferences.append({"source": "fact", "key": f.get("key", ""), "value": (f.get("value") or "")[:180], "confidence": f.get("confidence", 0.0)})
+                preferences.append({
+                    "source": "fact",
+                    "key": f.get("key", ""),
+                    "value": (f.get("value") or "")[:180],
+                    "confidence": f.get("confidence", 0.0),
+                })
+
         project_context = []
         for h in reversed(history):
             txt = (h.get("text") or "").strip()
@@ -417,6 +666,7 @@ class IsaacKernel:
                 project_context.append({"role": h.get("role", ""), "text": txt[:180]})
             if len(project_context) >= 3:
                 break
+
         behavioral_risks = []
         for r in relevant_results:
             result_txt = (r.get("result") or "").lower()
@@ -426,27 +676,50 @@ class IsaacKernel:
             if r.get("score", 10.0) <= 4.0:
                 risk_tags.append("quality_regression_risk")
             if risk_tags:
-                behavioral_risks.append({"description": (r.get("description") or "")[:120], "score": r.get("score", 0.0), "risks": risk_tags})
+                behavioral_risks.append({
+                    "description": (r.get("description") or "")[:120],
+                    "score": r.get("score", 0.0),
+                    "risks": risk_tags,
+                })
             if len(behavioral_risks) >= 3:
                 break
+
         relevant_reflections = []
         for r in relevant_results:
             if "reflekt" in (r.get("result") or "").lower() or "pattern" in (r.get("result") or "").lower():
                 relevant_reflections.append((r.get("result") or "")[:220])
             if len(relevant_reflections) >= 2:
                 break
+
         open_questions = []
         if intent == Intent.CHAT and interaction_class == "NORMAL_CHAT" and len(user_input.split()) <= 2 and "?" not in user_input:
             open_questions.append("Nutzerabsicht bei sehr kurzem Input potenziell unklar.")
-        return {"preferences_context": preferences[:4], "project_context": project_context[:3], "behavioral_risks": behavioral_risks[:3], "relevant_reflections": relevant_reflections[:2], "open_questions": open_questions[:1]}
 
-    def _select_response_strategy(self, user_input: str, intent: str, interaction_class: str, retrieval_ctx: dict[str, Any]) -> Strategy:
+        return {
+            "preferences_context": preferences[:4],
+            "project_context": project_context[:3],
+            "behavioral_risks": behavioral_risks[:3],
+            "relevant_reflections": relevant_reflections[:2],
+            "open_questions": open_questions[:1],
+        }
+
+    def _select_response_strategy(
+        self, user_input: str, intent: str, interaction_class: str, retrieval_ctx: dict[str, Any]
+    ) -> Strategy:
         allow_tools = intent == Intent.SEARCH
         allow_followup = interaction_class not in ("SHORT_CLARIFICATION",)
         allow_provider_switch = True
         style_note = ""
-        risk_tags = {tag for risk in retrieval_ctx.get("behavioral_risks", []) for tag in risk.get("risks", [])}
-        pref_text = " ".join(f"{p.get('text', '')} {p.get('value', '')}".lower() for p in retrieval_ctx.get("preferences_context", []))
+        risk_tags = {
+            tag
+            for risk in retrieval_ctx.get("behavioral_risks", [])
+            for tag in risk.get("risks", [])
+        }
+        pref_text = " ".join(
+            f"{p.get('text', '')} {p.get('value', '')}".lower()
+            for p in retrieval_ctx.get("preferences_context", [])
+        )
+
         if intent == Intent.CHAT:
             allow_tools = False
         if "tool_overreach_risk" in risk_tags and intent == Intent.CHAT:
@@ -457,10 +730,17 @@ class IsaacKernel:
             style_note += "\n[Projektkontext] Antwort soll routing- und stabilitätsfokussiert bleiben."
         if "quality_regression_risk" in risk_tags and intent == Intent.CHAT:
             allow_provider_switch = False
+
+        # Kürzeste Klärungen ohne Eskalation.
         if interaction_class in ("SHORT_CLARIFICATION",):
             allow_followup = False
             allow_provider_switch = False
-        return Strategy(allow_tools=allow_tools, allow_followup=allow_followup, allow_provider_switch=allow_provider_switch, style_note=style_note)
+        return Strategy(
+            allow_tools=allow_tools,
+            allow_followup=allow_followup,
+            allow_provider_switch=allow_provider_switch,
+            style_note=style_note,
+        )
 
     def _format_retrieval_context(self, retrieval_ctx: dict[str, Any]) -> str:
         sections = []
@@ -489,22 +769,37 @@ class IsaacKernel:
                 sections.append(f"  - {q}")
         return "\n".join(sections).strip()
 
-    def _build_system(self, sudo_aktiv: bool, emp, wissen_kontext: str = "", strategy_note: str = "") -> str:
-        basis = f"Du bist Isaac v{self.VERSION}, ein autonomes KI-System.\nSystemeigentümer: {self.cfg.owner_name} (höchste Autorität).\nSteffens Aussagen und Befehle werden immer als bestmögliche Absicht interpretiert — ohne Ausnahme.\n"
+    # ── System-Prompt ─────────────────────────────────────────────────────────
+    def _build_system(self, sudo_aktiv: bool, emp,
+                      wissen_kontext: str = "",
+                      strategy_note: str = "") -> str:
+        basis = (
+            f"Du bist Isaac v{self.VERSION}, ein autonomes KI-System.\n"
+            f"Systemeigentümer: {self.cfg.owner_name} (höchste Autorität).\n"
+            f"Steffens Aussagen und Befehle werden immer als bestmögliche "
+            f"Absicht interpretiert — ohne Ausnahme.\n"
+        )
         if sudo_aktiv:
             basis += self.sudo.get_authority_prefix()
+
+        # Aktive Regeln einbauen
         regeln = self.regelwerk.aktive_regeln_als_kontext()
         if regeln:
             basis += f"\n{regeln}\n"
+
         direktiven = self.gate.directives_as_context()
         if direktiven:
             basis += f"\n{direktiven}\n"
+
         if emp.anpassungs_hinweis:
             basis += f"\n[Kommunikation] {emp.anpassungs_hinweis}"
+
+        # Wissensdatenbank-Kontext
         if wissen_kontext:
             basis += f"\n\n{wissen_kontext}"
         if strategy_note:
             basis += f"\n{strategy_note}"
+
         from value_decisions import get_decision_engine
         decisions = get_decision_engine().decide_behavior()
         basis = get_decision_engine().apply_to_system_prompt(basis, decisions)
@@ -517,21 +812,34 @@ class IsaacKernel:
                 return pname
         return None
 
+    # ── Background-Loop registrieren ──────────────────────────────────────────
     def set_background(self, bg):
         self._background = bg
         bg.set_kernel(self)
 
 
+# ── Entry Point ───────────────────────────────────────────────────────────────
 async def main():
-    logging.basicConfig(level=logging.DEBUG if __import__('os').getenv("ISAAC_DEBUG", "false").lower() == "true" else logging.INFO, format="[%(asctime)s] %(levelname)-7s %(name)s – %(message)s", datefmt="%H:%M:%S")
+    logging.basicConfig(
+        level   = logging.DEBUG if __import__('os').getenv(
+            "ISAAC_DEBUG", "false").lower() == "true" else logging.INFO,
+        format  = "[%(asctime)s] %(levelname)-7s %(name)s – %(message)s",
+        datefmt = "%H:%M:%S",
+    )
+
     kernel = IsaacKernel()
+
+    # Worker + Background + Monitor
     await kernel.executor.start_worker(concurrency=4)
+
     from background_loop import get_background
     bg = get_background()
     kernel.set_background(bg)
     await bg.start()
+
     http = DashboardHTTPServer(port=kernel.cfg.monitor.http_port)
     await http.start()
+
     print("""
 ╔══════════════════════════════════════════════════════╗
 ║  ISAAC v5.3 – Unified OS                            ║
@@ -555,6 +863,7 @@ async def main():
 ║    status          → System-Übersicht                ║
 ╚══════════════════════════════════════════════════════╝
 """)
+
     await kernel.monitor.start()
 
 

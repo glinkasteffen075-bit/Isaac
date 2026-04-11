@@ -1,7 +1,9 @@
 import unittest
 
+from executor import Executor, Strategy, Task, TaskType
 from isaac_core import IsaacKernel, Intent
 from low_complexity import (
+    ClassificationResult,
     InteractionClass,
     classify_interaction_result,
     is_lightweight_local_class,
@@ -42,6 +44,42 @@ class TestCriticalBugs(unittest.TestCase):
             InteractionClass.NORMAL_CHAT,
         )
         self.assertEqual(intent, Intent.CHAT)
+
+    def test_bug_6_executor_uses_explicit_tool_policy_for_normal_chat(self):
+        task = Task(
+            id="t1",
+            typ=TaskType.CHAT,
+            prompt="Was ist 2+2?",
+            beschreibung="chat",
+            strategy=Strategy(allow_tools=True),
+            interaction_class=InteractionClass.NORMAL_CHAT,
+            classification=ClassificationResult(
+                interaction_class=InteractionClass.NORMAL_CHAT,
+                normalized_text="was ist 2 2",
+                has_question=True,
+                word_count=3,
+            ),
+        )
+        executor = object.__new__(Executor)
+        self.assertTrue(executor._should_try_tool(task, task.prompt, iteration=2))
+
+    def test_bug_7_executor_respects_explicit_tool_disable_even_for_tool_request(self):
+        task = Task(
+            id="t2",
+            typ=TaskType.CHAT,
+            prompt="Suche: Wetter Berlin",
+            beschreibung="chat",
+            strategy=Strategy(allow_tools=False),
+            interaction_class=InteractionClass.TOOL_REQUEST,
+            classification=ClassificationResult(
+                interaction_class=InteractionClass.TOOL_REQUEST,
+                normalized_text="suche wetter berlin",
+                has_question=False,
+                word_count=3,
+            ),
+        )
+        executor = object.__new__(Executor)
+        self.assertFalse(executor._should_try_tool(task, task.prompt, iteration=0))
 
 if __name__ == '__main__':
     unittest.main()

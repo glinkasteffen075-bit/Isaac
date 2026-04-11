@@ -21,32 +21,29 @@ Substeps:
 - Step 1.2 Introduce ClassificationResult as explicit carried contract
 - Step 1.3 Introduce explicit Strategy object/dataclass and pass it through task creation
 
-Step-Status (Stand: 2026-04-06)
+Step-Status (Stand: 2026-04-11)
 -------------------------------
-- Step 1.1: IN PROGRESS (noch NICHT abgeschlossen)
-- Step 1.2: Pending
-- Step 1.3: Pending
+- Step 1.1: COMPLETED
+- Step 1.2: COMPLETED
+- Step 1.3: COMPLETED
 
-Konkrete Restarbeiten für `executor.py::_should_try_tool` (Step 1.1)
----------------------------------------------------------------------
-Aktueller Codepfad enthält weiterhin lokale Re-Entscheidung über Tool-Nutzung.
-Folgende Änderungen sind noch offen, damit Step 1.1 als abgeschlossen gilt:
+Abschlussstatus für `executor.py::_should_try_tool` (Step 1.1)
+--------------------------------------------------------------
+Der Codepfad wurde auf den explizit durchgereichten Upstream-Vertrag reduziert.
+Step 1.1 gilt als abgeschlossen, weil folgende Bedingungen jetzt erfüllt sind:
 
-1) Entfernung der promptbasierten Hotword-Heuristik
-   - Aktuell: `hotwords = (...)` + `any(hw in p for hw in hotwords)`
-   - Soll: keine keyword/substring-getriebene Tool-Entscheidung in executor.
+1) Keine promptbasierte Hotword-Heuristik mehr im Executor
+   - `executor.py::_should_try_tool` enthält keine keyword-/substring-getriebene Entscheidung mehr.
 
-2) Entfernung der lokalen Re-Klassifikation in `_should_try_tool`
-   - Aktuell: `classify_interaction(prompt)` innerhalb der Methode.
-   - Soll: ausschließlich bereits getragene/übergebene Klassifikation (kein Neu-Classifier-Aufruf im executor).
+2) Keine lokale Re-Klassifikation mehr in `_should_try_tool`
+   - Der Executor ruft dort keinen Classifier mehr auf.
 
-3) Entfernung der iteration-basierten Autonomie als OR-Fallback
-   - Aktuell: `return iteration == 0 or ...`
-   - Soll: kein autonomes Erzwingen eines Tool-Versuchs in Iteration 0.
+3) Keine iteration-basierte Autonomie mehr als Fallback
+   - Es gibt kein Erzwingen eines Tool-Versuchs in Iteration 0.
 
-4) Methode auf explizites Upstream-Signal reduzieren
-   - Soll-Verhalten: `_should_try_tool` darf nur ein explizit durchgereichtes Signal auswerten
-     (z. B. aus Task/Strategy), ohne zusätzliche Heuristik oder Reklassifikation.
+4) Methode auf explizites Upstream-Signal reduziert
+   - `_should_try_tool` wertet nur noch den getragenen Strategy-Vertrag aus (`task.allow_tools`).
+   - Die Tool-Policy wird beim Routing in `isaac_core.py` gesetzt und in Subtasks weitergereicht.
 
 Verification Evidence (für Reviewer)
 ------------------------------------

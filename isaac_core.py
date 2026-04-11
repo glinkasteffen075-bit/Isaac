@@ -238,7 +238,13 @@ class IsaacKernel:
 
         # 4. Routing: Decomposer vs Standard vs Multi-KI
         antwort, score = await self._route(
-            user_input, intent, sudo_aktiv, emp, wissen_kontext, interaction_class
+            user_input,
+            intent,
+            sudo_aktiv,
+            emp,
+            wissen_kontext,
+            interaction_class,
+            classification,
         )
 
         return self._post_process(user_input, antwort, emp, score, t0)
@@ -246,7 +252,8 @@ class IsaacKernel:
     # ── Routing ────────────────────────────────────────────────────────────────
     async def _route(self, user_input: str, intent: str,
                      sudo_aktiv: bool, emp, wissen_kontext: str,
-                     interaction_class: str
+                     interaction_class: str,
+                     classification: ClassificationResult
                      ) -> tuple[str, float]:
         """
         Entscheidet welcher Pfad genutzt wird:
@@ -276,7 +283,13 @@ class IsaacKernel:
 
         # C) Standard-Task
         return await self._standard_task(
-            user_input, intent, sudo_aktiv, emp, wissen_kontext, interaction_class
+            user_input,
+            intent,
+            sudo_aktiv,
+            emp,
+            wissen_kontext,
+            interaction_class,
+            classification,
         )
 
     async def _multi_ki_route(self, user_input: str, intent: str,
@@ -300,7 +313,8 @@ class IsaacKernel:
 
     async def _standard_task(self, user_input: str, intent: str,
                               sudo_aktiv: bool, emp, wissen_kontext: str,
-                              interaction_class: str
+                              interaction_class: str,
+                              classification: ClassificationResult
                               ) -> tuple[str, float]:
         retrieval_ctx = self._retrieve_relevant_context(
             user_input=user_input,
@@ -323,7 +337,7 @@ class IsaacKernel:
         task_typ = typ_map.get(intent, TaskType.CHAT)
         system   = self._build_system(
             sudo_aktiv, emp, wissen_kontext,
-            strategy_note=strategy.get("style_note", "")
+            strategy_note=strategy.style_note
         )
         provider = self._provider_hint(user_input)
 

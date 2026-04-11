@@ -406,16 +406,7 @@ class Executor:
             self._notify(task)
 
     def _should_try_tool(self, task: Task, prompt: str, iteration: int) -> bool:
-        if not task.allow_tools:
-            return False
-        if task.typ in (TaskType.FILE, TaskType.BROADCAST, TaskType.SPLIT, TaskType.PIPELINE):
-            return False
-        current_class = task.current_interaction_class
-        if task.typ == TaskType.CHAT:
-            if is_lightweight_local_class(current_class):
-                return False
-            return current_class == "TOOL_REQUEST"
-        return True
+        return task.allow_tools
 
     def _tool_context_block(self, tool_name: str, tool_kind: str, via: str, result: dict) -> str:
         content = (result.get('content') or result.get('error') or '').strip()[:2200]
@@ -784,7 +775,12 @@ class Executor:
                 prioritaet   = parent.prioritaet + 1,
                 provider     = provider,
                 parent_id    = parent.id,
+                system_prompt = parent.system_prompt,
                 sudo_aktiv   = parent.sudo_aktiv,
+                strategy     = parent.strategy,
+                interaction_class = parent.interaction_class,
+                classification = parent.classification,
+                retrieved_context = parent.retrieved_context,
             )
             parent.sub_task_ids.append(sub.id)
             tasks.append(sub)

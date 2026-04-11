@@ -130,6 +130,59 @@ SITE_ADAPTERS: dict[str, dict] = {
     },
 }
 
+SITE_CATALOG_META: dict[str, dict[str, str]] = {
+    "chat.openai.com": {
+        "site_id": "chatgpt",
+        "label": "ChatGPT",
+        "url": "https://chat.openai.com",
+    },
+    "claude.ai": {
+        "site_id": "claude",
+        "label": "Claude",
+        "url": "https://claude.ai",
+    },
+    "gemini.google.com": {
+        "site_id": "gemini",
+        "label": "Gemini",
+        "url": "https://gemini.google.com",
+    },
+    "copilot.microsoft.com": {
+        "site_id": "copilot",
+        "label": "Copilot",
+        "url": "https://copilot.microsoft.com",
+    },
+    "huggingface.co": {
+        "site_id": "huggingface",
+        "label": "Hugging Face Chat",
+        "url": "https://huggingface.co/chat",
+    },
+    "poe.com": {
+        "site_id": "poe",
+        "label": "Poe",
+        "url": "https://poe.com",
+    },
+    "you.com": {
+        "site_id": "you",
+        "label": "You.com",
+        "url": "https://you.com",
+    },
+    "perplexity.ai": {
+        "site_id": "perplexity",
+        "label": "Perplexity",
+        "url": "https://perplexity.ai",
+    },
+    "mistral.ai": {
+        "site_id": "mistral",
+        "label": "Mistral",
+        "url": "https://mistral.ai",
+    },
+    "groq.com": {
+        "site_id": "groq",
+        "label": "Groq",
+        "url": "https://groq.com",
+    },
+}
+
 
 def get_adapter(url: str) -> dict:
     for domain, adapter in SITE_ADAPTERS.items():
@@ -765,6 +818,32 @@ class BrowserManager:
         # Wird beim nächsten start() oder manuell initiiert
         self._pending_urls = getattr(self, "_pending_urls", [])
         self._pending_urls.append(url_config)
+
+    def site_catalog(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for domain, meta in SITE_CATALOG_META.items():
+            existing = next((inst for inst in self._instances.values() if domain in inst.url), None)
+            rows.append({
+                "site_id": meta["site_id"],
+                "label": meta["label"],
+                "domain": domain,
+                "url": meta["url"],
+                "active": bool(existing and existing.aktiv),
+                "logged_in": bool(existing and existing.eingeloggt),
+                "instance_id": existing.id if existing else "",
+            })
+        return rows
+
+    async def activate_catalog_site(self, site_id: str) -> dict[str, Any]:
+        target = next((meta | {"domain": domain} for domain, meta in SITE_CATALOG_META.items() if meta["site_id"] == site_id), None)
+        if not target:
+            raise KeyError(f"Unbekannte Browser-Site: {site_id}")
+        inst = await self.ensure_instance(target["site_id"], target["url"], name=target["label"])
+        return {
+            "ok": True,
+            "site_id": target["site_id"],
+            "instance": inst.to_dict(),
+        }
 
     def list_instances(self) -> list[dict]:
         return [i.to_dict() for i in self._instances.values()]

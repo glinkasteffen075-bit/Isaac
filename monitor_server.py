@@ -272,9 +272,15 @@ class MonitorServer:
             }
 
         tools_status = []
+        browser_catalog = []
         try:
             from tool_registry import get_tool_registry
             tools_status = get_tool_registry().list_tools()
+        except Exception:
+            pass
+        try:
+            from browser import get_browser
+            browser_catalog = get_browser().site_catalog()
         except Exception:
             pass
 
@@ -304,6 +310,7 @@ class MonitorServer:
             "audit":       AuditLog.stats(),
             "providers":   self.relay.provider_status(),
             "tools":       tools_status,
+            "browser_catalog": browser_catalog,
             "provider_configs": provider_configs,
             "settings":    settings,
             "gate":        self.gate.status_dict(),
@@ -480,9 +487,24 @@ class DashboardHTTPServer:
                 return web.json_response({
                     "ok": True,
                     "instances": browser.list_instances(),
+                    "catalog": browser.site_catalog(),
                     "stats": browser.stats(),
                     "settings": get_config().runtime_settings(),
                 })
+
+            async def browser_activate_site(request):
+                data = await _request_json(request)
+                try:
+                    _ensure_local_owner_request(request, "browser_activate_site")
+                    from browser import get_browser
+                    result = await get_browser().activate_catalog_site(
+                        (data.get("site_id") or "").strip()
+                    )
+                    return web.json_response(result, status=200 if result.get("ok") else 400)
+                except PermissionError as e:
+                    return web.json_response({"ok": False, "error": str(e)}, status=403)
+                except KeyError as e:
+                    return web.json_response({"ok": False, "error": str(e)}, status=404)
 
             async def browser_openrouter_token(request):
                 data = await _request_json(request)
@@ -613,6 +635,7 @@ class DashboardHTTPServer:
             app.router.add_get("/api/runtime/settings", runtime_settings)
             app.router.add_post("/api/runtime/settings", update_runtime_settings)
             app.router.add_get("/api/browser/state", browser_state)
+            app.router.add_post("/api/browser/activate_site", browser_activate_site)
             app.router.add_post("/api/browser/openrouter_token", browser_openrouter_token)
             app.router.add_get("/api/mcp/capabilities", mcp_capabilities)
             app.router.add_get("/api/mcp/resources", mcp_resources)

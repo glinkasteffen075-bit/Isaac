@@ -364,7 +364,7 @@ class DashboardHTTPServer:
             from tool_registry import get_tool_registry
             from secrets_store import get_secrets_store
             from tool_runtime import select_tool_for_prompt
-            from tool_catalog import list_local_tool_catalog, registry_payload_from_catalog
+            from tool_catalog import list_local_tool_catalog, registry_payload_from_catalog, free_starter_pack_catalog_ids
             from mcp_registry import get_mcp_registry
             from updater import list_packages, inspect_package, apply_package, rollback_last_backup, status as updater_status, schedule_process_restart
 
@@ -413,6 +413,28 @@ class DashboardHTTPServer:
                     return web.json_response({"ok": False, "error": str(e)}, status=404)
                 row = next(x for x in registry.list_tools() if x["tool_id"] == tool.tool_id)
                 return web.json_response({"ok": True, "tool": row, "installed": catalog_id})
+
+            async def install_free_pack(request):
+                try:
+                    _ensure_local_owner_request(request, "install_free_pack")
+                    installed_catalog_ids = {((t.get("metadata") or {}).get("catalog_id")) for t in registry.list_tools()}
+                    installed = []
+                    skipped = []
+                    for catalog_id in free_starter_pack_catalog_ids():
+                        if catalog_id in installed_catalog_ids:
+                            skipped.append(catalog_id)
+                            continue
+                        tool = registry.add(registry_payload_from_catalog(catalog_id))
+                        row = next(x for x in registry.list_tools() if x["tool_id"] == tool.tool_id)
+                        installed.append(row)
+                    return web.json_response({
+                        "ok": True,
+                        "installed": installed,
+                        "installed_count": len(installed),
+                        "skipped": skipped,
+                    })
+                except PermissionError as e:
+                    return web.json_response({"ok": False, "error": str(e)}, status=403)
 
             async def add_tool(request):
                 data = await _request_json(request)
@@ -627,6 +649,7 @@ class DashboardHTTPServer:
             app.router.add_get("/api/tools/catalog", list_local_catalog)
             app.router.add_get("/api/tools/live", live_tools)
             app.router.add_post("/api/tools/install_local", install_local_tool)
+            app.router.add_post("/api/tools/install_free_pack", install_free_pack)
             app.router.add_post("/api/tools/add", add_tool)
             app.router.add_post("/api/tools/update", update_tool)
             app.router.add_post("/api/tools/delete", delete_tool)

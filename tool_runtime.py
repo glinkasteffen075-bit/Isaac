@@ -55,12 +55,17 @@ def select_tool_for_prompt(prompt: str, preferred_kind: str = ""):
 
 
 def _headers(tool: dict) -> dict:
+    headers = {
+        "User-Agent": "Isaac/1.0 (+local tool runtime)",
+        "Accept": "application/json, text/plain;q=0.9, */*;q=0.8",
+    }
     if tool.get("auth_type") != "header":
-        return {}
+        return headers
     secret = get_secrets_store().get_secret(tool.get("secret_ref", ""))
     if not secret:
-        return {}
-    return {tool.get("auth_field") or "Authorization": f'{tool.get("auth_prefix","")}{secret}'}
+        return headers
+    headers[tool.get("auth_field") or "Authorization"] = f'{tool.get("auth_prefix","")}{secret}'
+    return headers
 
 
 def _url_with_query_auth(url: str, tool: dict) -> str:
@@ -220,9 +225,11 @@ async def list_live_tool_interfaces() -> dict:
         "http_endpoints": [
             {"path": "/api/tools", "method": "GET"},
             {"path": "/api/tools/catalog", "method": "GET"},
+            {"path": "/api/tools/bundles", "method": "GET"},
             {"path": "/api/tools/live", "method": "GET"},
             {"path": "/api/tools/install_local", "method": "POST"},
             {"path": "/api/tools/install_free_pack", "method": "POST"},
+            {"path": "/api/tools/install_bundle", "method": "POST"},
             {"path": "/api/tools/add", "method": "POST"},
             {"path": "/api/tools/update", "method": "POST"},
             {"path": "/api/tools/toggle", "method": "POST"},

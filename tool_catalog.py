@@ -175,14 +175,132 @@ LOCAL_TOOL_CATALOG: list[dict[str, Any]] = [
             "docs_url": "https://open-meteo.com/en/docs/geocoding-api",
         },
     },
+    {
+        "catalog_id": "public_crossref_works",
+        "name": "Crossref Works Search",
+        "kind": "search",
+        "category": "research",
+        "description": "Offizielle Crossref-Metadatensuche fuer Paper, DOIs und Publikationen.",
+        "base_url": "https://api.crossref.org/works?rows=5&select=DOI,title,author,published,URL",
+        "query_param": "query.bibliographic",
+        "method": "GET",
+        "size_mb": 0.0,
+        "install_mode": "register_only",
+        "active": True,
+        "priority": 74,
+        "trust": 62.0,
+        "metadata": {
+            "return_format": "json",
+            "source": "catalog",
+            "local": True,
+            "starter_pack": "free",
+            "docs_url": "https://www.crossref.org/documentation/retrieve-metadata/rest-api/",
+        },
+    },
+    {
+        "catalog_id": "public_pubmed_search",
+        "name": "PubMed Search",
+        "kind": "search",
+        "category": "research",
+        "description": "Offizielle NCBI PubMed-Suche über E-utilities.",
+        "base_url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&retmode=json&retmax=5&sort=relevance",
+        "query_param": "term",
+        "method": "GET",
+        "size_mb": 0.0,
+        "install_mode": "register_only",
+        "active": True,
+        "priority": 75,
+        "trust": 63.0,
+        "metadata": {
+            "return_format": "json",
+            "source": "catalog",
+            "local": True,
+            "starter_pack": "free",
+            "docs_url": "https://www.ncbi.nlm.nih.gov/books/NBK25499/",
+        },
+    },
+    {
+        "catalog_id": "public_github_repo_search",
+        "name": "GitHub Repository Search",
+        "kind": "search",
+        "category": "code",
+        "description": "Offizielle GitHub-Repositoriesuche über die öffentliche REST-Schnittstelle.",
+        "base_url": "https://api.github.com/search/repositories?per_page=5&sort=stars&order=desc",
+        "query_param": "q",
+        "method": "GET",
+        "size_mb": 0.0,
+        "install_mode": "register_only",
+        "active": True,
+        "priority": 76,
+        "trust": 62.0,
+        "metadata": {
+            "return_format": "json",
+            "source": "catalog",
+            "local": True,
+            "starter_pack": "free",
+            "docs_url": "https://docs.github.com/en/rest/search/search#search-repositories",
+        },
+    },
+    {
+        "catalog_id": "public_github_issue_search",
+        "name": "GitHub Issue Search",
+        "kind": "search",
+        "category": "code",
+        "description": "Offizielle GitHub-Issue- und PR-Suche über die öffentliche REST-Schnittstelle.",
+        "base_url": "https://api.github.com/search/issues?per_page=5&sort=updated&order=desc",
+        "query_param": "q",
+        "method": "GET",
+        "size_mb": 0.0,
+        "install_mode": "register_only",
+        "active": True,
+        "priority": 75,
+        "trust": 61.0,
+        "metadata": {
+            "return_format": "json",
+            "source": "catalog",
+            "local": True,
+            "starter_pack": "free",
+            "docs_url": "https://docs.github.com/en/rest/search/search#search-issues-and-pull-requests",
+        },
+    },
 ]
 
-FREE_STARTER_PACK_IDS: list[str] = [
-    "public_wikipedia_opensearch",
-    "public_openlibrary_search",
-    "public_stackoverflow_search",
-    "public_openmeteo_geocoding",
-]
+TOOL_BUNDLES: dict[str, dict[str, Any]] = {
+    "free_starter_pack": {
+        "bundle_id": "free_starter_pack",
+        "label": "Free Starter Pack",
+        "description": "Schneller Einstieg mit allgemeinen Gratis-Webtools fuer Suche, Wetter und Code.",
+        "catalog_ids": [
+            "local_search_duckduckgo",
+            "public_wikipedia_opensearch",
+            "public_stackoverflow_search",
+            "public_openmeteo_geocoding",
+        ],
+    },
+    "free_research_pack": {
+        "bundle_id": "free_research_pack",
+        "label": "Free Research Pack",
+        "description": "Freie Recherche-Quellen fuer Paper, Buecher, Wissen und medizinische Literatur.",
+        "catalog_ids": [
+            "public_wikipedia_opensearch",
+            "public_openlibrary_search",
+            "public_crossref_works",
+            "public_pubmed_search",
+            "public_openmeteo_geocoding",
+        ],
+    },
+    "free_dev_pack": {
+        "bundle_id": "free_dev_pack",
+        "label": "Free Dev Pack",
+        "description": "Freie Entwicklerquellen fuer Codefragen, Repositories, Issues und Websuche.",
+        "catalog_ids": [
+            "local_search_duckduckgo",
+            "public_stackoverflow_search",
+            "public_github_repo_search",
+            "public_github_issue_search",
+        ],
+    },
+}
 
 
 def list_local_tool_catalog() -> list[dict[str, Any]]:
@@ -197,7 +315,18 @@ def get_catalog_item(catalog_id: str) -> dict[str, Any] | None:
 
 
 def free_starter_pack_catalog_ids() -> list[str]:
-    return list(FREE_STARTER_PACK_IDS)
+    return list(TOOL_BUNDLES["free_starter_pack"]["catalog_ids"])
+
+
+def list_tool_bundles() -> list[dict[str, Any]]:
+    return [deepcopy(item) for item in TOOL_BUNDLES.values()]
+
+
+def bundle_catalog_ids(bundle_id: str) -> list[str]:
+    bundle = TOOL_BUNDLES.get(bundle_id)
+    if not bundle:
+        raise KeyError(f"Unbekanntes Tool-Bundle: {bundle_id}")
+    return list(bundle.get("catalog_ids") or [])
 
 
 def registry_payload_from_catalog(catalog_id: str) -> dict[str, Any]:

@@ -299,6 +299,7 @@ class MonitorServer:
             "browser_automation": bool(getattr(self.cfg, "browser_automation", False)),
             "browser_external_sites": bool(getattr(self.cfg, "browser_external_sites", False)),
             "free_only_providers": bool(getattr(self.cfg, "free_only_providers", False)),
+            "multi_tool_mode": bool(getattr(self.cfg, "multi_tool_mode", False)),
         }
 
         return {
@@ -364,7 +365,13 @@ class DashboardHTTPServer:
             from tool_registry import get_tool_registry
             from secrets_store import get_secrets_store
             from tool_runtime import select_tool_for_prompt
-            from tool_catalog import list_local_tool_catalog, registry_payload_from_catalog, free_starter_pack_catalog_ids
+            from tool_catalog import (
+                list_local_tool_catalog,
+                registry_payload_from_catalog,
+                free_starter_pack_catalog_ids,
+                list_tool_bundles,
+                bundle_catalog_ids,
+            )
             from mcp_registry import get_mcp_registry
             from updater import list_packages, inspect_package, apply_package, rollback_last_backup, status as updater_status, schedule_process_restart
 
@@ -395,6 +402,15 @@ class DashboardHTTPServer:
                 for item in items:
                     item["installed"] = item.get("catalog_id") in installed_catalog_ids
                 return web.json_response({"ok": True, "items": items})
+
+            async def list_tool_bundles_api(request):
+                installed_catalog_ids = {((t.get("metadata") or {}).get("catalog_id")) for t in registry.list_tools()}
+                bundles = list_tool_bundles()
+                for bundle in bundles:
+                    ids = list(bundle.get("catalog_ids") or [])
+                    bundle["installed_count"] = sum(1 for cid in ids if cid in installed_catalog_ids)
+                    bundle["total_count"] = len(ids)
+                return web.json_response({"ok": True, "bundles": bundles})
 
             async def live_tools(request):
                 from tool_runtime import list_live_tool_interfaces
@@ -435,6 +451,35 @@ class DashboardHTTPServer:
                     })
                 except PermissionError as e:
                     return web.json_response({"ok": False, "error": str(e)}, status=403)
+
+            async def install_tool_bundle(request):
+                data = await _request_json(request)
+                bundle_id = (data.get("bundle_id") or "").strip()
+                if not bundle_id:
+                    return web.json_response({"ok": False, "error": "bundle_id fehlt"}, status=400)
+                try:
+                    _ensure_local_owner_request(request, "install_tool_bundle")
+                    installed_catalog_ids = {((t.get("metadata") or {}).get("catalog_id")) for t in registry.list_tools()}
+                    installed = []
+                    skipped = []
+                    for catalog_id in bundle_catalog_ids(bundle_id):
+                        if catalog_id in installed_catalog_ids:
+                            skipped.append(catalog_id)
+                            continue
+                        tool = registry.add(registry_payload_from_catalog(catalog_id))
+                        row = next(x for x in registry.list_tools() if x["tool_id"] == tool.tool_id)
+                        installed.append(row)
+                    return web.json_response({
+                        "ok": True,
+                        "bundle_id": bundle_id,
+                        "installed": installed,
+                        "installed_count": len(installed),
+                        "skipped": skipped,
+                    })
+                except PermissionError as e:
+                    return web.json_response({"ok": False, "error": str(e)}, status=403)
+                except KeyError as e:
+                    return web.json_response({"ok": False, "error": str(e)}, status=404)
 
             async def add_tool(request):
                 data = await _request_json(request)
@@ -647,9 +692,11 @@ class DashboardHTTPServer:
             app.router.add_get("/monitor_config", monitor_config)
             app.router.add_get("/api/tools", list_tools)
             app.router.add_get("/api/tools/catalog", list_local_catalog)
+            app.router.add_get("/api/tools/bundles", list_tool_bundles_api)
             app.router.add_get("/api/tools/live", live_tools)
             app.router.add_post("/api/tools/install_local", install_local_tool)
             app.router.add_post("/api/tools/install_free_pack", install_free_pack)
+            app.router.add_post("/api/tools/install_bundle", install_tool_bundle)
             app.router.add_post("/api/tools/add", add_tool)
             app.router.add_post("/api/tools/update", update_tool)
             app.router.add_post("/api/tools/delete", delete_tool)

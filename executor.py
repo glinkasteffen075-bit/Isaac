@@ -420,46 +420,65 @@ class Executor:
             "[/Tool-Kontext]"
         )
 
+    def _tool_limit(self) -> int:
+        return 3 if bool(getattr(get_config(), "multi_tool_mode", False)) else 1
+
     async def _maybe_use_tool(self, task: Task, prompt: str, iteration: int, used_tool_ids: set[str]) -> tuple[str, str]:
         if not self._should_try_tool(task, prompt, iteration):
             return "", ""
-        selection = await select_live_tool_for_task(task, prompt, iteration)
-        if not selection or selection.get("identifier") in used_tool_ids:
-            return "", ""
-        task.log(f"Tool-Auswahl: {selection.get('name')} [{selection.get('kind')}/{selection.get('category')}]")
-        self._notify(task)
-        result = await run_selected_tool(selection, prompt)
-        identifier = selection.get("identifier", "")
-        name = selection.get("name", identifier)
-        kind = selection.get("kind", "")
-        category = selection.get("category", "general")
-        via = result.get('via') or selection.get('source') or kind
-        self._tool_state.record_call(
-            task.id, source=selection.get("source", "unknown"), identifier=identifier, name=name,
-            feature_type=selection.get("mcp_feature", "tool"), ok=bool(result.get('ok')), category=category,
-            kind=kind, note=result.get('error', '') or result.get('via', ''), status_code=result.get('status_code'),
-            output=result.get('content', '') or result.get('error', '')
-        )
-        task.tool_strategy = self._tool_state.get_or_create(task.id).to_dict()
-        if not result.get('ok'):
-            task.log(f"Tool fehlgeschlagen: {name} – {result.get('error', 'unbekannt')}")
-            return "", ""
-        used_tool_ids.add(identifier)
-        tool_note = {
-            "tool_id": identifier,
-            "name": name,
-            "kind": kind,
-            "category": category,
-            "via": via,
-            "status_code": result.get('status_code'),
-            "source": selection.get('source'),
-        }
-        task.used_tools.append(tool_note)
-        task.used_tools = task.used_tools[-12:]
-        task.log(f"Tool genutzt: {name}")
-        AuditLog.action("Executor", "tool_used", f"task={task.id} tool={name}", Level.ISAAC)
-        next_input = self._tool_state.generate_next_input(task.id, task.prompt, name, result.get('content', '') or '')
-        return self._tool_context_block(name, kind, via, result), next_input
+        context_blocks: list[str] = []
+        successful_outputs: list[str] = []
+        tool_runs = 0
+
+        while tool_runs < self._tool_limit():
+            selection = await select_live_tool_for_task(task, prompt, iteration)
+            if not selection or selection.get("identifier") in used_tool_ids:
+                break
+            task.log(f"Tool-Auswahl: {selection.get('name')} [{selection.get('kind')}/{selection.get('category')}]")
+            self._notify(task)
+            result = await run_selected_tool(selection, prompt)
+            identifier = selection.get("identifier", "")
+            name = selection.get("name", identifier)
+            kind = selection.get("kind", "")
+            category = selection.get("category", "general")
+            via = result.get('via') or selection.get('source') or kind
+            self._tool_state.record_call(
+                task.id, source=selection.get("source", "unknown"), identifier=identifier, name=name,
+                feature_type=selection.get("mcp_feature", "tool"), ok=bool(result.get('ok')), category=category,
+                kind=kind, note=result.get('error', '') or result.get('via', ''), status_code=result.get('status_code'),
+                output=result.get('content', '') or result.get('error', '')
+            )
+            task.tool_strategy = self._tool_state.get_or_create(task.id).to_dict()
+            tool_runs += 1
+            if not result.get('ok'):
+                task.log(f"Tool fehlgeschlagen: {name} – {result.get('error', 'unbekannt')}")
+                continue
+            used_tool_ids.add(identifier)
+            tool_note = {
+                "tool_id": identifier,
+                "name": name,
+                "kind": kind,
+                "category": category,
+                "via": via,
+                "status_code": result.get('status_code'),
+                "source": selection.get('source'),
+            }
+            task.used_tools.append(tool_note)
+            task.used_tools = task.used_tools[-12:]
+            task.log(f"Tool genutzt: {name}")
+            AuditLog.action("Executor", "tool_used", f"task={task.id} tool={name}", Level.ISAAC)
+            context_blocks.append(self._tool_context_block(name, kind, via, result))
+            successful_outputs.append(f"{name}:\n{(result.get('content') or result.get('error') or '').strip()[:1600]}")
+
+        next_input = ""
+        if successful_outputs:
+            next_input = self._tool_state.generate_next_input(
+                task.id,
+                task.prompt,
+                "mehreren Tools" if len(successful_outputs) > 1 else task.used_tools[-1]["name"],
+                "\n\n".join(successful_outputs),
+            )
+        return "".join(context_blocks), next_input
 
     # ── AI-Task ───────────────────────────────────────────────────────────────
     async def _execute_ai(self, task: Task):

@@ -344,6 +344,7 @@ textarea,input{font-size:16px;}
             <div class="tool-actions" style="margin:.6rem 0 1rem 0">
               <button class="hbtn" onclick="installFreeStarterPack()">Free Starter Pack installieren</button>
             </div>
+            <div id="tools-bundle-list" class="tool-grid" style="margin-bottom:1rem"></div>
             <div id="tools-install-list" class="tool-grid"></div>
           </div>
         </div>
@@ -407,6 +408,10 @@ textarea,input{font-size:16px;}
         <div class="ctrl-copy"><strong>Free-Only Provider</strong><span>Beschränkt Relay und Fallbacks auf kostenlose Modellpfade.</span></div>
         <label class="switch"><input type="checkbox" id="free-only-toggle"><span class="slider"></span></label>
       </div>
+      <div class="ctrl-card">
+        <div class="ctrl-copy"><strong>Multi-Tool Modus</strong><span>Isaac darf mehrere Tools innerhalb derselben Aufgabe kombinieren.</span></div>
+        <label class="switch"><input type="checkbox" id="multi-tool-toggle"><span class="slider"></span></label>
+      </div>
     </div>
 
     <div id="chat-messages"></div>
@@ -435,6 +440,7 @@ const state = {
   online:   false,
   tools:    [],
   toolCatalog: [],
+  toolBundles: [],
   liveTools: null,
   mcpData: { capabilities: {}, tools: [], resources: [] },
   runtimeSettings: {},
@@ -692,6 +698,7 @@ function updateState(s) {
       browser_automation: !!s.settings.browser_automation,
       browser_external_sites: !!s.settings.browser_external_sites,
       free_only_providers: !!s.settings.free_only_providers,
+      multi_tool_mode: !!s.settings.multi_tool_mode,
     };
     applyRuntimeSettingsToUi();
   }
@@ -1034,15 +1041,17 @@ async function fetchJson(url, opts={}) {
 
 async function refreshTools() {
   try {
-    const [live, catalog, mcpCaps, mcpTools, mcpResources] = await Promise.all([
+    const [live, catalog, bundles, mcpCaps, mcpTools, mcpResources] = await Promise.all([
       fetchJson('/api/tools/live'),
       fetchJson('/api/tools/catalog'),
+      fetchJson('/api/tools/bundles'),
       fetchJson('/api/mcp/capabilities'),
       fetchJson('/api/mcp/tools'),
       fetchJson('/api/mcp/resources'),
     ]);
     state.liveTools = live.live;
     state.toolCatalog = catalog.items || [];
+    state.toolBundles = bundles.bundles || [];
     state.tools = (live.live && live.live.registry_tools) || state.tools || [];
     state.mcpData = {
       capabilities: mcpCaps.capabilities || {},
@@ -1050,6 +1059,7 @@ async function refreshTools() {
       resources: mcpResources.resources || [],
     };
     renderToolsLive();
+    renderToolBundles();
     renderToolCatalog();
     renderMcpInventory();
     updateBadge('tab-tools', state.tools.length || 0);
@@ -1096,6 +1106,25 @@ function renderMcpInventory() {
     parts.push('<div class="tool-mini">Keine MCP-Inhalte registriert.</div>');
   }
   box.innerHTML = parts.join('');
+}
+
+function renderToolBundles() {
+  const box = document.getElementById('tools-bundle-list');
+  if (!box) return;
+  const bundles = state.toolBundles || [];
+  if (!bundles.length) {
+    box.innerHTML = '';
+    return;
+  }
+  box.innerHTML = bundles.map(bundle => `
+    <div class="tool-card">
+      <strong>${escHtml(bundle.label || bundle.bundle_id || 'Bundle')}</strong>
+      <div class="tool-meta"><span>${bundle.installed_count || 0}/${bundle.total_count || 0} installiert</span><span>${(bundle.catalog_ids || []).length} Tools</span></div>
+      <div>${escHtml(bundle.description || '')}</div>
+      <div class="tool-actions">
+        <button class="hbtn" onclick="installToolBundle('${escHtml(bundle.bundle_id || '')}')">Bundle installieren</button>
+      </div>
+    </div>`).join('');
 }
 
 function renderToolCatalog() {
@@ -1153,6 +1182,20 @@ async function installFreeStarterPack() {
   }
 }
 
+async function installToolBundle(bundleId) {
+  try {
+    const data = await fetchJson('/api/tools/install_bundle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bundle_id: bundleId }),
+    });
+    addSysMsg('Tool-Bundle installiert: ' + bundleId + ' · ' + (data.installed_count || 0) + ' neu');
+    await refreshTools();
+  } catch (err) {
+    addSysMsg('⚠ Tool-Bundle fehlgeschlagen: ' + (err.message || err));
+  }
+}
+
 async function refreshRuntimeSettings() {
   try {
     const [data, browserState] = await Promise.all([
@@ -1178,6 +1221,7 @@ function applyRuntimeSettingsToUi() {
   bind('browser-toggle', 'browser_automation');
   bind('browser-external-toggle', 'browser_external_sites');
   bind('free-only-toggle', 'free_only_providers');
+  bind('multi-tool-toggle', 'multi_tool_mode');
 }
 
 async function updateRuntimeSetting(key, value) {
@@ -1517,6 +1561,7 @@ setInterval(refreshRuntimeSettings, 15000);
     ['browser-toggle', 'browser_automation'],
     ['browser-external-toggle', 'browser_external_sites'],
     ['free-only-toggle', 'free_only_providers'],
+    ['multi-tool-toggle', 'multi_tool_mode'],
   ];
   if (orch) {
     orch.addEventListener('change', () => togglePause());

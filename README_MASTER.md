@@ -2,6 +2,14 @@
 
 Dies ist der deploy-fertige bereinigte Isaac-Stand aus allen verfügbaren Quellen.
 
+## Verbindliche Arbeitsanweisung für Codex
+
+Vor jeder größeren Arbeit an Isaac zuerst lesen:
+
+```text
+00b_arbeitsanweisung_kodex_isaac_evo2.txt
+```
+
 ## Kanonischer Einstieg
 
 ```bash

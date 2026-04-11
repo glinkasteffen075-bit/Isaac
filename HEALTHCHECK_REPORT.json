@@ -1,7 +1,7 @@
 {
-  "root": "/mnt/data/isaac_ultra_deploy_package_v5/package",
-  "python": "/opt/pyvenv/bin/python3",
-  "python_version": "3.13.5",
+  "root": "/root/Isaac",
+  "python": "/root/Isaac/.venv/bin/python",
+  "python_version": "3.13.12",
   "required_files": {
     "isaac_core.py": true,
     "relay.py": true,
@@ -14,7 +14,7 @@
   },
   "optional_files": {
     ".env": false,
-    ".env.example": true,
+    ".env.example": false,
     "dashboard.html": true,
     "dashboard_live.html": true,
     "start_isaac.sh": true,
@@ -59,8 +59,6 @@
     "8766": "closed",
     "8875": "closed"
   },
-  "warnings": [
-    ".env fehlt; .env.example vorhanden"
-  ],
-  "status": "warning"
+  "warnings": [],
+  "status": "ok"
 }

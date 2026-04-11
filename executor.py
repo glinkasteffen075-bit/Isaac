@@ -33,7 +33,7 @@ from logic     import get_logic, QualityScore, FollowUpDecision
 from relay     import get_relay
 from tool_runtime import select_live_tool_for_task, run_selected_tool
 from task_tool_state import get_task_tool_state_store
-from low_complexity import is_lightweight_local_class
+from low_complexity import ClassificationResult, is_lightweight_local_class
 
 log = logging.getLogger("Isaac.Executor")
 
@@ -108,6 +108,22 @@ class TaskType(Enum):
     PIPELINE   = "pipeline"    # Multi-KI iterativ
 
 
+@dataclass(frozen=True)
+class Strategy:
+    allow_tools: bool = True
+    allow_followup: bool = True
+    allow_provider_switch: bool = True
+    style_note: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "allow_tools": self.allow_tools,
+            "allow_followup": self.allow_followup,
+            "allow_provider_switch": self.allow_provider_switch,
+            "style_note": self.style_note,
+        }
+
+
 @dataclass
 class Task:
     id:            str
@@ -136,13 +152,11 @@ class Task:
     log_entries:   list       = field(default_factory=list)
     used_tools:    list       = field(default_factory=list)
     tool_strategy: dict       = field(default_factory=dict)
+    strategy:      Strategy   = field(default_factory=Strategy)
     interaction_class: str    = ""
-    allow_tools: bool         = True
-    allow_followup: bool      = True
-    allow_provider_switch: bool = True
+    classification: Optional[ClassificationResult] = None
     retrieved_context: dict   = field(default_factory=dict)
 
-    # Watchdog
     _last_watchdog_progress: float = 0.0
 
     def log(self, msg: str):
@@ -174,8 +188,28 @@ class Task:
             "log":           self.log_entries[-10:],
             "used_tools":    self.used_tools[-8:],
             "tool_strategy": self.tool_strategy or {},
+            "strategy":      self.strategy.as_dict(),
+            "classification": self.classification.as_dict() if self.classification else None,
             "sudo":          self.sudo_aktiv,
         }
+
+    @property
+    def allow_tools(self) -> bool:
+        return self.strategy.allow_tools
+
+    @property
+    def allow_followup(self) -> bool:
+        return self.strategy.allow_followup
+
+    @property
+    def allow_provider_switch(self) -> bool:
+        return self.strategy.allow_provider_switch
+
+    @property
+    def current_interaction_class(self) -> str:
+        if self.classification:
+            return self.classification.interaction_class
+        return self.interaction_class
 
 
 class Executor:
@@ -188,9 +222,9 @@ class Executor:
         self.logic      = get_logic()
         self.relay      = get_relay()
         self.gate       = get_gate()
-        self._watchdog  = None   # lazy
-        self._dispatcher= None   # lazy
-        self._search    = None   # lazy
+        self._watchdog  = None
+        self._dispatcher= None
+        self._search    = None
         self._tool_state = get_task_tool_state_store()
         self._load_persisted_tasks()
         log.info("Executor v2.0 online")
@@ -214,18 +248,24 @@ class Executor:
             self._search = get_search()
         return self._search
 
-    # ── Task erstellen ─────────────────────────────────────────────────────────
     def create_task(self, typ: TaskType, prompt: str,
                     beschreibung: str = "", prioritaet: float = 5.0,
                     provider: Optional[str] = None,
                     parent_id: Optional[str] = None,
                     system_prompt: str = "",
                     sudo_aktiv: bool = False,
+                    strategy: Optional[Strategy] = None,
                     interaction_class: str = "",
+                    classification: Optional[ClassificationResult] = None,
                     allow_tools: bool = True,
                     allow_followup: bool = True,
                     allow_provider_switch: bool = True,
                     retrieved_context: Optional[dict] = None) -> Task:
+        strategy = strategy or Strategy(
+            allow_tools=allow_tools,
+            allow_followup=allow_followup,
+            allow_provider_switch=allow_provider_switch,
+        )
         task = Task(
             id            = self.next_task_id(),
             typ           = typ,
@@ -236,16 +276,14 @@ class Executor:
             parent_id     = parent_id,
             system_prompt = system_prompt,
             sudo_aktiv    = sudo_aktiv,
+            strategy      = strategy,
             interaction_class = interaction_class,
-            allow_tools   = allow_tools,
-            allow_followup = allow_followup,
-            allow_provider_switch = allow_provider_switch,
+            classification = classification,
             retrieved_context = retrieved_context or {},
         )
         self._tasks[task.id] = task
         AuditLog.task(task.id, "created", task.beschreibung[:100])
         return task
-
 
     def next_task_id(self) -> str:
         return uuid.uuid4().hex[:8]
@@ -256,34 +294,27 @@ class Executor:
         self._notify(task)
         return task
 
-    async def submit_and_wait(self, task: Task,
-                              timeout: float = 180.0) -> Task:
+    async def submit_and_wait(self, task: Task, timeout: float = 180.0) -> Task:
         await self.submit(task)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if task.status in (TaskStatus.DONE, TaskStatus.FAILED,
-                               TaskStatus.CANCELLED):
+            if task.status in (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED):
                 return task
             await asyncio.sleep(0.3)
         task.status = TaskStatus.FAILED
         task.fehler = "Timeout"
         return task
 
-    # ── Worker ────────────────────────────────────────────────────────────────
     async def start_worker(self, concurrency: int = 4):
         self._loop = asyncio.get_running_loop()
         log.info(f"Worker gestartet (concurrency={concurrency})")
         sem = asyncio.Semaphore(concurrency)
-
-        # Watchdog starten
         await self._get_watchdog().start()
 
         async def _run():
             while True:
                 try:
-                    _, task_id = await asyncio.wait_for(
-                        self._queue.get(), timeout=5.0
-                    )
+                    _, task_id = await asyncio.wait_for(self._queue.get(), timeout=5.0)
                     task = self._tasks.get(task_id)
                     if task and task.status == TaskStatus.QUEUED:
                         self._running.add(task_id)
@@ -300,23 +331,14 @@ class Executor:
             await self._execute(task)
         self._running.discard(task.id)
 
-    # ── Pre-Flight-Validation ─────────────────────────────────────────────────
     def _preflight(self, task: Task) -> Optional[str]:
-        """
-        Prüft einen Task bevor er ausgeführt wird.
-        Gibt None zurück wenn OK, sonst Fehlermeldung.
-        Wenn SUDO aktiv: Steffen's Befehl — immer OK.
-        """
         if task.sudo_aktiv:
-            return None  # Steffen hat autorisiert. Keine weitere Prüfung.
-
+            return None
         wortanzahl = len(task.prompt.split())
         if wortanzahl < 1:
             return "Leerer Prompt"
-
         return None
 
-    # ── Haupt-Execute ─────────────────────────────────────────────────────────
     async def _execute(self, task: Task):
         preflight_fehler = self._preflight(task)
         if preflight_fehler:
@@ -325,10 +347,10 @@ class Executor:
             self._notify(task)
             return
 
-        task.status    = TaskStatus.RUNNING
+        task.status = TaskStatus.RUNNING
         task.gestartet = time.strftime("%Y-%m-%d %H:%M:%S")
-        task.progress  = 0.1
-        t0             = time.monotonic()
+        task.progress = 0.1
+        t0 = time.monotonic()
         task.log(f"Start │ {task.typ.value} │ sudo={task.sudo_aktiv}")
         state = self._tool_state.get_or_create(task.id, task.prompt)
         if state.status not in ("idle", "done", "failed"):
@@ -345,8 +367,7 @@ class Executor:
                 await self._execute_code(task)
             elif task.typ == TaskType.SEARCH:
                 await self._execute_search(task)
-            elif task.typ in (TaskType.BROADCAST, TaskType.SPLIT,
-                              TaskType.PIPELINE):
+            elif task.typ in (TaskType.BROADCAST, TaskType.SPLIT, TaskType.PIPELINE):
                 await self._execute_multi_ki(task)
             else:
                 await self._execute_ai(task)
@@ -356,9 +377,9 @@ class Executor:
             task.log(f"Fehler: {e}")
             AuditLog.error("Executor", str(e), f"task={task.id}")
         finally:
-            task.dauer_sek     = round(time.monotonic() - t0, 2)
+            task.dauer_sek = round(time.monotonic() - t0, 2)
             task.abgeschlossen = time.strftime("%Y-%m-%d %H:%M:%S")
-            task.progress      = 1.0
+            task.progress = 1.0
             self._tool_state.set_status(task.id, task.status.value)
             task.tool_strategy = self._tool_state.get_or_create(task.id).to_dict()
             self._persist_task(task)
@@ -369,7 +390,7 @@ class Executor:
             return False
         if task.typ in (TaskType.FILE, TaskType.BROADCAST, TaskType.SPLIT, TaskType.PIPELINE):
             return False
-        current_class = task.interaction_class
+        current_class = task.current_interaction_class
         if task.typ == TaskType.CHAT:
             if is_lightweight_local_class(current_class):
                 return False
@@ -400,26 +421,13 @@ class Executor:
         kind = selection.get("kind", "")
         category = selection.get("category", "general")
         via = result.get('via') or selection.get('source') or kind
-        self._tool_state.record_call(
-            task.id, source=selection.get("source", "unknown"), identifier=identifier, name=name,
-            feature_type=selection.get("mcp_feature", "tool"), ok=bool(result.get('ok')), category=category,
-            kind=kind, note=result.get('error', '') or result.get('via', ''), status_code=result.get('status_code'),
-            output=result.get('content', '') or result.get('error', '')
-        )
+        self._tool_state.record_call(task.id, source=selection.get("source", "unknown"), identifier=identifier, name=name, feature_type=selection.get("mcp_feature", "tool"), ok=bool(result.get('ok')), category=category, kind=kind, note=result.get('error', '') or result.get('via', ''), status_code=result.get('status_code'), output=result.get('content', '') or result.get('error', ''))
         task.tool_strategy = self._tool_state.get_or_create(task.id).to_dict()
         if not result.get('ok'):
             task.log(f"Tool fehlgeschlagen: {name} – {result.get('error', 'unbekannt')}")
             return "", ""
         used_tool_ids.add(identifier)
-        tool_note = {
-            "tool_id": identifier,
-            "name": name,
-            "kind": kind,
-            "category": category,
-            "via": via,
-            "status_code": result.get('status_code'),
-            "source": selection.get('source'),
-        }
+        tool_note = {"tool_id": identifier, "name": name, "kind": kind, "category": category, "via": via, "status_code": result.get('status_code'), "source": selection.get('source')}
         task.used_tools.append(tool_note)
         task.used_tools = task.used_tools[-12:]
         task.log(f"Tool genutzt: {name}")
@@ -427,7 +435,6 @@ class Executor:
         next_input = self._tool_state.generate_next_input(task.id, task.prompt, name, result.get('content', '') or '')
         return self._tool_context_block(name, kind, via, result), next_input
 
-    # ── AI-Task ───────────────────────────────────────────────────────────────
     async def _execute_ai(self, task: Task):
         system = self._build_system(task)
         current_prompt = task.prompt
@@ -442,85 +449,65 @@ class Executor:
             if task.status == TaskStatus.CANCELLED:
                 task.log("Vor Ausführung abgebrochen")
                 return
-
             task.iteration = iteration
             task.progress = 0.1 + (iteration / (get_config().logic.max_followup_rounds + 1)) * 0.7
             task.status = TaskStatus.RUNNING
             task.log(f"Iter {iteration}: → {current_prov or 'auto'}")
             self._notify(task)
-
             tool_context, generated_next_input = await self._maybe_use_tool(task, current_prompt, iteration, used_tool_ids)
             effective_prompt = current_prompt + tool_context if tool_context else current_prompt
-            antwort, prov = await self.relay.ask_with_fallback(
-                effective_prompt, system, preferred=current_prov, task_id=task.id
-            )
+            antwort, prov = await self.relay.ask_with_fallback(effective_prompt, system, preferred=current_prov, task_id=task.id)
             task.provider_used = prov
-
             if task.status == TaskStatus.CANCELLED:
                 task.log("Während Provider-Aufruf abgebrochen")
                 return
-
             fp = _fingerprint(antwort)
             if fp in seen_answers and iteration > 0:
                 task.log("Loop-Schutz: identische Antwort erkannt")
                 break
             seen_answers.add(fp)
-
             if antwort.startswith("[RELAY") and iteration >= 1:
                 task.log("Loop-Schutz: wiederholter Relay-Fehler")
                 task.status = TaskStatus.FAILED
                 task.fehler = antwort[:200]
                 return
-
             self._get_watchdog().record_progress(task.id)
-
             task.status = TaskStatus.EVALUATING
             score = self.logic.evaluate(antwort, task.prompt, task.id)
             task.score = score
             task.log(f"Score: {score.summary()}")
             self._notify(task)
-
             if score.total <= last_score_total + 0.2:
                 stale_rounds += 1
             else:
                 stale_rounds = 0
             last_score_total = score.total
-
             if score.acceptable or iteration >= get_config().logic.max_followup_rounds:
                 break
-
-            # Kein Follow-up/Provider-Switching für triviale Kurz-Chats.
-            if task.typ == TaskType.CHAT and is_lightweight_local_class(task.interaction_class):
+            if task.typ == TaskType.CHAT and is_lightweight_local_class(task.current_interaction_class):
                 break
-
             if not task.allow_followup:
                 break
-
             decision = self.logic.decide_followup(antwort, task.prompt, score, iteration, prov, task.id)
             task.followup = decision
             task.status = TaskStatus.FOLLOWUP
             task.log(f"Nachfrage: {decision.mode} – {decision.reason}")
             self._notify(task)
-
             if not decision.needed:
                 break
-
             if stale_rounds >= 2:
                 task.log("Loop-Schutz: Qualität verbessert sich nicht weiter")
                 break
-
             if decision.mode == "decompose" and decision.sub_tasks:
                 results = await self._execute_sub_tasks(task, decision.sub_tasks, prov)
                 antwort = self._aggregate(results)
                 break
-
             if task.allow_provider_switch and (decision.switch_provider or stale_rounds >= 1):
                 from watchdog import get_blacklist
                 ranked = [p for p in get_blacklist().ranked_providers(prov) if p != prov]
                 if ranked:
                     current_prov = ranked[0]
                     task.log(f"Provider: {prov} → {current_prov}")
-
             queued_next_input = self._tool_state.pop_next_input(task.id)
             if generated_next_input and not queued_next_input:
                 queued_next_input = generated_next_input
@@ -529,7 +516,6 @@ class Executor:
                 task.log("Nächster Input aus Tool-Ergebnis generiert")
             elif decision.followup_prompt:
                 current_prompt = decision.followup_prompt
-
             task.tool_strategy = self._tool_state.get_or_create(task.id).to_dict()
             await asyncio.sleep(get_config().relay.min_interval)
 
@@ -540,105 +526,57 @@ class Executor:
         task.antwort = antwort
         if task.status != TaskStatus.FAILED:
             task.status = TaskStatus.DONE
-        AuditLog.task(
-            task.id,
-            "done" if task.status == TaskStatus.DONE else "failed",
-            f"score={task.score.total:.1f} iter={task.iteration+1}" if task.score else f"iter={task.iteration+1}",
-            score=task.score.total if task.score else 0.0,
-            iteration=task.iteration
-        )
+        AuditLog.task(task.id, "done" if task.status == TaskStatus.DONE else "failed", f"score={task.score.total:.1f} iter={task.iteration+1}" if task.score else f"iter={task.iteration+1}", score=task.score.total if task.score else 0.0, iteration=task.iteration)
 
-    # ── Search-Task ───────────────────────────────────────────────────────────
     async def _execute_search(self, task: Task):
-        """Echte Websuche über MultiSearch."""
         task.log("Websuche gestartet")
         search = self._get_search()
-        result = await search.search(
-            task.prompt,
-            max_hits=10,
-            load_fulltext=True,
-        )
+        result = await search.search(task.prompt, max_hits=10, load_fulltext=True)
         task.progress = 0.6
         self._notify(task)
-
-        # Suchergebnisse an KI zur Synthese schicken
         kontext = result.als_kontext(max_hits=8)
-        synth_prompt = (
-            f"Basierend auf diesen Suchergebnissen, beantworte: {task.prompt}\n\n"
-            f"Suchergebnisse:\n{kontext}\n\n"
-            f"Antworte ausführlich, strukturiert, mit Quellenangaben."
-        )
-        antwort, prov = await self.relay.ask_with_fallback(
-            synth_prompt,
-            system="Du bist ein Recherche-Synthesizer. "
-                   "Fasse Suchergebnisse zu einer vollständigen Antwort zusammen.",
-            task_id=task.id
-        )
-        task.antwort       = antwort
+        synth_prompt = f"Basierend auf diesen Suchergebnissen, beantworte: {task.prompt}\n\nSuchergebnisse:\n{kontext}\n\nAntworte ausführlich, strukturiert, mit Quellenangaben."
+        antwort, prov = await self.relay.ask_with_fallback(synth_prompt, system="Du bist ein Recherche-Synthesizer. Fasse Suchergebnisse zu einer vollständigen Antwort zusammen.", task_id=task.id)
+        task.antwort = antwort
         task.provider_used = prov
-        task.status        = TaskStatus.DONE
-        task.score         = self.logic.evaluate(antwort, task.prompt, task.id)
+        task.status = TaskStatus.DONE
+        task.score = self.logic.evaluate(antwort, task.prompt, task.id)
         task.log(f"Suche: {len(result.hits)} Hits aus {result.quellen}")
 
-    # ── Multi-KI-Task ─────────────────────────────────────────────────────────
     async def _execute_multi_ki(self, task: Task):
-        """Verteilt Task auf mehrere KI-Instanzen."""
         dispatcher = self._get_dispatcher()
         from browser import get_browser
-        browser    = get_browser()
+        browser = get_browser()
         instance_ids = browser.get_active_ids()
-
         if not instance_ids:
-            # Fallback: API-Provider als "Instanzen"
             instance_ids = get_config().available_providers[:4]
-
         task.log(f"Multi-KI: {len(instance_ids)} Instanzen")
         self._notify(task)
-
         system = self._build_system(task)
-
         if task.typ == TaskType.BROADCAST:
-            result = await dispatcher.broadcast(
-                task.prompt, instance_ids, system=system
-            )
+            result = await dispatcher.broadcast(task.prompt, instance_ids, system=system)
         elif task.typ == TaskType.SPLIT:
-            result = await dispatcher.split(
-                task.prompt, instance_ids, system=system
-            )
+            result = await dispatcher.split(task.prompt, instance_ids, system=system)
         elif task.typ == TaskType.PIPELINE:
-            result = await dispatcher.pipeline(
-                task.prompt, instance_ids, system=system
-            )
-
+            result = await dispatcher.pipeline(task.prompt, instance_ids, system=system)
         task.antwort = result.final
-        task.status  = TaskStatus.DONE
-        task.score   = self.logic.evaluate(result.final, task.prompt, task.id)
-        task.log(
-            f"Multi-KI done: {result.n_instanzen} Instanzen, "
-            f"{result.dauer:.1f}s"
-        )
+        task.status = TaskStatus.DONE
+        task.score = self.logic.evaluate(result.final, task.prompt, task.id)
+        task.log(f"Multi-KI done: {result.n_instanzen} Instanzen, {result.dauer:.1f}s")
 
-    # ── Code-Ausführung (ASYNC, kein blocking!) ───────────────────────────────
     async def _execute_code(self, task: Task):
-        """Generiert Python-Code und führt ihn eingeschränkt im Isolated-Mode aus."""
         ctx = isaac_ctx("Executor", f"Code ausführen: task {task.id}")
         self.gate.require("execute_code", ctx)
-
-        code_prompt = (
-            f"Schreibe Python-Code für:\n{task.prompt}\n\n"
-            "Antworte NUR mit dem Code ohne Erklärungen oder Markdown."
-        )
+        code_prompt = f"Schreibe Python-Code für:\n{task.prompt}\n\nAntworte NUR mit dem Code ohne Erklärungen oder Markdown."
         raw_code, prov = await self.relay.ask_with_fallback(code_prompt, task_id=task.id)
         task.provider_used = prov
         code = _normalize_code(raw_code)
-
         ok, reason = _validate_generated_code(code)
         if not ok:
             task.antwort = f"[CODE] Geblockt: {reason}"
             task.status = TaskStatus.FAILED
             AuditLog.action("Executor", "code_blocked", reason, Level.ISAAC, erfolg=False)
             return
-
         exec_dir = WORKSPACE / ".isaac_exec"
         exec_dir.mkdir(parents=True, exist_ok=True)
         tmp_path = None
@@ -646,19 +584,10 @@ class Executor:
             with tempfile.NamedTemporaryFile("w", suffix=".py", dir=exec_dir, delete=False, encoding="utf-8") as tmp:
                 tmp.write(code)
                 tmp_path = Path(tmp.name)
-
             kwargs = {}
             if os.name != "nt":
                 kwargs["preexec_fn"] = _limit_subprocess_resources
-
-            proc = await asyncio.create_subprocess_exec(
-                "python3", "-I", "-S", str(tmp_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(WORKSPACE),
-                env={"PATH": os.environ.get("PATH", ""), "PYTHONIOENCODING": "utf-8"},
-                **kwargs,
-            )
+            proc = await asyncio.create_subprocess_exec("python3", "-I", "-S", str(tmp_path), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=str(WORKSPACE), env={"PATH": os.environ.get("PATH", ""), "PYTHONIOENCODING": "utf-8"}, **kwargs)
             try:
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=8.0)
             except asyncio.TimeoutError:
@@ -667,7 +596,6 @@ class Executor:
                 task.antwort = "[CODE] Timeout (8s)"
                 task.status = TaskStatus.FAILED
                 return
-
             output = (stdout.decode(errors="replace") or stderr.decode(errors="replace") or "(kein Output)").strip()
             task.antwort = f"```python\n{code[:700]}\n```\n\n**Output:**\n```\n{output[:1200]}\n```"
             task.status = TaskStatus.DONE if proc.returncode == 0 else TaskStatus.FAILED
@@ -684,20 +612,16 @@ class Executor:
                 except Exception:
                     pass
 
-    # ── File-Task ────────────────────────────────────────────────────────────
     async def _execute_file(self, task: Task):
         ctx = isaac_ctx("Executor", f"Datei-Op: task {task.id}")
         prompt_lower = task.prompt.lower()
-
         if "schreibe" in prompt_lower or "write" in prompt_lower:
             self.gate.require("file_write", ctx)
-
         pfad_match = re.search(r"[\"']([^\"']+)[\"']", task.prompt)
         if not pfad_match:
             task.antwort = "[FILE] Pfad nicht erkannt"
             task.status = TaskStatus.FAILED
             return
-
         try:
             candidate = (WORKSPACE / pfad_match.group(1).strip()).resolve()
             workspace_root = WORKSPACE.resolve()
@@ -709,7 +633,6 @@ class Executor:
             task.antwort = "[FILE] Ungültiger Pfad"
             task.status = TaskStatus.FAILED
             return
-
         if "schreibe" in prompt_lower or "write" in prompt_lower:
             content_match = re.search(r'(?:inhalt|content)\s*:\s*(.+)$', task.prompt, re.IGNORECASE | re.S)
             if not content_match:
@@ -721,30 +644,17 @@ class Executor:
             task.antwort = f"[FILE] Gespeichert: {candidate.relative_to(workspace_root)}"
             task.status = TaskStatus.DONE
             return
-
         if candidate.exists() and candidate.is_file():
             task.antwort = candidate.read_text(encoding="utf-8", errors="replace")[:4000]
             task.status = TaskStatus.DONE
             return
-
         task.antwort = "[FILE] Datei nicht gefunden"
         task.status = TaskStatus.FAILED
 
-    # ── Sub-Tasks ─────────────────────────────────────────────────────────────
-    async def _execute_sub_tasks(self, parent: Task,
-                                  sub_prompts: list[str],
-                                  provider: Optional[str]) -> list[str]:
+    async def _execute_sub_tasks(self, parent: Task, sub_prompts: list[str], provider: Optional[str]) -> list[str]:
         tasks = []
         for prompt in sub_prompts:
-            sub = self.create_task(
-                typ          = parent.typ,
-                prompt       = prompt,
-                beschreibung = f"[Sub] {prompt[:60]}",
-                prioritaet   = parent.prioritaet + 1,
-                provider     = provider,
-                parent_id    = parent.id,
-                sudo_aktiv   = parent.sudo_aktiv,
-            )
+            sub = self.create_task(typ=parent.typ, prompt=prompt, beschreibung=f"[Sub] {prompt[:60]}", prioritaet=parent.prioritaet + 1, provider=provider, parent_id=parent.id, sudo_aktiv=parent.sudo_aktiv)
             parent.sub_task_ids.append(sub.id)
             tasks.append(sub)
         await asyncio.gather(*[self._execute(t) for t in tasks])
@@ -755,11 +665,8 @@ class Executor:
             return "[Keine Ergebnisse]"
         if len(results) == 1:
             return results[0]
-        return "\n\n---\n\n".join(
-            f"**Teil {i+1}:**\n{r}" for i, r in enumerate(results)
-        )
+        return "\n\n---\n\n".join(f"**Teil {i+1}:**\n{r}" for i, r in enumerate(results))
 
-    # ── System-Prompt ─────────────────────────────────────────────────────────
     def _build_system(self, task: Task) -> str:
         if task.system_prompt:
             return task.system_prompt
@@ -773,39 +680,22 @@ class Executor:
         }
         return basis.get(task.typ, "Du bist Isaac, ein autonomes KI-System.")
 
-    # ── Persistenz ────────────────────────────────────────────────────────────
     def _persist_task(self, task: Task):
-        """Speichert abgeschlossene Tasks in SQLite."""
         if task.status not in (TaskStatus.DONE, TaskStatus.FAILED):
             return
         try:
             from memory import get_memory
-            get_memory().save_task_result(
-                task_id     = task.id,
-                description = task.beschreibung[:200],
-                result      = task.antwort,
-                score       = task.score.total if task.score else 0.0,
-                iterations  = task.iteration + 1,
-                provider    = task.provider_used,
-            )
+            get_memory().save_task_result(task_id=task.id, description=task.beschreibung[:200], result=task.antwort, score=task.score.total if task.score else 0.0, iterations=task.iteration + 1, provider=task.provider_used)
         except Exception as e:
             log.warning(f"Task-Persistenz: {e}")
 
     def _load_persisted_tasks(self):
-        """Lädt die letzten abgeschlossenen Tasks als Dashboard-Historie."""
         try:
             from memory import _conn
             with _conn() as con:
-                rows = con.execute(
-                    "SELECT task_id, description, result, score, iterations, provider, ts FROM task_results ORDER BY id DESC LIMIT 50"
-                ).fetchall()
+                rows = con.execute("SELECT task_id, description, result, score, iterations, provider, ts FROM task_results ORDER BY id DESC LIMIT 50").fetchall()
             for row in reversed(rows):
-                task = Task(
-                    id=row["task_id"],
-                    typ=TaskType.CHAT,
-                    prompt=row["description"],
-                    beschreibung=row["description"],
-                )
+                task = Task(id=row["task_id"], typ=TaskType.CHAT, prompt=row["description"], beschreibung=row["description"])
                 task.status = TaskStatus.DONE
                 task.antwort = row["result"] or ""
                 task.provider_used = row["provider"] or ""
@@ -815,7 +705,6 @@ class Executor:
         except Exception as e:
             log.debug(f"Task-Historie konnte nicht geladen werden: {e}")
 
-    # ── Callbacks ─────────────────────────────────────────────────────────────
     def register_callback(self, fn: Callable):
         self._callbacks.append(fn)
 
@@ -847,23 +736,14 @@ class Executor:
         except (RuntimeError, ValueError) as e:
             log.debug(f"Callback async Fehler: {e}")
 
-    # ── Abfragen ─────────────────────────────────────────────────────────────
     def get_task(self, task_id: str) -> Optional[Task]:
         return self._tasks.get(task_id)
 
     def all_tasks(self, limit: int = 200) -> list[dict]:
-        return [
-            t.to_dict()
-            for t in sorted(self._tasks.values(),
-                            key=lambda t: t.erstellt, reverse=True)[:limit]
-        ]
+        return [t.to_dict() for t in sorted(self._tasks.values(), key=lambda t: t.erstellt, reverse=True)[:limit]]
 
     def running_tasks(self) -> list[dict]:
-        return [
-            t.to_dict() for t in self._tasks.values()
-            if t.status in (TaskStatus.RUNNING, TaskStatus.EVALUATING,
-                            TaskStatus.FOLLOWUP)
-        ]
+        return [t.to_dict() for t in self._tasks.values() if t.status in (TaskStatus.RUNNING, TaskStatus.EVALUATING, TaskStatus.FOLLOWUP)]
 
     def queue_size(self) -> int:
         return self._queue.qsize()
@@ -875,13 +755,7 @@ class Executor:
             k = t.status.value
             by_status[k] = by_status.get(k, 0) + 1
         scored = [t.score.total for t in alle if t.score]
-        return {
-            "total":     len(alle),
-            "running":   len(self._running),
-            "queue":     self.queue_size(),
-            "by_status": by_status,
-            "avg_score": round(sum(scored)/len(scored), 2) if scored else 0.0,
-        }
+        return {"total": len(alle), "running": len(self._running), "queue": self.queue_size(), "by_status": by_status, "avg_score": round(sum(scored)/len(scored), 2) if scored else 0.0}
 
 
 _executor: Optional[Executor] = None

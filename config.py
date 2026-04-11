@@ -207,6 +207,7 @@ class IsaacConfig:
     browser_automation: bool             = True
     browser_external_sites: bool         = True
     free_only_providers: bool            = True
+    multi_tool_mode: bool                = True
     owner_name: str = os.getenv("ISAAC_OWNER", "Steffen")
 
     def __post_init__(self):
@@ -238,6 +239,7 @@ class IsaacConfig:
             "browser_automation": bool(self.browser_automation),
             "browser_external_sites": bool(self.browser_external_sites),
             "free_only_providers": bool(self.free_only_providers),
+            "multi_tool_mode": bool(self.multi_tool_mode),
         }
 
     def update_runtime_settings(self, patch: dict[str, Any]) -> dict[str, Any]:

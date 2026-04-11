@@ -15,7 +15,9 @@ import sqlite3
 import json
 import time
 import logging
+import re
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Optional, Any
 from contextlib import contextmanager
 
@@ -23,6 +25,36 @@ from config import DB_PATH, get_config
 from audit  import AuditLog
 
 log = logging.getLogger("Isaac.Memory")
+
+
+@dataclass(frozen=True)
+class RetrievalContext:
+    query: str
+    active_directives: list[dict]
+    relevant_facts: list[dict]
+    semantic_context: str
+    conversation_history: list[dict]
+    relevant_task_results: list[dict]
+    preferences_context: list[dict]
+    project_context: list[dict]
+    behavioral_risks: list[dict]
+    relevant_reflections: list[str]
+    open_questions: list[str]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "query": self.query,
+            "active_directives": self.active_directives,
+            "relevant_facts": self.relevant_facts,
+            "semantic_context": self.semantic_context,
+            "conversation_history": self.conversation_history,
+            "relevant_task_results": self.relevant_task_results,
+            "preferences_context": self.preferences_context,
+            "project_context": self.project_context,
+            "behavioral_risks": self.behavioral_risks,
+            "relevant_reflections": self.relevant_reflections,
+            "open_questions": self.open_questions,
+        }
 
 
 # ── Schema ─────────────────────────────────────────────────────────────────────
@@ -288,39 +320,142 @@ class Memory:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def build_retrieval_context(
+        self, user_input: str, intent: str = "", interaction_class: str = "",
+        n_history: int = 6
+    ) -> RetrievalContext:
+        query_terms = [w for w in re.findall(r"\w+", user_input.lower()) if len(w) >= 4][:5]
+        query = " ".join(query_terms) or user_input[:40]
+        directives = self.get_directives()[:3]
+        facts = self.search_facts(query, limit=6) if query else []
+        relevant_results = self.get_relevant_results(query, limit=4) if query else []
+        history = self.get_working_memory(n_history)
+        vector = getattr(self, "_vector", None)
+        semantic_context = ""
+        if query and vector and vector.aktiv:
+            semantic_context = vector.als_kontext(query) or ""
+
+        active_directives = []
+        preferences = []
+        for directive in directives:
+            text = (directive.get("text") or "").strip()
+            if not text:
+                continue
+            active_directives.append({
+                "id": directive.get("id", ""),
+                "text": text[:180],
+                "priority": directive.get("priority", 0),
+            })
+            preferences.append({
+                "source": "directive",
+                "text": text[:180],
+                "priority": directive.get("priority", 0),
+            })
+
+        relevant_facts = []
+        for fact in facts:
+            value = (fact.get("value") or "").strip()
+            normalized = {
+                "key": fact.get("key", ""),
+                "value": value[:180],
+                "confidence": fact.get("confidence", 0.0),
+                "source": fact.get("source", ""),
+            }
+            relevant_facts.append(normalized)
+            key = (fact.get("key") or "").lower()
+            if any(marker in key for marker in ("pref", "stil", "antwort", "tool", "chat", "agreement")):
+                preferences.append({
+                    "source": "fact",
+                    "key": normalized["key"],
+                    "value": normalized["value"],
+                    "confidence": normalized["confidence"],
+                })
+
+        conversation_history = []
+        project_context = []
+        for entry in history:
+            text = (entry.get("text") or "").strip()
+            normalized = {
+                "role": entry.get("role", ""),
+                "text": text[:180],
+            }
+            conversation_history.append(normalized)
+            if any(marker in text.lower() for marker in ("isaac", "routing", "executor", "tool", "klass", "class")):
+                project_context.append(normalized)
+        project_context = project_context[-3:]
+
+        relevant_task_results = []
+        behavioral_risks = []
+        relevant_reflections = []
+        for result in relevant_results:
+            normalized = {
+                "description": (result.get("description") or "")[:120],
+                "result": (result.get("result") or "")[:220],
+                "score": result.get("score", 0.0),
+                "provider": result.get("provider", ""),
+            }
+            relevant_task_results.append(normalized)
+            result_text = normalized["result"].lower()
+            risk_tags = []
+            if "tools genutzt" in result_text or "tool" in result_text:
+                risk_tags.append("tool_overreach_risk")
+            if normalized["score"] <= 4.0:
+                risk_tags.append("quality_regression_risk")
+            if risk_tags:
+                behavioral_risks.append({
+                    "description": normalized["description"],
+                    "score": normalized["score"],
+                    "risks": risk_tags,
+                })
+            if "reflekt" in result_text or "pattern" in result_text:
+                relevant_reflections.append(normalized["result"])
+
+        open_questions = []
+        if intent == "chat" and interaction_class == "NORMAL_CHAT" and len(user_input.split()) <= 2 and "?" not in user_input:
+            open_questions.append("Nutzerabsicht bei sehr kurzem Input potenziell unklar.")
+
+        return RetrievalContext(
+            query=query,
+            active_directives=active_directives,
+            relevant_facts=relevant_facts[:6],
+            semantic_context=semantic_context.strip(),
+            conversation_history=conversation_history[-n_history:],
+            relevant_task_results=relevant_task_results[:4],
+            preferences_context=preferences[:4],
+            project_context=project_context,
+            behavioral_risks=behavioral_risks[:3],
+            relevant_reflections=relevant_reflections[:2],
+            open_questions=open_questions[:1],
+        )
+
     # ── Kontext-Aufbau für Relay ───────────────────────────────────────────────
     def build_context(self, query: str = "", n_history: int = 6) -> str:
         """Erstellt einen kompakten Kontext-Block — SQLite + semantisch."""
+        retrieval_ctx = self.build_retrieval_context(query, n_history=n_history)
         parts = []
 
         # 1. Direktiven
-        directives = self.get_directives()
-        if directives:
+        if retrieval_ctx.active_directives:
             parts.append("[Steffen-Direktiven]")
-            for d in directives[:5]:
-                parts.append(f"  [{d['priority']}] {d['text']}")
+            for directive in retrieval_ctx.active_directives[:5]:
+                parts.append(f"  [{directive['priority']}] {directive['text']}")
 
         # 2. Relevante Fakten (SQLite)
-        if query:
-            facts = self.search_facts(query, limit=5)
-            if facts:
-                parts.append("[Relevante Fakten]")
-                for f in facts:
-                    parts.append(f"  {f['key']}: {f['value'][:100]}")
+        if retrieval_ctx.relevant_facts:
+            parts.append("[Relevante Fakten]")
+            for fact in retrieval_ctx.relevant_facts[:5]:
+                parts.append(f"  {fact['key']}: {fact['value'][:100]}")
 
         # 3. Semantischer Kontext (ChromaDB wenn verfügbar)
-        if query and self._vector.aktiv:
-            vektor_ctx = self._vector.als_kontext(query)
-            if vektor_ctx:
-                parts.append(vektor_ctx)
+        if retrieval_ctx.semantic_context:
+            parts.append(retrieval_ctx.semantic_context)
 
         # 4. Konversations-Verlauf
-        history = self.get_working_memory(n_history)
-        if history:
+        if retrieval_ctx.conversation_history:
             parts.append("[Konversations-Verlauf]")
-            for h in history:
-                role = "Steffen" if h["role"] == "steffen" else "Isaac"
-                parts.append(f"  {role}: {h['text'][:150]}")
+            for entry in retrieval_ctx.conversation_history:
+                role = "Steffen" if entry["role"] == "steffen" else "Isaac"
+                parts.append(f"  {role}: {entry['text'][:150]}")
 
         return "\n".join(parts)
 

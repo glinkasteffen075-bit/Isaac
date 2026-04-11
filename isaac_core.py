@@ -46,7 +46,6 @@ from meaning        import get_meaning
 from values         import get_values
 from low_complexity import (
     ClassificationResult,
-    classify_interaction,
     classify_interaction_result,
     is_lightweight_local_class,
     is_low_complexity_local_input,
@@ -341,10 +340,8 @@ class IsaacKernel:
         )
         provider = self._provider_hint(user_input)
 
-        memory_ctx = self.memory.build_context(user_input)
         structured_ctx = self._format_retrieval_context(retrieval_ctx)
-        kontext_parts = [part for part in (structured_ctx, memory_ctx) if part]
-        kontext = "\n\n".join(kontext_parts).strip()
+        kontext = structured_ctx.strip()
         prompt = f"{kontext}\n\n{user_input}".strip() if kontext else user_input
 
         task = self.executor.create_task(
@@ -637,71 +634,12 @@ class IsaacKernel:
     def _retrieve_relevant_context(
         self, user_input: str, intent: str, interaction_class: str
     ) -> dict[str, Any]:
-        query_terms = [w for w in re.findall(r"\w+", user_input.lower()) if len(w) >= 4][:5]
-        query = " ".join(query_terms) or user_input[:40]
-        facts = self.memory.search_facts(query, limit=6) if query else []
-        directives = self.memory.get_directives()[:3]
-        relevant_results = self.memory.get_relevant_results(query, limit=4) if query else []
-        history = self.memory.get_working_memory(6)
-
-        preferences = []
-        for d in directives:
-            txt = (d.get("text") or "").strip()
-            if txt:
-                preferences.append({"source": "directive", "text": txt[:180], "priority": d.get("priority", 0)})
-        for f in facts:
-            key = (f.get("key") or "").lower()
-            if any(k in key for k in ("pref", "stil", "antwort", "tool", "chat", "agreement")):
-                preferences.append({
-                    "source": "fact",
-                    "key": f.get("key", ""),
-                    "value": (f.get("value") or "")[:180],
-                    "confidence": f.get("confidence", 0.0),
-                })
-
-        project_context = []
-        for h in reversed(history):
-            txt = (h.get("text") or "").strip()
-            if any(k in txt.lower() for k in ("isaac", "routing", "executor", "tool", "klass", "class")):
-                project_context.append({"role": h.get("role", ""), "text": txt[:180]})
-            if len(project_context) >= 3:
-                break
-
-        behavioral_risks = []
-        for r in relevant_results:
-            result_txt = (r.get("result") or "").lower()
-            risk_tags = []
-            if "tools genutzt" in result_txt or "tool" in result_txt:
-                risk_tags.append("tool_overreach_risk")
-            if r.get("score", 10.0) <= 4.0:
-                risk_tags.append("quality_regression_risk")
-            if risk_tags:
-                behavioral_risks.append({
-                    "description": (r.get("description") or "")[:120],
-                    "score": r.get("score", 0.0),
-                    "risks": risk_tags,
-                })
-            if len(behavioral_risks) >= 3:
-                break
-
-        relevant_reflections = []
-        for r in relevant_results:
-            if "reflekt" in (r.get("result") or "").lower() or "pattern" in (r.get("result") or "").lower():
-                relevant_reflections.append((r.get("result") or "")[:220])
-            if len(relevant_reflections) >= 2:
-                break
-
-        open_questions = []
-        if intent == Intent.CHAT and interaction_class == "NORMAL_CHAT" and len(user_input.split()) <= 2 and "?" not in user_input:
-            open_questions.append("Nutzerabsicht bei sehr kurzem Input potenziell unklar.")
-
-        return {
-            "preferences_context": preferences[:4],
-            "project_context": project_context[:3],
-            "behavioral_risks": behavioral_risks[:3],
-            "relevant_reflections": relevant_reflections[:2],
-            "open_questions": open_questions[:1],
-        }
+        return self.memory.build_retrieval_context(
+            user_input=user_input,
+            intent=intent,
+            interaction_class=interaction_class,
+            n_history=6,
+        ).as_dict()
 
     def _select_response_strategy(
         self, user_input: str, intent: str, interaction_class: str, retrieval_ctx: dict[str, Any]
@@ -744,6 +682,29 @@ class IsaacKernel:
 
     def _format_retrieval_context(self, retrieval_ctx: dict[str, Any]) -> str:
         sections = []
+        if retrieval_ctx.get("active_directives"):
+            sections.append("[active_directives]")
+            for directive in retrieval_ctx["active_directives"]:
+                sections.append(
+                    f"  - prio={directive.get('priority', 0)}: {directive.get('text', '')}"
+                )
+        if retrieval_ctx.get("relevant_facts"):
+            sections.append("[relevant_facts]")
+            for fact in retrieval_ctx["relevant_facts"]:
+                sections.append(f"  - {fact.get('key', '')}: {fact.get('value', '')}")
+        if retrieval_ctx.get("semantic_context"):
+            sections.append("[semantic_context]")
+            sections.append(retrieval_ctx["semantic_context"])
+        if retrieval_ctx.get("conversation_history"):
+            sections.append("[conversation_history]")
+            for entry in retrieval_ctx["conversation_history"]:
+                sections.append(f"  - {entry.get('role', '')}: {entry.get('text', '')}")
+        if retrieval_ctx.get("relevant_task_results"):
+            sections.append("[relevant_task_results]")
+            for result in retrieval_ctx["relevant_task_results"]:
+                sections.append(
+                    f"  - score={result.get('score', 0.0)} {result.get('description', '')}: {result.get('result', '')}"
+                )
         if retrieval_ctx.get("preferences_context"):
             sections.append("[preferences_context]")
             for item in retrieval_ctx["preferences_context"]:

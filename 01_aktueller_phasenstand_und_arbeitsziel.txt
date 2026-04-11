@@ -94,6 +94,27 @@ Substeps:
 - Step 2.3 Move prompt/context formatting into isaac_core
 - Step 2.4 Ensure strategy uses retrieved context before task creation
 
+Step-Status (Stand: 2026-04-11)
+-------------------------------
+- Step 2.1: COMPLETED
+- Step 2.2: COMPLETED
+- Step 2.3: COMPLETED
+- Step 2.4: COMPLETED
+
+Abschlussstatus Phase 2
+-----------------------
+Der aktive Standardpfad nutzt jetzt genau einen Retrieval-Vertrag aus `memory.py`.
+Die Kontextformatierung liegt im Kernel, nicht mehr parallel in `memory.build_context(...)`.
+
+Abgeschlossen wurde:
+1) `memory.py` liefert einen strukturierten Retrieval-Vertrag mit Direktiven, Fakten,
+   semantischem Kontext, Verlauf, relevanten Task-Ergebnissen und abgeleiteten Risiko-/Präferenzfeldern.
+2) `isaac_core.py::_retrieve_relevant_context` delegiert an diesen Vertrag statt selbst
+   parallel Fakten, Direktiven, History und Task-Resultate zusammenzusuchen.
+3) `isaac_core.py::_standard_task` baut den Prompt-Kontext nur noch aus dem strukturierten
+   Retrieval-Vertrag auf; der zweite `memory.build_context(...)`-Pfad wurde aus dem Standardpfad entfernt.
+4) Strategy-Auswahl nutzt den Retrieval-Vertrag weiterhin vor der Task-Erstellung.
+
 PHASE 3 — REFINE
 ----------------
 Später:

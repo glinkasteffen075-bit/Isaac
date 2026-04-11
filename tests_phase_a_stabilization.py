@@ -1,4 +1,6 @@
+import asyncio
 import unittest
+from types import SimpleNamespace
 
 from executor import Executor, Strategy, Task, TaskType
 from isaac_core import IsaacKernel, Intent
@@ -80,6 +82,92 @@ class TestCriticalBugs(unittest.TestCase):
         )
         executor = object.__new__(Executor)
         self.assertFalse(executor._should_try_tool(task, task.prompt, iteration=0))
+
+    def test_bug_8_kernel_uses_structured_retrieval_contract_without_legacy_build_context(self):
+        class FakeRetrievalContext:
+            def as_dict(self):
+                return {
+                    "active_directives": [{"text": "Antworten klar halten", "priority": 20}],
+                    "relevant_facts": [{"key": "answer_style", "value": "nuechtern"}],
+                    "semantic_context": "[semantik] routing context",
+                    "conversation_history": [{"role": "steffen", "text": "Bitte stabil halten"}],
+                    "relevant_task_results": [{"description": "alt", "result": "tools genutzt", "score": 3.0}],
+                    "preferences_context": [{"source": "directive", "text": "Antworten klar halten", "priority": 20}],
+                    "project_context": [{"role": "steffen", "text": "routing fokus"}],
+                    "behavioral_risks": [{"description": "alt", "score": 3.0, "risks": ["tool_overreach_risk"]}],
+                    "relevant_reflections": ["pattern"],
+                    "open_questions": [],
+                }
+
+        class FakeMemory:
+            def __init__(self):
+                self.calls = []
+
+            def build_retrieval_context(self, user_input, intent="", interaction_class="", n_history=6):
+                self.calls.append((user_input, intent, interaction_class, n_history))
+                return FakeRetrievalContext()
+
+            def build_context(self, *args, **kwargs):
+                raise AssertionError("legacy build_context should not be used")
+
+            def add_conversation(self, *args, **kwargs):
+                return None
+
+            def save_task_result(self, *args, **kwargs):
+                return None
+
+        class FakeExecutor:
+            def __init__(self):
+                self.prompt = None
+
+            def create_task(self, **kwargs):
+                self.prompt = kwargs["prompt"]
+                return SimpleNamespace(
+                    typ=kwargs["typ"],
+                    prompt=kwargs["prompt"],
+                    antwort="ok",
+                    fehler="",
+                    score=SimpleNamespace(total=7.0),
+                    provider_used="test-provider",
+                    iteration=0,
+                    id="task1",
+                )
+
+            async def submit_and_wait(self, task, timeout=180.0):
+                return task
+
+        kernel = object.__new__(IsaacKernel)
+        kernel.memory = FakeMemory()
+        kernel.executor = FakeExecutor()
+        kernel.meaning = SimpleNamespace(record_impact=lambda *args, **kwargs: None)
+        kernel.values = SimpleNamespace(update=lambda *args, **kwargs: None)
+        kernel._build_system = lambda sudo_aktiv, emp, wissen_kontext="", strategy_note="": "system"
+        kernel._provider_hint = lambda user_input: None
+        classification = ClassificationResult(
+            interaction_class=InteractionClass.NORMAL_CHAT,
+            normalized_text="was ist 2 2",
+            has_question=True,
+            word_count=3,
+        )
+
+        result, score = asyncio.run(
+            kernel._standard_task(
+                user_input="Was ist 2+2?",
+                intent=Intent.CHAT,
+                sudo_aktiv=False,
+                emp=SimpleNamespace(),
+                wissen_kontext="",
+                interaction_class=InteractionClass.NORMAL_CHAT,
+                classification=classification,
+            )
+        )
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(score, 7.0)
+        self.assertEqual(kernel.memory.calls[0][0], "Was ist 2+2?")
+        self.assertIn("[active_directives]", kernel.executor.prompt)
+        self.assertIn("[semantic_context]", kernel.executor.prompt)
+        self.assertNotIn("[Steffen-Direktiven]", kernel.executor.prompt)
 
 if __name__ == '__main__':
     unittest.main()

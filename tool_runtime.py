@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 
 import aiohttp
 
+from config import get_config
 from tool_registry import get_tool_registry
 from secrets_store import get_secrets_store
 from browser_chat import BrowserChatProvider
@@ -165,6 +166,8 @@ async def _run_registry_tool(tool, prompt: str) -> dict:
             return {"ok": ok, "content": content, "via": "script", "status_code": code}
 
         if tool.kind == "browser_chat":
+            if not get_config().browser_automation:
+                return {"ok": False, "error": "Browser-Modelle sind durch Runtime-Policy deaktiviert", "via": "browser_chat"}
             global _browser
             if _browser is None:
                 _browser = BrowserChatProvider()

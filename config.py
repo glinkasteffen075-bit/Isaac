@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import asdict, dataclass, field
+from typing import Any, Optional
 
 try:
     from dotenv import load_dotenv
@@ -17,6 +18,7 @@ LOG_DIR    = BASE_DIR / "logs"
 WORKSPACE  = BASE_DIR / "workspace"
 DB_PATH    = DATA_DIR / "isaac.db"
 AUDIT_PATH = DATA_DIR / "audit.jsonl"
+RUNTIME_SETTINGS_PATH = DATA_DIR / "runtime_settings.json"
 
 for d in [DATA_DIR, LOG_DIR, WORKSPACE]:
     d.mkdir(parents=True, exist_ok=True)
@@ -201,11 +203,18 @@ class IsaacConfig:
     memory:    MemoryConfig              = field(default_factory=MemoryConfig)
     relay:     RelayConfig               = field(default_factory=RelayConfig)
     ideen:     IdeenConfig               = field(default_factory=IdeenConfig)
+    filesystem_full_access: bool         = True
+    browser_automation: bool             = True
+    browser_external_sites: bool         = True
+    free_only_providers: bool            = True
     owner_name: str = os.getenv("ISAAC_OWNER", "Steffen")
+
+    def __post_init__(self):
+        self._load_runtime_settings()
 
     @property
     def available_providers(self) -> list[str]:
-        return [n for n, p in self.providers.items() if p.available]
+        return [n for n, p in self.providers.items() if p.available and self.is_provider_allowed(n)]
 
     def get_provider(self, name: str) -> Optional[ProviderConfig]:
         return self.providers.get(name)
@@ -214,6 +223,53 @@ class IsaacConfig:
     def free_providers(self) -> list[str]:
         free = ["ollama", "groq", "openrouter", "huggingface", "together", "perplexity", "mistral"]
         return [p for p in free if p in self.providers and self.providers[p].available]
+
+    def is_provider_allowed(self, name: str) -> bool:
+        if not name:
+            return False
+        if self.free_only_providers and name not in self.free_providers:
+            return False
+        provider = self.providers.get(name)
+        return bool(provider and provider.enabled)
+
+    def runtime_settings(self) -> dict[str, bool]:
+        return {
+            "filesystem_full_access": bool(self.filesystem_full_access),
+            "browser_automation": bool(self.browser_automation),
+            "browser_external_sites": bool(self.browser_external_sites),
+            "free_only_providers": bool(self.free_only_providers),
+        }
+
+    def update_runtime_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
+        changed: list[str] = []
+        for key, value in (patch or {}).items():
+            if not hasattr(self, key):
+                continue
+            current = getattr(self, key)
+            if not isinstance(current, bool):
+                continue
+            normalized = bool(value)
+            if current != normalized:
+                setattr(self, key, normalized)
+                changed.append(key)
+        if changed:
+            self._save_runtime_settings()
+        return {"changed": changed, "settings": self.runtime_settings()}
+
+    def _load_runtime_settings(self):
+        if not RUNTIME_SETTINGS_PATH.exists():
+            return
+        try:
+            raw = json.loads(RUNTIME_SETTINGS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        self.update_runtime_settings(raw.get("settings") or {})
+
+    def _save_runtime_settings(self):
+        RUNTIME_SETTINGS_PATH.write_text(
+            json.dumps({"settings": self.runtime_settings()}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
 _config: Optional[IsaacConfig] = None
 

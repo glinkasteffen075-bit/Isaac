@@ -263,6 +263,7 @@ class MonitorServer:
             provider_configs[name] = {
                 "enabled": bool(getattr(cfg, "enabled", False)),
                 "available": bool(getattr(cfg, "available", False)),
+                "allowed": bool(self.cfg.is_provider_allowed(name)),
                 "default_model": getattr(cfg, "default_model", ""),
                 "base_url": getattr(cfg, "base_url", ""),
                 "timeout": getattr(cfg, "timeout", None),
@@ -271,9 +272,15 @@ class MonitorServer:
             }
 
         tools_status = []
+        browser_catalog = []
         try:
             from tool_registry import get_tool_registry
             tools_status = get_tool_registry().list_tools()
+        except Exception:
+            pass
+        try:
+            from browser import get_browser
+            browser_catalog = get_browser().site_catalog()
         except Exception:
             pass
 
@@ -288,6 +295,10 @@ class MonitorServer:
             "memory_max_facts": getattr(getattr(self.cfg, "memory", None), "max_facts", None),
             "browser_headless": getattr(getattr(self.cfg, "browser", None), "headless", None),
             "browser_max_instances": getattr(getattr(self.cfg, "browser", None), "max_instances", None),
+            "filesystem_full_access": bool(getattr(self.cfg, "filesystem_full_access", False)),
+            "browser_automation": bool(getattr(self.cfg, "browser_automation", False)),
+            "browser_external_sites": bool(getattr(self.cfg, "browser_external_sites", False)),
+            "free_only_providers": bool(getattr(self.cfg, "free_only_providers", False)),
         }
 
         return {
@@ -299,6 +310,7 @@ class MonitorServer:
             "audit":       AuditLog.stats(),
             "providers":   self.relay.provider_status(),
             "tools":       tools_status,
+            "browser_catalog": browser_catalog,
             "provider_configs": provider_configs,
             "settings":    settings,
             "gate":        self.gate.status_dict(),
@@ -456,6 +468,57 @@ class DashboardHTTPServer:
                 row = next(x for x in registry.list_tools() if x["tool_id"] == tool.tool_id)
                 return web.json_response({"ok": True, "tool": row})
 
+            async def runtime_settings(request):
+                cfg = get_config()
+                return web.json_response({"ok": True, "settings": cfg.runtime_settings()})
+
+            async def update_runtime_settings(request):
+                data = await _request_json(request)
+                try:
+                    _ensure_local_owner_request(request, "runtime_settings")
+                    result = get_config().update_runtime_settings(data.get("settings") or {})
+                    return web.json_response({"ok": True, **result})
+                except PermissionError as e:
+                    return web.json_response({"ok": False, "error": str(e)}, status=403)
+
+            async def browser_state(request):
+                from browser import get_browser
+                browser = get_browser()
+                return web.json_response({
+                    "ok": True,
+                    "instances": browser.list_instances(),
+                    "catalog": browser.site_catalog(),
+                    "stats": browser.stats(),
+                    "settings": get_config().runtime_settings(),
+                })
+
+            async def browser_activate_site(request):
+                data = await _request_json(request)
+                try:
+                    _ensure_local_owner_request(request, "browser_activate_site")
+                    from browser import get_browser
+                    result = await get_browser().activate_catalog_site(
+                        (data.get("site_id") or "").strip()
+                    )
+                    return web.json_response(result, status=200 if result.get("ok") else 400)
+                except PermissionError as e:
+                    return web.json_response({"ok": False, "error": str(e)}, status=403)
+                except KeyError as e:
+                    return web.json_response({"ok": False, "error": str(e)}, status=404)
+
+            async def browser_openrouter_token(request):
+                data = await _request_json(request)
+                try:
+                    _ensure_local_owner_request(request, "browser_openrouter_token")
+                    from browser import get_browser
+                    result = await get_browser().provision_openrouter_token(
+                        secret_ref=(data.get("secret_ref") or "OPENROUTER_API_KEY").strip() or "OPENROUTER_API_KEY",
+                        key_name=(data.get("key_name") or "Isaac").strip() or "Isaac",
+                    )
+                    return web.json_response(result, status=200 if result.get("ok") else 400)
+                except PermissionError as e:
+                    return web.json_response({"ok": False, "error": str(e)}, status=403)
+
 
             async def mcp_capabilities(request):
                 return web.json_response({"ok": True, "capabilities": mcp.capabilities()})
@@ -569,6 +632,11 @@ class DashboardHTTPServer:
             app.router.add_post("/api/tools/delete", delete_tool)
             app.router.add_post("/api/tools/toggle", toggle_tool)
             app.router.add_post("/api/tools/suggest", suggest_tool)
+            app.router.add_get("/api/runtime/settings", runtime_settings)
+            app.router.add_post("/api/runtime/settings", update_runtime_settings)
+            app.router.add_get("/api/browser/state", browser_state)
+            app.router.add_post("/api/browser/activate_site", browser_activate_site)
+            app.router.add_post("/api/browser/openrouter_token", browser_openrouter_token)
             app.router.add_get("/api/mcp/capabilities", mcp_capabilities)
             app.router.add_get("/api/mcp/resources", mcp_resources)
             app.router.add_post("/api/mcp/resource/read", mcp_read_resource)

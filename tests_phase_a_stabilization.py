@@ -169,5 +169,22 @@ class TestCriticalBugs(unittest.TestCase):
         self.assertIn("[semantic_context]", kernel.executor.prompt)
         self.assertNotIn("[Steffen-Direktiven]", kernel.executor.prompt)
 
+    def test_bug_9_kernel_detects_natural_openrouter_browser_request(self):
+        self.assertTrue(
+            self.kernel._is_browser_request(
+                "Isaac geh auf openrouter.com, öffne settings und generiere ein token"
+            )
+        )
+
+    def test_bug_10_kernel_parses_structured_browser_flow(self):
+        parsed = self.kernel._parse_browser_request(
+            "browser: openrouter | https://openrouter.ai/settings/keys | click Settings; wait 1; extract #token -> token"
+        )
+        self.assertEqual(parsed["instance_id"], "openrouter")
+        self.assertEqual(parsed["url"], "https://openrouter.ai/settings/keys")
+        self.assertEqual(parsed["actions"][0]["action"], "click")
+        self.assertEqual(parsed["actions"][1]["action"], "wait")
+        self.assertEqual(parsed["actions"][2]["action"], "extract_text")
+
 if __name__ == '__main__':
     unittest.main()

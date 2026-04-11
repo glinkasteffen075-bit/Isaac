@@ -222,6 +222,7 @@ async def list_live_tool_interfaces() -> dict:
             {"path": "/api/tools/catalog", "method": "GET"},
             {"path": "/api/tools/live", "method": "GET"},
             {"path": "/api/tools/install_local", "method": "POST"},
+            {"path": "/api/tools/install_free_pack", "method": "POST"},
             {"path": "/api/tools/add", "method": "POST"},
             {"path": "/api/tools/update", "method": "POST"},
             {"path": "/api/tools/toggle", "method": "POST"},

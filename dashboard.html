@@ -341,6 +341,9 @@ textarea,input{font-size:16px;}
           <div class="tool-card">
             <h3>Local installieren</h3>
             <div class="helper">Installiert Katalogeinträge in Isaacs Tool-Registry. Größen sind Richtwerte.</div>
+            <div class="tool-actions" style="margin:.6rem 0 1rem 0">
+              <button class="hbtn" onclick="installFreeStarterPack()">Free Starter Pack installieren</button>
+            </div>
             <div id="tools-install-list" class="tool-grid"></div>
           </div>
         </div>
@@ -1108,13 +1111,13 @@ function renderToolCatalog() {
   localBox.innerHTML = items.map(item => `
     <div class="tool-mini">
       <strong>${escHtml(item.name)}</strong>
-      <div class="tool-meta"><span>${escHtml(item.kind)}</span><span>${escHtml(item.category || 'general')}</span><span>ca. ${item.size_mb ?? 0} MB</span><span>${item.installed ? 'installiert' : 'bereit'}</span></div>
+      <div class="tool-meta"><span>${escHtml(item.kind)}</span><span>${escHtml(item.category || 'general')}</span><span>ca. ${item.size_mb ?? 0} MB</span><span>${item.installed ? 'installiert' : 'bereit'}</span><span>${item.metadata && item.metadata.starter_pack === 'free' ? 'free-pack' : ''}</span></div>
       <div>${escHtml(item.description || '')}</div>
     </div>`).join('');
   installBox.innerHTML = items.map(item => `
     <div class="tool-card">
       <strong>${escHtml(item.name)}</strong>
-      <div class="tool-meta"><span>${escHtml(item.kind)}</span><span>${escHtml(item.category || 'general')}</span><span>ca. ${item.size_mb ?? 0} MB</span></div>
+      <div class="tool-meta"><span>${escHtml(item.kind)}</span><span>${escHtml(item.category || 'general')}</span><span>ca. ${item.size_mb ?? 0} MB</span><span>${item.metadata && item.metadata.starter_pack === 'free' ? 'free-pack' : ''}</span></div>
       <div>${escHtml(item.description || '')}</div>
       <div class="tool-actions">
         <button class="hbtn" ${item.installed ? 'disabled' : ''} onclick="installLocalTool('${item.catalog_id}')">${item.installed ? 'Installiert' : 'Local installieren'}</button>
@@ -1133,6 +1136,20 @@ async function installLocalTool(catalogId) {
     await refreshTools();
   } catch (err) {
     addSysMsg('⚠ Tool-Installation fehlgeschlagen: ' + (err.message || err));
+  }
+}
+
+async function installFreeStarterPack() {
+  try {
+    const data = await fetchJson('/api/tools/install_free_pack', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    addSysMsg('Free Starter Pack installiert: ' + (data.installed_count || 0) + ' neu, ' + ((data.skipped || []).length) + ' bereits vorhanden');
+    await refreshTools();
+  } catch (err) {
+    addSysMsg('⚠ Free Starter Pack fehlgeschlagen: ' + (err.message || err));
   }
 }
 

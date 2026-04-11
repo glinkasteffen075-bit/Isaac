@@ -87,6 +87,101 @@ LOCAL_TOOL_CATALOG: list[dict[str, Any]] = [
         "trust": 54.0,
         "metadata": {"source": "catalog", "local": True, "mcp_like": True, "features": ["tools", "resources", "prompts"]},
     },
+    {
+        "catalog_id": "public_wikipedia_opensearch",
+        "name": "Wikipedia Opensearch",
+        "kind": "search",
+        "category": "suche",
+        "description": "Offizielle Wikipedia-Titelsuche ueber MediaWiki Opensearch.",
+        "base_url": "https://en.wikipedia.org/w/api.php?action=opensearch&format=json&limit=5&namespace=0",
+        "query_param": "search",
+        "method": "GET",
+        "size_mb": 0.0,
+        "install_mode": "register_only",
+        "active": True,
+        "priority": 74,
+        "trust": 60.0,
+        "metadata": {
+            "return_format": "json",
+            "source": "catalog",
+            "local": True,
+            "starter_pack": "free",
+            "docs_url": "https://www.mediawiki.org/wiki/API:Opensearch",
+        },
+    },
+    {
+        "catalog_id": "public_openlibrary_search",
+        "name": "Open Library Search",
+        "kind": "search",
+        "category": "research",
+        "description": "Offizielle Open-Library-Buchsuche fuer frei verfuegbare Buch- und Werkinfos.",
+        "base_url": "https://openlibrary.org/search.json?limit=5",
+        "query_param": "q",
+        "method": "GET",
+        "size_mb": 0.0,
+        "install_mode": "register_only",
+        "active": True,
+        "priority": 73,
+        "trust": 60.0,
+        "metadata": {
+            "return_format": "json",
+            "source": "catalog",
+            "local": True,
+            "starter_pack": "free",
+            "docs_url": "https://openlibrary.org/dev/docs/api/search",
+        },
+    },
+    {
+        "catalog_id": "public_stackoverflow_search",
+        "name": "Stack Overflow Search",
+        "kind": "search",
+        "category": "code",
+        "description": "Offizielle Stack-Exchange-Suche fuer technische Fragen auf Stack Overflow.",
+        "base_url": "https://api.stackexchange.com/2.3/search?order=desc&sort=relevance&site=stackoverflow",
+        "query_param": "intitle",
+        "method": "GET",
+        "size_mb": 0.0,
+        "install_mode": "register_only",
+        "active": True,
+        "priority": 78,
+        "trust": 63.0,
+        "metadata": {
+            "return_format": "json",
+            "source": "catalog",
+            "local": True,
+            "starter_pack": "free",
+            "docs_url": "https://api.stackexchange.com/docs/search",
+        },
+    },
+    {
+        "catalog_id": "public_openmeteo_geocoding",
+        "name": "Open-Meteo Geocoding",
+        "kind": "search",
+        "category": "wetter",
+        "description": "Offizielle Gratis-Geocoding-Suche von Open-Meteo fuer Wetter-Ortsaufloesung.",
+        "base_url": "https://geocoding-api.open-meteo.com/v1/search?count=5&language=de&format=json",
+        "query_param": "name",
+        "method": "GET",
+        "size_mb": 0.0,
+        "install_mode": "register_only",
+        "active": True,
+        "priority": 76,
+        "trust": 64.0,
+        "metadata": {
+            "return_format": "json",
+            "source": "catalog",
+            "local": True,
+            "starter_pack": "free",
+            "docs_url": "https://open-meteo.com/en/docs/geocoding-api",
+        },
+    },
+]
+
+FREE_STARTER_PACK_IDS: list[str] = [
+    "public_wikipedia_opensearch",
+    "public_openlibrary_search",
+    "public_stackoverflow_search",
+    "public_openmeteo_geocoding",
 ]
 
 
@@ -99,6 +194,10 @@ def get_catalog_item(catalog_id: str) -> dict[str, Any] | None:
         if item["catalog_id"] == catalog_id:
             return deepcopy(item)
     return None
+
+
+def free_starter_pack_catalog_ids() -> list[str]:
+    return list(FREE_STARTER_PACK_IDS)
 
 
 def registry_payload_from_catalog(catalog_id: str) -> dict[str, Any]:

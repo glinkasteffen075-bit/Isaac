@@ -288,6 +288,18 @@ textarea,input{font-size:16px;}
       </div>
 
       <div class="tab-content" id="tab-providers">
+        <div class="tool-card" style="margin-bottom:12px">
+          <h3>OpenRouter</h3>
+          <div class="helper">Erzeugt per Browser-Automation einen OpenRouter-Token und speichert ihn lokal als <code>OPENROUTER_API_KEY</code>.</div>
+          <div class="tool-actions" style="margin-top:.75rem">
+            <button class="hbtn" onclick="provisionOpenRouterToken()">Token per Browser erzeugen</button>
+          </div>
+        </div>
+        <div class="tool-card" style="margin-bottom:12px">
+          <h3>Browser Runtime</h3>
+          <div class="helper">Live-Status für Browser-Automation, aktive Instanzen und Login-Zustand.</div>
+          <div id="browser-state-box" class="tool-list"></div>
+        </div>
         <div id="providers-grid"></div>
       </div>
 
@@ -367,8 +379,20 @@ textarea,input{font-size:16px;}
         <label class="switch"><input type="checkbox" id="orchestrator-toggle"><span class="slider"></span></label>
       </div>
       <div class="ctrl-card">
-        <div class="ctrl-copy"><strong>Future Controls</strong><span>Playwright / Tools / RWX folgen im Backend.</span></div>
-        <label class="switch"><input type="checkbox" disabled><span class="slider"></span></label>
+        <div class="ctrl-copy"><strong>Dateisystem Vollzugriff</strong><span>Erlaubt Dateioperationen auch außerhalb des Workspace.</span></div>
+        <label class="switch"><input type="checkbox" id="filesystem-toggle"><span class="slider"></span></label>
+      </div>
+      <div class="ctrl-card">
+        <div class="ctrl-copy"><strong>Browser-Automation</strong><span>Aktiviert Playwright-basierte Web-Aufgaben und Site-Steuerung.</span></div>
+        <label class="switch"><input type="checkbox" id="browser-toggle"><span class="slider"></span></label>
+      </div>
+      <div class="ctrl-card">
+        <div class="ctrl-copy"><strong>Externe Browser-Ziele</strong><span>Erlaubt Isaac das Öffnen und Bedienen externer Websites.</span></div>
+        <label class="switch"><input type="checkbox" id="browser-external-toggle"><span class="slider"></span></label>
+      </div>
+      <div class="ctrl-card">
+        <div class="ctrl-copy"><strong>Free-Only Provider</strong><span>Beschränkt Relay und Fallbacks auf kostenlose Modellpfade.</span></div>
+        <label class="switch"><input type="checkbox" id="free-only-toggle"><span class="slider"></span></label>
       </div>
     </div>
 
@@ -399,6 +423,7 @@ const state = {
   tools:    [],
   toolCatalog: [],
   liveTools: null,
+  runtimeSettings: {},
   updater: { packages: [], status: null, inspect: null, selected: null },
 };
 
@@ -646,6 +671,15 @@ function updateState(s) {
 
   if (s.providers) renderProviders(s.providers);
   if (s.tools) { state.tools = s.tools; renderToolsLive(); updateBadge('tab-tools', s.tools.length); }
+  if (s.settings) {
+    state.runtimeSettings = {
+      filesystem_full_access: !!s.settings.filesystem_full_access,
+      browser_automation: !!s.settings.browser_automation,
+      browser_external_sites: !!s.settings.browser_external_sites,
+      free_only_providers: !!s.settings.free_only_providers,
+    };
+    applyRuntimeSettingsToUi();
+  }
   if (s.directives) {
     renderDirectives(s.directives);
     updateBadge('tab-dir', s.directives.length);
@@ -919,6 +953,7 @@ function renderProviders(providers) {
       <div class="prov-name">
         ${p.available ? '✓' : '✗'} ${p.name}
         ${p.primary ? '<span class="badge inf">PRIMÄR</span>' : ''}
+        ${p.allowed === false ? '<span class="badge hot">BLOCKIERT</span>' : ''}
       </div>
       <div class="prov-model">${p.model || '–'}</div>
       <div class="prov-rate">${p.rate || '–'}</div>
@@ -1058,6 +1093,76 @@ async function installLocalTool(catalogId) {
   } catch (err) {
     addSysMsg('⚠ Tool-Installation fehlgeschlagen: ' + (err.message || err));
   }
+}
+
+async function refreshRuntimeSettings() {
+  try {
+    const [data, browserState] = await Promise.all([
+      fetchJson('/api/runtime/settings'),
+      fetchJson('/api/browser/state'),
+    ]);
+    state.runtimeSettings = data.settings || {};
+    applyRuntimeSettingsToUi();
+    renderBrowserState(browserState);
+  } catch (err) {
+    addSysMsg('⚠ Runtime-Settings konnten nicht geladen werden: ' + (err.message || err));
+  }
+}
+
+function applyRuntimeSettingsToUi() {
+  const settings = state.runtimeSettings || {};
+  const bind = (id, key) => {
+    const el = document.getElementById(id);
+    if (el) el.checked = !!settings[key];
+  };
+  bind('filesystem-toggle', 'filesystem_full_access');
+  bind('browser-toggle', 'browser_automation');
+  bind('browser-external-toggle', 'browser_external_sites');
+  bind('free-only-toggle', 'free_only_providers');
+}
+
+async function updateRuntimeSetting(key, value) {
+  try {
+    const data = await fetchJson('/api/runtime/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: { [key]: !!value } }),
+    });
+    state.runtimeSettings = data.settings || state.runtimeSettings;
+    applyRuntimeSettingsToUi();
+    addSysMsg('Runtime-Setting aktualisiert: ' + key + ' → ' + (!!value));
+  } catch (err) {
+    addSysMsg('⚠ Runtime-Setting fehlgeschlagen: ' + (err.message || err));
+    applyRuntimeSettingsToUi();
+  }
+}
+
+async function provisionOpenRouterToken() {
+  try {
+    const data = await fetchJson('/api/browser/openrouter_token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ secret_ref: 'OPENROUTER_API_KEY', key_name: 'Isaac' }),
+    });
+    addSysMsg('OpenRouter-Token gespeichert: ' + (data.token_preview || 'OK'));
+  } catch (err) {
+    addSysMsg('⚠ OpenRouter-Token fehlgeschlagen: ' + (err.message || err));
+  }
+}
+
+function renderBrowserState(payload) {
+  const box = document.getElementById('browser-state-box');
+  if (!box) return;
+  const stats = (payload && payload.stats) || {};
+  const instances = (payload && payload.instances) || [];
+  const rows = [];
+  rows.push(`<div class="tool-mini"><strong>Browser</strong><div class="tool-meta"><span>bereit ${stats.bereit ? 'ja' : 'nein'}</span><span>aktiv ${stats.aktiv || 0}/${stats.total || 0}</span><span>logins ${stats.eingeloggt || 0}</span></div></div>`);
+  if (!instances.length) {
+    rows.push('<div class="tool-mini">Keine Browser-Instanzen aktiv.</div>');
+  } else {
+    rows.push(...instances.map(inst => `<div class="tool-mini"><strong>${escHtml(inst.name || inst.id)}</strong><div class="tool-meta"><span>${inst.aktiv ? 'aktiv' : 'inaktiv'}</span><span>${inst.eingeloggt ? 'eingeloggt' : 'ohne login'}</span><span>fehler ${inst.fehler || 0}</span></div></div>`));
+  }
+  box.innerHTML = rows.join('');
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1311,16 +1416,30 @@ document.getElementById('dir-input')?.addEventListener('keydown', e => {
 // WebSocket verbinden
 connect();
 refreshTools();
+refreshRuntimeSettings();
 setInterval(refreshTools, 15000);
+setInterval(refreshRuntimeSettings, 15000);
 
 
 
 // UI bridge for redesigned control toggle
 (function(){
   const orch = document.getElementById('orchestrator-toggle');
+  const runtimeToggles = [
+    ['filesystem-toggle', 'filesystem_full_access'],
+    ['browser-toggle', 'browser_automation'],
+    ['browser-external-toggle', 'browser_external_sites'],
+    ['free-only-toggle', 'free_only_providers'],
+  ];
   if (orch) {
     orch.addEventListener('change', () => togglePause());
   }
+  runtimeToggles.forEach(([id, key]) => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('change', () => updateRuntimeSetting(key, el.checked));
+    }
+  });
   const oldUpdatePauseBtn = updatePauseBtn;
   updatePauseBtn = function(){
     oldUpdatePauseBtn();

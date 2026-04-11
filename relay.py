@@ -180,6 +180,8 @@ class AsyncRelay:
                   task_id: str = "",
                   model_override: Optional[str] = None) -> str:
         prov_name = provider or self.cfg.relay.primary_provider
+        if not self.cfg.is_provider_allowed(prov_name):
+            return f"[RELAY-FEHLER:{prov_name}] Provider durch Runtime-Policy blockiert"
         prov_cfg = self.cfg.get_provider(prov_name)
         if not prov_cfg:
             return f"[RELAY] Unbekannter Provider: {prov_name}"
@@ -247,12 +249,14 @@ class AsyncRelay:
             cfg = self.cfg.get_provider(name)
             if not cfg or not self._is_runtime_available(cfg):
                 continue
+            if not self.cfg.is_provider_allowed(name):
+                continue
             if not self._health[name].available_now():
                 continue
             usable.append(name)
 
         if not usable:
-            usable = [n for n in reihe if self.cfg.get_provider(n)]
+            usable = [n for n in reihe if self.cfg.get_provider(n) and self.cfg.is_provider_allowed(n)]
 
         for pname in usable:
             result = await self.ask(prompt, system, provider=pname, task_id=task_id, model_override=model_override)
@@ -471,6 +475,7 @@ class AsyncRelay:
             status.append({
                 "name": name,
                 "available": self._is_runtime_available(pcfg),
+                "allowed": self.cfg.is_provider_allowed(name),
                 "model": pcfg.default_model,
                 "rate": lim.status() if lim else "-",
                 "primary": name == self.cfg.relay.primary_provider,

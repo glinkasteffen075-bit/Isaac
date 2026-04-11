@@ -23,6 +23,7 @@ Datenschutz-Garantie:
 """
 
 import asyncio
+import json
 import re
 import time
 import logging
@@ -215,6 +216,10 @@ class IsaacKernel:
         # Pause
         if self.gate.is_paused and not sudo_aktiv:
             return "[Isaac] Pausiert. 'weiter' oder SUDO zum Fortfahren."
+
+        if self._is_browser_request(user_input):
+            result = await self._handle_browser_request(user_input)
+            return self._post_process(user_input, result, emp, 0.0, t0)
 
         # Direkte Handler (kein Task nötig)
         direkt = {
@@ -518,6 +523,120 @@ class IsaacKernel:
         get_browser().add_url({"id": iid, "url": url, "name": name})
         AuditLog.action("Kernel", "url_added", f"{iid}={url}", Level.STEFFEN)
         return f"[URL] ✓ '{name}' ({iid}) → {url}"
+
+    def _is_browser_request(self, text: str) -> bool:
+        tl = (text or "").lower().strip()
+        if tl.startswith("browser:"):
+            return True
+        return (
+            "openrouter" in tl
+            and any(token in tl for token in ("token", "api key", "apikey", "schlüssel", "key"))
+            and any(token in tl for token in ("generier", "erstell", "create", "new", "neu"))
+        )
+
+    def _parse_browser_action(self, raw: str) -> dict[str, Any]:
+        chunk = (raw or "").strip()
+        lower = chunk.lower()
+        if not chunk:
+            raise ValueError("Leere Browser-Aktion")
+        if lower.startswith("wait "):
+            return {"action": "wait", "seconds": float(chunk.split(" ", 1)[1].replace(",", "."))}
+        if lower.startswith("press "):
+            return {"action": "press", "key": chunk.split(" ", 1)[1].strip()}
+        if lower.startswith("click "):
+            target = chunk.split(" ", 1)[1].strip()
+            if target.startswith("#") or target.startswith(".") or "[" in target:
+                return {"action": "click", "selector": target}
+            return {"action": "click", "text": target}
+        if lower.startswith("fill "):
+            body = chunk.split(" ", 1)[1].strip()
+            left, right = [part.strip() for part in body.split("=", 1)]
+            if left.startswith("#") or left.startswith(".") or "[" in left:
+                return {"action": "fill", "selector": left, "value": right}
+            return {"action": "fill", "text": left, "value": right}
+        if lower.startswith("extract_value "):
+            body = chunk.split(" ", 1)[1].strip()
+            left, right = [part.strip() for part in body.split("->", 1)]
+            return {"action": "extract_value", "selector": left, "save_as": right}
+        if lower.startswith("extract "):
+            body = chunk.split(" ", 1)[1].strip()
+            left, right = [part.strip() for part in body.split("->", 1)]
+            return {"action": "extract_text", "selector": left, "save_as": right}
+        if lower.startswith("store_secret "):
+            body = chunk.split(" ", 1)[1].strip()
+            left, right = [part.strip() for part in body.split("->", 1)]
+            return {"action": "store_secret", "from_var": left, "ref": right}
+        raise ValueError(f"Unbekannte Browser-Aktion: {chunk}")
+
+    def _parse_browser_request(self, text: str) -> dict[str, Any]:
+        body = (text or "").split(":", 1)[1].strip()
+        if body.startswith("{"):
+            data = json.loads(body)
+            return {
+                "instance_id": data.get("instance_id") or data.get("instance") or "browser-task",
+                "url": data.get("url") or "",
+                "name": data.get("name") or "Browser Task",
+                "actions": list(data.get("actions") or []),
+            }
+        parts = [part.strip() for part in body.split("|")]
+        if len(parts) < 3:
+            raise ValueError("Format: browser: INSTANCE_ID | URL | action1; action2; ...")
+        actions = [self._parse_browser_action(item.strip()) for item in parts[2].split(";") if item.strip()]
+        return {
+            "instance_id": parts[0] or "browser-task",
+            "url": parts[1],
+            "name": parts[0] or "Browser Task",
+            "actions": actions,
+        }
+
+    async def _handle_browser_request(self, text: str) -> str:
+        from browser import get_browser
+
+        if not self.cfg.browser_automation:
+            return "[Browser] Browser-Automation ist im Runtime-Setting deaktiviert."
+
+        tl = (text or "").lower()
+        if (
+            "openrouter" in tl
+            and any(token in tl for token in ("token", "api key", "apikey", "schlüssel", "key"))
+            and any(token in tl for token in ("generier", "erstell", "create", "new", "neu"))
+        ):
+            result = await get_browser().provision_openrouter_token()
+            if result.get("ok"):
+                return (
+                    "[Browser] OpenRouter-Token erzeugt und in Isaac hinterlegt.\n"
+                    f"Ref: {result.get('secret_ref')}\n"
+                    f"Preview: {result.get('token_preview')}\n"
+                    f"URL: {result.get('current_url')}"
+                )
+            return f"[Browser] OpenRouter-Token fehlgeschlagen: {result.get('error', 'unbekannt')}"
+
+        try:
+            spec = self._parse_browser_request(text)
+        except Exception as e:
+            return (
+                "[Browser] Ungültiger Browser-Befehl.\n"
+                "Format: browser: INSTANCE_ID | URL | click Settings; wait 1; extract #token -> token\n"
+                f"Fehler: {e}"
+            )
+
+        result = await get_browser().run_flow(
+            spec["instance_id"],
+            spec["url"],
+            spec["actions"],
+            name=spec.get("name") or spec["instance_id"],
+        )
+        if result.get("ok"):
+            return (
+                f"[Browser] Flow abgeschlossen: {result.get('instance_id')}\n"
+                f"URL: {result.get('current_url')}\n"
+                f"Steps: {len(result.get('steps') or [])}\n"
+                f"Memory: {list((result.get('memory') or {}).keys())}"
+            )
+        return (
+            f"[Browser] Flow fehlgeschlagen: {result.get('error', 'unbekannt')}\n"
+            f"URL: {result.get('current_url', '-')}"
+        )
 
     # ── Standard-Handler ──────────────────────────────────────────────────────
     async def _handle_fact(self, text: str) -> str:

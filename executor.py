@@ -406,7 +406,9 @@ class Executor:
             self._notify(task)
 
     def _should_try_tool(self, task: Task, prompt: str, iteration: int) -> bool:
-        return task.allow_tools
+        if not task.allow_tools:
+            return False
+        return task.typ == TaskType.CHAT
 
     def _tool_context_block(self, tool_name: str, tool_kind: str, via: str, result: dict) -> str:
         content = (result.get('content') or result.get('error') or '').strip()[:2200]
@@ -720,9 +722,16 @@ class Executor:
     async def _execute_file(self, task: Task):
         ctx = isaac_ctx("Executor", f"Datei-Op: task {task.id}")
         prompt_lower = task.prompt.lower()
+        full_access = bool(get_config().filesystem_full_access)
+        wants_write = "schreibe" in prompt_lower or "write" in prompt_lower
+        wants_delete = any(token in prompt_lower for token in ("lösche", "loesche", "delete", "entferne"))
 
-        if "schreibe" in prompt_lower or "write" in prompt_lower:
+        if wants_write:
             self.gate.require("file_write", ctx)
+        elif wants_delete:
+            self.gate.require("file_delete", ctx)
+        else:
+            self.gate.require("file_read", ctx)
 
         pfad_match = re.search(r"[\"']([^\"']+)[\"']", task.prompt)
         if not pfad_match:
@@ -731,9 +740,10 @@ class Executor:
             return
 
         try:
-            candidate = (WORKSPACE / pfad_match.group(1).strip()).resolve()
+            raw_path = Path(os.path.expanduser(pfad_match.group(1).strip()))
+            candidate = (raw_path if raw_path.is_absolute() else (WORKSPACE / raw_path)).resolve()
             workspace_root = WORKSPACE.resolve()
-            if not candidate.is_relative_to(workspace_root):
+            if not full_access and not candidate.is_relative_to(workspace_root):
                 task.antwort = "[FILE] Zugriff außerhalb des Workspace blockiert"
                 task.status = TaskStatus.FAILED
                 return
@@ -742,7 +752,7 @@ class Executor:
             task.status = TaskStatus.FAILED
             return
 
-        if "schreibe" in prompt_lower or "write" in prompt_lower:
+        if wants_write:
             content_match = re.search(r'(?:inhalt|content)\s*:\s*(.+)$', task.prompt, re.IGNORECASE | re.S)
             if not content_match:
                 task.antwort = "[FILE] Kein Schreibinhalt gefunden. Nutze: inhalt: ..."
@@ -750,7 +760,7 @@ class Executor:
                 return
             candidate.parent.mkdir(parents=True, exist_ok=True)
             candidate.write_text(content_match.group(1).strip(), encoding="utf-8")
-            task.antwort = f"[FILE] Gespeichert: {candidate.relative_to(workspace_root)}"
+            task.antwort = f"[FILE] Gespeichert: {candidate if full_access else candidate.relative_to(workspace_root)}"
             task.status = TaskStatus.DONE
             return
 

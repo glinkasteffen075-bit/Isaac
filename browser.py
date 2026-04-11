@@ -31,11 +31,12 @@ import logging
 import re
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Any, Optional, Callable
 
 from config  import get_config, DATA_DIR
 from audit   import AuditLog
 from privilege import get_gate, isaac_ctx
+from secrets_store import get_secrets_store
 
 log = logging.getLogger("Isaac.Browser")
 
@@ -195,11 +196,20 @@ class BrowserManager:
         self._load_creds()
         log.info("BrowserManager initialisiert")
 
+    def _browser_allowed(self, url: str = "") -> bool:
+        if not self.cfg.browser_automation:
+            return False
+        if url and not self.cfg.browser_external_sites:
+            return False
+        return True
+
     # ── Startup ───────────────────────────────────────────────────────────────
-    async def start(self, urls: list[dict]):
-        """
-        urls = [{"id": "claude1", "url": "https://claude.ai", "name": "Claude #1"}, ...]
-        """
+    async def _ensure_runtime(self):
+        if self._browser is not None and self._pw is not None:
+            return True
+        if not self._browser_allowed():
+            log.warning("Browser-Automation durch Runtime-Policy deaktiviert")
+            return False
         try:
             from playwright.async_api import async_playwright
         except ImportError:
@@ -207,19 +217,27 @@ class BrowserManager:
                 "Playwright nicht installiert!\n"
                 "Installiere mit: pip install playwright && playwright install chromium"
             )
-            return
-
-        log.info(f"Browser startet mit {len(urls)} Instanzen...")
-        self._pw      = await async_playwright().start()
+            return False
+        self._pw = await async_playwright().start()
         self._browser = await self._pw.chromium.launch(
-            headless      = self.cfg.browser.headless,
-            slow_mo       = self.cfg.browser.slowmo,
-            args          = [
+            headless=self.cfg.browser.headless,
+            slow_mo=self.cfg.browser.slowmo,
+            args=[
                 "--no-sandbox",
                 "--disable-blink-features=AutomationControlled",
                 "--disable-dev-shm-usage",
-            ]
+            ],
         )
+        return True
+
+    async def start(self, urls: list[dict]):
+        """
+        urls = [{"id": "claude1", "url": "https://claude.ai", "name": "Claude #1"}, ...]
+        """
+        if not await self._ensure_runtime():
+            return
+
+        log.info(f"Browser startet mit {len(urls)} Instanzen...")
 
         # Instanzen sequentiell erstellen (nicht alle gleichzeitig)
         for ui in urls:
@@ -275,6 +293,34 @@ class BrowserManager:
             await self._auto_login(inst)
 
         AuditLog.instance(inst.id, "created", detail=inst.url)
+        return inst
+
+    def _normalize_url(self, url: str) -> str:
+        raw = (url or "").strip()
+        if raw and "://" not in raw:
+            raw = f"https://{raw}"
+        return raw
+
+    async def ensure_instance(self, instance_id: str, url: str, name: str = "") -> KIInstance:
+        target_url = self._normalize_url(url)
+        if not self._browser_allowed(target_url):
+            raise PermissionError("Browser-Nutzung ist durch Runtime-Policy deaktiviert")
+        if not await self._ensure_runtime():
+            raise RuntimeError("Browser-Runtime nicht verfügbar")
+
+        inst = self._instances.get(instance_id)
+        if inst and inst.aktiv:
+            if target_url and inst.url != target_url:
+                inst.url = target_url
+                await inst.page.goto(target_url, wait_until="networkidle", timeout=30000)
+            return inst
+
+        inst = await self._create_instance({
+            "id": instance_id,
+            "url": target_url,
+            "name": name or instance_id,
+        })
+        self._instances[inst.id] = inst
         return inst
 
     # ── Auto-Login ─────────────────────────────────────────────────────────────
@@ -436,6 +482,186 @@ class BrowserManager:
             return text[-2000:].strip()
         except Exception:
             return "[Keine Antwort extrahiert]"
+
+    def _extract_candidate_secret(self, text: str) -> str:
+        if not text:
+            return ""
+        candidates = re.findall(r"[A-Za-z0-9_\-]{20,}", text)
+        if not candidates:
+            return ""
+        candidates.sort(key=len, reverse=True)
+        return candidates[0]
+
+    def _resolve_target(self, page, action: dict):
+        selector = (action.get("selector") or "").strip()
+        text = (action.get("text") or "").strip()
+        if selector:
+            return page.locator(selector).first
+        if text:
+            return page.get_by_text(text, exact=bool(action.get("exact", False))).first
+        raise ValueError("Browser-Aktion benötigt selector oder text")
+
+    async def run_flow(self, instance_id: str, start_url: str, actions: list[dict], name: str = "") -> dict[str, Any]:
+        inst = await self.ensure_instance(instance_id, start_url, name=name or instance_id)
+        page = inst.page
+        memory: dict[str, str] = {}
+        steps: list[dict[str, Any]] = []
+
+        for idx, action in enumerate(actions or [], start=1):
+            kind = (action.get("action") or "").strip().lower()
+            try:
+                if kind == "goto":
+                    url = self._normalize_url(action.get("url") or start_url)
+                    if not self._browser_allowed(url):
+                        raise PermissionError("Externe Browser-Ziele sind deaktiviert")
+                    await page.goto(url, wait_until="networkidle", timeout=30000)
+                    steps.append({"step": idx, "action": kind, "url": page.url, "ok": True})
+                    continue
+
+                if kind == "wait":
+                    seconds = max(0.1, float(action.get("seconds", 1.0)))
+                    await asyncio.sleep(seconds)
+                    steps.append({"step": idx, "action": kind, "seconds": seconds, "ok": True})
+                    continue
+
+                if kind == "press":
+                    key = (action.get("key") or "Enter").strip() or "Enter"
+                    await page.keyboard.press(key)
+                    steps.append({"step": idx, "action": kind, "key": key, "ok": True})
+                    continue
+
+                target = self._resolve_target(page, action)
+                if kind == "click":
+                    await target.click(timeout=10000)
+                    steps.append({"step": idx, "action": kind, "target": action.get("selector") or action.get("text"), "ok": True})
+                    continue
+
+                if kind == "fill":
+                    value = str(action.get("value") or "")
+                    await target.fill(value, timeout=10000)
+                    steps.append({"step": idx, "action": kind, "target": action.get("selector") or action.get("text"), "ok": True})
+                    continue
+
+                if kind in {"extract_text", "extract_value"}:
+                    value = await (target.input_value(timeout=10000) if kind == "extract_value" else target.inner_text(timeout=10000))
+                    slot = (action.get("save_as") or f"value_{idx}").strip()
+                    memory[slot] = value.strip()
+                    steps.append({"step": idx, "action": kind, "save_as": slot, "length": len(memory[slot]), "ok": True})
+                    continue
+
+                if kind == "store_secret":
+                    slot = (action.get("from_var") or "").strip()
+                    secret_ref = (action.get("ref") or "").strip()
+                    if not self.cfg.browser_external_sites:
+                        raise PermissionError("Secret-Import via Browser ist deaktiviert")
+                    if not slot or slot not in memory:
+                        raise ValueError("store_secret benötigt from_var eines extrahierten Werts")
+                    if not secret_ref:
+                        raise ValueError("store_secret benötigt ref")
+                    secret = self._extract_candidate_secret(memory[slot]) or memory[slot]
+                    get_secrets_store().set_secret(secret_ref, secret, kind="browser_import")
+                    steps.append({"step": idx, "action": kind, "ref": secret_ref, "ok": True})
+                    continue
+
+                raise ValueError(f"Nicht unterstützte Browser-Aktion: {kind}")
+            except Exception as e:
+                steps.append({"step": idx, "action": kind, "ok": False, "error": str(e)})
+                return {
+                    "ok": False,
+                    "instance_id": inst.id,
+                    "current_url": page.url,
+                    "steps": steps,
+                    "memory": memory,
+                    "error": str(e),
+                }
+
+        return {
+            "ok": True,
+            "instance_id": inst.id,
+            "current_url": page.url,
+            "steps": steps,
+            "memory": memory,
+        }
+
+    async def provision_openrouter_token(self, secret_ref: str = "OPENROUTER_API_KEY", key_name: str = "Isaac") -> dict[str, Any]:
+        plan = [
+            {"action": "goto", "url": "https://openrouter.ai/settings/keys"},
+            {"action": "wait", "seconds": 1.2},
+        ]
+        result = await self.run_flow("openrouter", "https://openrouter.ai/settings/keys", plan, name="OpenRouter")
+        if not result.get("ok"):
+            return result
+
+        inst = self._instances.get("openrouter")
+        if not inst or not inst.page:
+            return {"ok": False, "error": "OpenRouter-Instanz nicht verfügbar"}
+
+        page = inst.page
+        create_labels = ["Create Key", "New Key", "Create API Key", "Generate Key", "New Token"]
+        clicked = False
+        for label in create_labels:
+            try:
+                await page.get_by_text(label, exact=False).first.click(timeout=2500)
+                clicked = True
+                break
+            except Exception:
+                continue
+        if not clicked:
+            return {"ok": False, "error": "OpenRouter-Key-Button nicht gefunden", "current_url": page.url}
+
+        try:
+            await asyncio.sleep(1.0)
+            for selector in ["input[name*=name]", "input[placeholder*=name]", "input[type='text']"]:
+                try:
+                    await page.locator(selector).first.fill(key_name, timeout=1500)
+                    break
+                except Exception:
+                    continue
+            for label in ["Create", "Generate", "Save", "Submit"]:
+                try:
+                    await page.get_by_text(label, exact=False).last.click(timeout=1500)
+                    break
+                except Exception:
+                    continue
+            await asyncio.sleep(1.5)
+        except Exception as e:
+            return {"ok": False, "error": f"OpenRouter-Key-Dialog fehlgeschlagen: {e}", "current_url": page.url}
+
+        candidates: list[str] = []
+        selectors = ["code", "input[readonly]", "input[type='text']", "textarea", "[data-token]"]
+        for selector in selectors:
+            try:
+                loc = page.locator(selector)
+                count = await loc.count()
+                for idx in range(min(count, 5)):
+                    node = loc.nth(idx)
+                    text = ""
+                    try:
+                        text = await node.input_value(timeout=500)
+                    except Exception:
+                        try:
+                            text = await node.inner_text(timeout=500)
+                        except Exception:
+                            text = ""
+                    token = self._extract_candidate_secret(text)
+                    if token:
+                        candidates.append(token)
+            except Exception:
+                continue
+
+        if not candidates:
+            return {"ok": False, "error": "OpenRouter-Token konnte nicht extrahiert werden", "current_url": page.url}
+
+        token = max(candidates, key=len)
+        get_secrets_store().set_secret(secret_ref, token, kind="browser_import")
+        if secret_ref == "OPENROUTER_API_KEY":
+            self.cfg.providers["openrouter"].api_key = token
+        return {
+            "ok": True,
+            "secret_ref": secret_ref,
+            "current_url": page.url,
+            "token_preview": token[:6] + "..." + token[-4:],
+        }
 
     # ── Broadcast ─────────────────────────────────────────────────────────────
     async def broadcast(self, prompt: str,

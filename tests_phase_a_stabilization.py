@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 
 from executor import Executor, Strategy, Task, TaskType
-from isaac_core import IsaacKernel, Intent
+from isaac_core import IsaacKernel, Intent, detect_intent
 from low_complexity import (
     ClassificationResult,
     InteractionClass,
@@ -109,6 +109,12 @@ class TestCriticalBugs(unittest.TestCase):
 
             def build_context(self, *args, **kwargs):
                 raise AssertionError("legacy build_context should not be used")
+            
+            def format_retrieval_context(self, retrieval_ctx):
+                return (
+                    "[active_directives]\n  - prio=20: Antworten klar halten\n"
+                    "[semantic_context]\n[semantik] routing context"
+                )
 
             def add_conversation(self, *args, **kwargs):
                 return None
@@ -185,6 +191,84 @@ class TestCriticalBugs(unittest.TestCase):
         self.assertEqual(parsed["actions"][0]["action"], "click")
         self.assertEqual(parsed["actions"][1]["action"], "wait")
         self.assertEqual(parsed["actions"][2]["action"], "extract_text")
+
+
+    def test_bug_11_process_short_circuits_greeting_without_runtime_dependencies(self):
+        kernel = object.__new__(IsaacKernel)
+        result = asyncio.run(kernel.process("Hallo Isaac"))
+        self.assertEqual(result, "Hallo. Ich bin da.")
+
+    def test_bug_12_process_short_circuits_ack_without_runtime_dependencies(self):
+        kernel = object.__new__(IsaacKernel)
+        result = asyncio.run(kernel.process("Danke"))
+        self.assertEqual(result, "Gern. Ich bin da.")
+
+    def test_bug_13_translate_keyword_without_prefix_stays_chat(self):
+        intent = self.kernel._resolve_intent_from_classification(
+            "Kannst du das bitte übersetzen?",
+            detect_intent("Kannst du das bitte übersetzen?"),
+            InteractionClass.NORMAL_CHAT,
+        )
+        self.assertEqual(intent, Intent.CHAT)
+
+    def test_bug_14_explicit_translate_prefix_remains_command(self):
+        intent = self.kernel._resolve_intent_from_classification(
+            "Übersetze: Guten Morgen auf Englisch",
+            detect_intent("Übersetze: Guten Morgen auf Englisch"),
+            InteractionClass.NORMAL_CHAT,
+        )
+        self.assertEqual(intent, Intent.TRANSLATE)
+
+    def test_bug_15_strategy_defaults_keep_chat_tooling_disabled(self):
+        kernel = object.__new__(IsaacKernel)
+        strategy = kernel._select_response_strategy(
+            user_input="Was ist 2+2?",
+            intent=Intent.CHAT,
+            interaction_class=InteractionClass.NORMAL_CHAT,
+            retrieval_ctx={},
+        )
+        self.assertFalse(strategy.allow_tools)
+        self.assertTrue(strategy.allow_followup)
+
+
+    def test_bug_16_translate_command_without_colon_is_preserved(self):
+        detected = detect_intent("Übersetze bitte Hallo auf Englisch")
+        self.assertEqual(detected, Intent.TRANSLATE)
+        intent = self.kernel._resolve_intent_from_classification(
+            "Übersetze bitte Hallo auf Englisch",
+            detected,
+            InteractionClass.NORMAL_CHAT,
+        )
+        self.assertEqual(intent, Intent.TRANSLATE)
+
+    def test_bug_17_executor_blocks_tool_for_status_class_even_if_tools_allowed(self):
+        task = Task(
+            id="t3",
+            typ=TaskType.CHAT,
+            prompt="status",
+            beschreibung="chat",
+            strategy=Strategy(allow_tools=True),
+            interaction_class=InteractionClass.STATUS_QUERY,
+        )
+        executor = object.__new__(Executor)
+        self.assertFalse(executor._should_try_tool(task, task.prompt, iteration=0))
+
+    def test_bug_18_create_task_prefers_explicit_strategy_over_legacy_flags(self):
+        executor = object.__new__(Executor)
+        executor._tasks = {}
+        executor.next_task_id = lambda: "t-fixed"
+        strategy = Strategy(allow_tools=False, allow_followup=False, allow_provider_switch=False)
+        task = executor.create_task(
+            typ=TaskType.CHAT,
+            prompt="Was ist 2+2?",
+            strategy=strategy,
+            allow_tools=True,
+            allow_followup=True,
+            allow_provider_switch=True,
+        )
+        self.assertFalse(task.allow_tools)
+        self.assertFalse(task.allow_followup)
+        self.assertFalse(task.allow_provider_switch)
 
 if __name__ == '__main__':
     unittest.main()

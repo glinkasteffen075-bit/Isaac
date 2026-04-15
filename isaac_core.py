@@ -714,6 +714,34 @@ class IsaacKernel:
                 return f"Task {m.group(1)} abgebrochen."
         return "Format: abbrechen TASK-ID"
 
+
+    def _looks_like_explicit_command(self, user_input: str, intent: str) -> bool:
+        text = (user_input or "").strip().lower()
+        explicit_prefixes = {
+            Intent.SUDO_OPEN: ("sudo ", "öffne tür", "master key"),
+            Intent.SUDO_CLOSE: ("sudo close", "tür schließen"),
+            Intent.FACT_SET: ("korrektur:", "fakt:", "weiß:"),
+            Intent.DIRECTIVE: ("direktive:", "immer:", "niemals:"),
+            Intent.BROADCAST: ("broadcast:", "alle instanzen:", "frage alle"),
+            Intent.SPLIT: ("split:", "aufteilen:"),
+            Intent.PIPELINE: ("pipeline:", "verbessere iterativ"),
+            Intent.DECOMPOSE: ("atomisiere:", "verteile:"),
+            Intent.CODE: ("code:", "programmiere:", "schreibe python", "schreibe bitte python"),
+            Intent.FILE: ("datei:", "lese:", "schreibe datei:", "schreibe eine datei"),
+            Intent.TRANSLATE: ("übersetze:", "übersetze ", "translate:", "translate ", "schrift:"),
+            Intent.LOGIN_ADD: ("login:", "credential:", "zugangsdaten:"),
+            Intent.URL_ADD: ("url:", "instanz:", "füge"),
+            Intent.KI_STATUS: ("ki status", "instanzen", "meinungen"),
+            Intent.MEINUNG: ("meinung:", "was denkst du über", "isaac meinung"),
+            Intent.PAUSE: ("pause", "stopp"),
+            Intent.RESUME: ("weiter", "fortsetzen"),
+            Intent.CANCEL: ("abbrechen ",),
+        }
+        prefixes = explicit_prefixes.get(intent, ())
+        if intent == Intent.URL_ADD:
+            return text.startswith("url:") or text.startswith("instanz:") or (text.startswith("füge") and "url" in text)
+        return any(text.startswith(prefix) for prefix in prefixes)
+
     def _resolve_intent_from_classification(
         self, user_input: str, detected_intent: str, interaction_class: str
     ) -> str:
@@ -743,7 +771,8 @@ class IsaacKernel:
             Intent.CANCEL,
         }
         if detected_intent in explicit_command_intents:
-            return detected_intent
+            if self._looks_like_explicit_command(user_input, detected_intent):
+                return detected_intent
 
         # Fragen sollen als normaler Chat laufen, solange kein Status/Tool-Signal vorliegt.
         if "?" in (user_input or ""):
@@ -800,54 +829,7 @@ class IsaacKernel:
         )
 
     def _format_retrieval_context(self, retrieval_ctx: dict[str, Any]) -> str:
-        sections = []
-        if retrieval_ctx.get("active_directives"):
-            sections.append("[active_directives]")
-            for directive in retrieval_ctx["active_directives"]:
-                sections.append(
-                    f"  - prio={directive.get('priority', 0)}: {directive.get('text', '')}"
-                )
-        if retrieval_ctx.get("relevant_facts"):
-            sections.append("[relevant_facts]")
-            for fact in retrieval_ctx["relevant_facts"]:
-                sections.append(f"  - {fact.get('key', '')}: {fact.get('value', '')}")
-        if retrieval_ctx.get("semantic_context"):
-            sections.append("[semantic_context]")
-            sections.append(retrieval_ctx["semantic_context"])
-        if retrieval_ctx.get("conversation_history"):
-            sections.append("[conversation_history]")
-            for entry in retrieval_ctx["conversation_history"]:
-                sections.append(f"  - {entry.get('role', '')}: {entry.get('text', '')}")
-        if retrieval_ctx.get("relevant_task_results"):
-            sections.append("[relevant_task_results]")
-            for result in retrieval_ctx["relevant_task_results"]:
-                sections.append(
-                    f"  - score={result.get('score', 0.0)} {result.get('description', '')}: {result.get('result', '')}"
-                )
-        if retrieval_ctx.get("preferences_context"):
-            sections.append("[preferences_context]")
-            for item in retrieval_ctx["preferences_context"]:
-                if item.get("source") == "directive":
-                    sections.append(f"  - directive(prio={item.get('priority', 0)}): {item.get('text', '')}")
-                else:
-                    sections.append(f"  - fact {item.get('key', '')}: {item.get('value', '')}")
-        if retrieval_ctx.get("project_context"):
-            sections.append("[project_context]")
-            for item in retrieval_ctx["project_context"]:
-                sections.append(f"  - {item.get('role', '')}: {item.get('text', '')}")
-        if retrieval_ctx.get("behavioral_risks"):
-            sections.append("[behavioral_risks]")
-            for risk in retrieval_ctx["behavioral_risks"]:
-                sections.append(f"  - {','.join(risk.get('risks', []))}: {risk.get('description', '')}")
-        if retrieval_ctx.get("relevant_reflections"):
-            sections.append("[relevant_reflections]")
-            for ref in retrieval_ctx["relevant_reflections"]:
-                sections.append(f"  - {ref}")
-        if retrieval_ctx.get("open_questions"):
-            sections.append("[open_questions]")
-            for q in retrieval_ctx["open_questions"]:
-                sections.append(f"  - {q}")
-        return "\n".join(sections).strip()
+        return self.memory.format_retrieval_context(retrieval_ctx)
 
     # ── System-Prompt ─────────────────────────────────────────────────────────
     def _build_system(self, sudo_aktiv: bool, emp,

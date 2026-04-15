@@ -428,36 +428,68 @@ class Memory:
             open_questions=open_questions[:1],
         )
 
+    def format_retrieval_context(self, retrieval_ctx: RetrievalContext | dict[str, Any]) -> str:
+        if isinstance(retrieval_ctx, RetrievalContext):
+            data = retrieval_ctx.as_dict()
+        else:
+            data = retrieval_ctx or {}
+
+        sections: list[str] = []
+        if data.get("active_directives"):
+            sections.append("[active_directives]")
+            for directive in data["active_directives"]:
+                sections.append(
+                    f"  - prio={directive.get('priority', 0)}: {directive.get('text', '')}"
+                )
+        if data.get("relevant_facts"):
+            sections.append("[relevant_facts]")
+            for fact in data["relevant_facts"]:
+                sections.append(f"  - {fact.get('key', '')}: {fact.get('value', '')}")
+        if data.get("semantic_context"):
+            sections.append("[semantic_context]")
+            sections.append(data["semantic_context"])
+        if data.get("conversation_history"):
+            sections.append("[conversation_history]")
+            for entry in data["conversation_history"]:
+                sections.append(f"  - {entry.get('role', '')}: {entry.get('text', '')}")
+        if data.get("relevant_task_results"):
+            sections.append("[relevant_task_results]")
+            for result in data["relevant_task_results"]:
+                sections.append(
+                    f"  - score={result.get('score', 0.0)} {result.get('description', '')}: {result.get('result', '')}"
+                )
+        if data.get("preferences_context"):
+            sections.append("[preferences_context]")
+            for item in data["preferences_context"]:
+                if item.get("source") == "directive":
+                    sections.append(
+                        f"  - directive(prio={item.get('priority', 0)}): {item.get('text', '')}"
+                    )
+                else:
+                    sections.append(f"  - fact {item.get('key', '')}: {item.get('value', '')}")
+        if data.get("project_context"):
+            sections.append("[project_context]")
+            for item in data["project_context"]:
+                sections.append(f"  - {item.get('role', '')}: {item.get('text', '')}")
+        if data.get("behavioral_risks"):
+            sections.append("[behavioral_risks]")
+            for risk in data["behavioral_risks"]:
+                sections.append(f"  - {','.join(risk.get('risks', []))}: {risk.get('description', '')}")
+        if data.get("relevant_reflections"):
+            sections.append("[relevant_reflections]")
+            for ref in data["relevant_reflections"]:
+                sections.append(f"  - {ref}")
+        if data.get("open_questions"):
+            sections.append("[open_questions]")
+            for q in data["open_questions"]:
+                sections.append(f"  - {q}")
+        return "\n".join(sections).strip()
+
     # ── Kontext-Aufbau für Relay ───────────────────────────────────────────────
     def build_context(self, query: str = "", n_history: int = 6) -> str:
-        """Erstellt einen kompakten Kontext-Block — SQLite + semantisch."""
+        """Legacy-Wrapper: nutzt den strukturierten Retrieval-Kontext."""
         retrieval_ctx = self.build_retrieval_context(query, n_history=n_history)
-        parts = []
-
-        # 1. Direktiven
-        if retrieval_ctx.active_directives:
-            parts.append("[Steffen-Direktiven]")
-            for directive in retrieval_ctx.active_directives[:5]:
-                parts.append(f"  [{directive['priority']}] {directive['text']}")
-
-        # 2. Relevante Fakten (SQLite)
-        if retrieval_ctx.relevant_facts:
-            parts.append("[Relevante Fakten]")
-            for fact in retrieval_ctx.relevant_facts[:5]:
-                parts.append(f"  {fact['key']}: {fact['value'][:100]}")
-
-        # 3. Semantischer Kontext (ChromaDB wenn verfügbar)
-        if retrieval_ctx.semantic_context:
-            parts.append(retrieval_ctx.semantic_context)
-
-        # 4. Konversations-Verlauf
-        if retrieval_ctx.conversation_history:
-            parts.append("[Konversations-Verlauf]")
-            for entry in retrieval_ctx.conversation_history:
-                role = "Steffen" if entry["role"] == "steffen" else "Isaac"
-                parts.append(f"  {role}: {entry['text'][:150]}")
-
-        return "\n".join(parts)
+        return self.format_retrieval_context(retrieval_ctx)
 
     # ── Statistiken ───────────────────────────────────────────────────────────
     def stats(self) -> dict:

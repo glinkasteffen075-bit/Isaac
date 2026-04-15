@@ -259,15 +259,18 @@ class Executor:
                     strategy: Optional[Strategy] = None,
                     interaction_class: str = "",
                     classification: Optional[ClassificationResult] = None,
-                    allow_tools: bool = True,
-                    allow_followup: bool = True,
-                    allow_provider_switch: bool = True,
+                    allow_tools: Optional[bool] = None,
+                    allow_followup: Optional[bool] = None,
+                    allow_provider_switch: Optional[bool] = None,
                     retrieved_context: Optional[dict] = None) -> Task:
-        strategy = strategy or Strategy(
-            allow_tools=allow_tools,
-            allow_followup=allow_followup,
-            allow_provider_switch=allow_provider_switch,
-        )
+        if strategy is None:
+            strategy = Strategy(
+                allow_tools=True if allow_tools is None else allow_tools,
+                allow_followup=True if allow_followup is None else allow_followup,
+                allow_provider_switch=True if allow_provider_switch is None else allow_provider_switch,
+            )
+        elif any(flag is not None for flag in (allow_tools, allow_followup, allow_provider_switch)):
+            log.warning("create_task: allow_* flags ignoriert, da Strategy explizit gesetzt ist")
         task = Task(
             id            = self.next_task_id(),
             typ           = typ,
@@ -408,7 +411,14 @@ class Executor:
     def _should_try_tool(self, task: Task, prompt: str, iteration: int) -> bool:
         if not task.allow_tools:
             return False
-        return task.typ == TaskType.CHAT
+        if task.typ != TaskType.CHAT:
+            return False
+        interaction_class = task.current_interaction_class
+        if interaction_class and (
+            is_lightweight_local_class(interaction_class) or interaction_class == "STATUS_QUERY"
+        ):
+            return False
+        return True
 
     def _tool_context_block(self, tool_name: str, tool_kind: str, via: str, result: dict) -> str:
         content = (result.get('content') or result.get('error') or '').strip()[:2200]

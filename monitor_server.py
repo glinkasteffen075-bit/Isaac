@@ -204,12 +204,19 @@ class MonitorServer:
                                   "ts": time.strftime("%H:%M:%S")})
 
     async def _process_input(self, ws, text: str):
+        t0 = time.perf_counter()
         try:
+            t_kernel_0 = time.perf_counter()
             antwort = await _kernel_ref.process(text)
+            kernel_ms = round((time.perf_counter() - t_kernel_0) * 1000, 2)
             AuditLog.isaac_output(antwort)
+            t_send_0 = time.perf_counter()
             await self._send(ws, {"typ": "chat_response",
                                   "text": antwort,
                                   "ts":   time.strftime("%H:%M:%S")})
+            send_ms = round((time.perf_counter() - t_send_0) * 1000, 2)
+            total_ms = round((time.perf_counter() - t0) * 1000, 2)
+            log.info("Latency(chat_ws) | total=%sms kernel=%sms send=%sms", total_ms, kernel_ms, send_ms)
         except Exception as e:
             await self._send(ws, {"typ": "chat_response",
                                   "text": f"[Fehler] {e}",
@@ -258,18 +265,7 @@ class MonitorServer:
             blacklist_status = get_blacklist().all_stats()
         except Exception: pass
 
-        provider_configs = {}
-        for name, cfg in getattr(self.cfg, "providers", {}).items():
-            provider_configs[name] = {
-                "enabled": bool(getattr(cfg, "enabled", False)),
-                "available": bool(getattr(cfg, "available", False)),
-                "allowed": bool(self.cfg.is_provider_allowed(name)),
-                "default_model": getattr(cfg, "default_model", ""),
-                "base_url": getattr(cfg, "base_url", ""),
-                "timeout": getattr(cfg, "timeout", None),
-                "rpm": getattr(cfg, "rpm", None),
-                "tpm": getattr(cfg, "tpm", None),
-            }
+        provider_configs = get_config().list_provider_configs()
 
         tools_status = []
         browser_catalog = []
@@ -548,6 +544,81 @@ class DashboardHTTPServer:
                 except PermissionError as e:
                     return web.json_response({"ok": False, "error": str(e)}, status=403)
 
+            async def providers_list(request):
+                cfg = get_config()
+                return web.json_response({"ok": True, "providers": cfg.list_provider_configs(), "primary_provider": cfg.relay.primary_provider})
+
+            async def providers_upsert(request):
+                data = await _request_json(request)
+                try:
+                    _ensure_local_owner_request(request, "providers_upsert")
+                    provider = get_config().upsert_provider(data)
+                    get_relay().refresh_provider_config()
+                    return web.json_response({"ok": True, "provider": provider, "primary_provider": get_config().relay.primary_provider})
+                except PermissionError as e:
+                    return web.json_response({"ok": False, "error": str(e)}, status=403)
+                except ValueError as e:
+                    return web.json_response({"ok": False, "error": str(e)}, status=400)
+
+            async def providers_delete(request):
+                data = await _request_json(request)
+                provider_id = (data.get("provider_id") or "").strip()
+                if not provider_id:
+                    return web.json_response({"ok": False, "error": "provider_id fehlt"}, status=400)
+                try:
+                    _ensure_local_owner_request(request, "providers_delete")
+                    ok = get_config().delete_provider(provider_id)
+                    if ok:
+                        get_relay().refresh_provider_config()
+                    return web.json_response({"ok": ok, "primary_provider": get_config().relay.primary_provider})
+                except PermissionError as e:
+                    return web.json_response({"ok": False, "error": str(e)}, status=403)
+
+            async def providers_set_default(request):
+                data = await _request_json(request)
+                provider_id = (data.get("provider_id") or "").strip()
+                if not provider_id:
+                    return web.json_response({"ok": False, "error": "provider_id fehlt"}, status=400)
+                try:
+                    _ensure_local_owner_request(request, "providers_set_default")
+                    provider = get_config().set_default_provider(provider_id)
+                    get_relay().refresh_provider_config()
+                    return web.json_response({"ok": True, "provider": provider, "primary_provider": get_config().relay.primary_provider})
+                except PermissionError as e:
+                    return web.json_response({"ok": False, "error": str(e)}, status=403)
+                except ValueError as e:
+                    return web.json_response({"ok": False, "error": str(e)}, status=400)
+
+            async def providers_test(request):
+                data = await _request_json(request)
+                provider_id = (data.get("provider_id") or "").strip()
+                model_override = (data.get("model") or "").strip() or None
+                if not provider_id:
+                    return web.json_response({"ok": False, "error": "provider_id fehlt"}, status=400)
+                cfg = get_config().get_provider(provider_id)
+                if not cfg:
+                    return web.json_response({"ok": False, "error": "Unbekannter Provider"}, status=404)
+                if not cfg.enabled:
+                    return web.json_response({"ok": False, "error": "Provider ist deaktiviert"}, status=400)
+                relay = get_relay()
+                try:
+                    answer = await relay.ask(
+                        prompt=(data.get("prompt") or "Antworte exakt mit: OK").strip() or "Antworte exakt mit: OK",
+                        system="Kurzer Provider-Selbsttest. Antworte kurz.",
+                        provider=provider_id,
+                        use_cache=False,
+                        model_override=model_override,
+                    )
+                    ok = not answer.startswith("[RELAY")
+                    return web.json_response({
+                        "ok": ok,
+                        "provider_id": provider_id,
+                        "model": model_override or cfg.model,
+                        "response_preview": answer[:220],
+                    }, status=200 if ok else 400)
+                except Exception as e:
+                    return web.json_response({"ok": False, "error": str(e), "provider_id": provider_id}, status=400)
+
             async def browser_state(request):
                 from browser import get_browser
                 browser = get_browser()
@@ -680,6 +751,7 @@ class DashboardHTTPServer:
                     'state': mon._build_state() if hasattr(mon, '_build_state') else {},
                     'tasks': get_executor().all_tasks(50),
                     'providers': get_relay().provider_status(),
+                    'provider_configs': get_config().list_provider_configs(),
                     'tools': registry.list_tools(),
                     'tool_catalog': list_local_tool_catalog(),
                     'live_tools': await __import__('tool_runtime').list_live_tool_interfaces(),
@@ -704,6 +776,11 @@ class DashboardHTTPServer:
             app.router.add_post("/api/tools/suggest", suggest_tool)
             app.router.add_get("/api/runtime/settings", runtime_settings)
             app.router.add_post("/api/runtime/settings", update_runtime_settings)
+            app.router.add_get("/api/providers", providers_list)
+            app.router.add_post("/api/providers/upsert", providers_upsert)
+            app.router.add_post("/api/providers/delete", providers_delete)
+            app.router.add_post("/api/providers/set_default", providers_set_default)
+            app.router.add_post("/api/providers/test", providers_test)
             app.router.add_get("/api/browser/state", browser_state)
             app.router.add_post("/api/browser/activate_site", browser_activate_site)
             app.router.add_post("/api/browser/openrouter_token", browser_openrouter_token)

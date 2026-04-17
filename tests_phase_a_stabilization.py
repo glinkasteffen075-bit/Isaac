@@ -1,9 +1,14 @@
 import asyncio
+import json
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from executor import Executor, Strategy, Task, TaskType
+from decision_trace import TracePhase
 from isaac_core import IsaacKernel, Intent, detect_intent
+from tool_policy import ToolDecisionReason
+from tool_runtime import select_live_tool_for_task
 from low_complexity import (
     ClassificationResult,
     InteractionClass,
@@ -241,7 +246,7 @@ class TestCriticalBugs(unittest.TestCase):
         )
         self.assertEqual(intent, Intent.TRANSLATE)
 
-    def test_bug_17_executor_blocks_tool_for_status_class_even_if_tools_allowed(self):
+    def test_bug_17_executor_keeps_explicit_tool_policy_for_status_class(self):
         task = Task(
             id="t3",
             typ=TaskType.CHAT,
@@ -251,7 +256,7 @@ class TestCriticalBugs(unittest.TestCase):
             interaction_class=InteractionClass.STATUS_QUERY,
         )
         executor = object.__new__(Executor)
-        self.assertFalse(executor._should_try_tool(task, task.prompt, iteration=0))
+        self.assertTrue(executor._should_try_tool(task, task.prompt, iteration=0))
 
     def test_bug_18_create_task_prefers_explicit_strategy_over_legacy_flags(self):
         executor = object.__new__(Executor)
@@ -269,6 +274,335 @@ class TestCriticalBugs(unittest.TestCase):
         self.assertFalse(task.allow_tools)
         self.assertFalse(task.allow_followup)
         self.assertFalse(task.allow_provider_switch)
+
+    def test_bug_19_allow_tools_true_lightweight_is_eligible(self):
+        task = Task(
+            id="t-light",
+            typ=TaskType.CHAT,
+            prompt="Hallo",
+            beschreibung="chat",
+            strategy=Strategy(allow_tools=True),
+            interaction_class=InteractionClass.SOCIAL_GREETING,
+        )
+        executor = object.__new__(Executor)
+        decision = executor._evaluate_tool_eligibility(task, task.prompt, iteration=0)
+        self.assertTrue(decision.eligible)
+        self.assertEqual(decision.reason, ToolDecisionReason.ELIGIBLE)
+
+    def test_bug_20_allow_tools_false_blocks_with_reason(self):
+        task = Task(
+            id="t-block",
+            typ=TaskType.CHAT,
+            prompt="Suche Wetter Berlin",
+            beschreibung="chat",
+            strategy=Strategy(allow_tools=False),
+            interaction_class=InteractionClass.TOOL_REQUEST,
+        )
+        executor = object.__new__(Executor)
+        decision = executor._evaluate_tool_eligibility(task, task.prompt, iteration=0)
+        self.assertFalse(decision.eligible)
+        self.assertEqual(decision.reason, ToolDecisionReason.BLOCKED_ALLOW_TOOLS_FALSE)
+
+    def test_bug_21_no_candidate_returns_eligible_but_no_candidate(self):
+        task = Task(
+            id="t-no-candidate",
+            typ=TaskType.SEARCH,
+            prompt="Suche Wetter Berlin",
+            beschreibung="search",
+            strategy=Strategy(allow_tools=True),
+            interaction_class=InteractionClass.TOOL_REQUEST,
+        )
+
+        class FakeRegistry:
+            def list_tools(self, active_only=True):
+                return []
+
+        async def fake_discover(*args, **kwargs):
+            return {"tools": [], "source": "remote", "url": "http://127.0.0.1:8766"}
+
+        with patch("tool_runtime.get_tool_registry", return_value=FakeRegistry()), patch("tool_runtime.discover_mcp_bridge", fake_discover):
+            decision = asyncio.run(select_live_tool_for_task(task, task.prompt, 0, task.tool_policy))
+        self.assertIsNone(decision.selected)
+        self.assertEqual(decision.reason, ToolDecisionReason.ELIGIBLE_BUT_NO_CANDIDATE)
+
+    def test_bug_22_classification_does_not_change_eligibility(self):
+        executor = object.__new__(Executor)
+        task_a = Task(
+            id="t-class-a",
+            typ=TaskType.CHAT,
+            prompt="Prüfe Tools",
+            beschreibung="chat",
+            strategy=Strategy(allow_tools=True),
+            interaction_class=InteractionClass.NORMAL_CHAT,
+        )
+        task_b = Task(
+            id="t-class-b",
+            typ=TaskType.CHAT,
+            prompt="Prüfe Tools",
+            beschreibung="chat",
+            strategy=Strategy(allow_tools=True),
+            interaction_class=InteractionClass.SOCIAL_GREETING,
+        )
+        decision_a = executor._evaluate_tool_eligibility(task_a, task_a.prompt, iteration=0)
+        decision_b = executor._evaluate_tool_eligibility(task_b, task_b.prompt, iteration=0)
+        self.assertEqual(decision_a.eligible, decision_b.eligible)
+        self.assertEqual(decision_a.reason, decision_b.reason)
+
+    def test_bug_23_lightweight_no_longer_forces_followup_break(self):
+        class FakeScore:
+            total = 3.0
+            acceptable = False
+
+            def summary(self):
+                return "score=3.0"
+
+        class FakeDecision:
+            needed = False
+            mode = "none"
+            reason = "done"
+            switch_provider = False
+            followup_prompt = ""
+            sub_tasks = []
+
+        class FakeLogic:
+            def __init__(self):
+                self.followup_calls = 0
+
+            def evaluate(self, *args, **kwargs):
+                return FakeScore()
+
+            def decide_followup(self, *args, **kwargs):
+                self.followup_calls += 1
+                return FakeDecision()
+
+        class FakeRelay:
+            async def ask_with_fallback(self, *args, **kwargs):
+                return "Antwort", "test-provider"
+
+        class FakeWatchdog:
+            def record_progress(self, task_id):
+                return None
+
+        class FakeState:
+            def to_dict(self):
+                return {}
+
+        class FakeToolState:
+            def get_or_create(self, *args, **kwargs):
+                return FakeState()
+
+            def pop_next_input(self, *args, **kwargs):
+                return ""
+
+        executor = object.__new__(Executor)
+        executor.logic = FakeLogic()
+        executor.relay = FakeRelay()
+        executor._tool_state = FakeToolState()
+        executor._notify = lambda *args, **kwargs: None
+        executor._get_watchdog = lambda: FakeWatchdog()
+
+        task = Task(
+            id="t-follow",
+            typ=TaskType.CHAT,
+            prompt="Hallo",
+            beschreibung="chat",
+            strategy=Strategy(allow_tools=False, allow_followup=True),
+            interaction_class=InteractionClass.SOCIAL_GREETING,
+        )
+
+        asyncio.run(executor._execute_ai(task))
+        self.assertEqual(executor.logic.followup_calls, 1)
+
+    def test_bug_24_decision_trace_blocked_allow_tools_false(self):
+        executor = object.__new__(Executor)
+        task = Task(
+            id="t-trace-blocked",
+            typ=TaskType.CHAT,
+            prompt="Nutze ein Tool",
+            beschreibung="chat",
+            strategy=Strategy(allow_tools=False),
+        )
+
+        decision = executor._evaluate_tool_eligibility(task, task.prompt, iteration=0)
+        self.assertFalse(decision.eligible)
+        self.assertEqual(task.decision_trace.entries[-1].phase, TracePhase.ELIGIBILITY)
+        self.assertEqual(task.decision_trace.entries[-1].data["reason"], ToolDecisionReason.BLOCKED_ALLOW_TOOLS_FALSE.value)
+
+    def test_bug_25_decision_trace_allowed_explicit_policy(self):
+        executor = object.__new__(Executor)
+        task = Task(
+            id="t-trace-allowed",
+            typ=TaskType.CHAT,
+            prompt="Was ist 2+2?",
+            beschreibung="chat",
+            strategy=Strategy(allow_tools=True),
+        )
+
+        decision = executor._evaluate_tool_eligibility(task, task.prompt, iteration=0)
+        self.assertTrue(decision.eligible)
+        self.assertEqual(task.decision_trace.entries[-1].data["reason"], ToolDecisionReason.ELIGIBLE.value)
+
+    def test_bug_26_decision_trace_eligible_but_no_candidate(self):
+        class FakeState:
+            def to_dict(self):
+                return {}
+
+        class FakeToolState:
+            def record_call(self, *args, **kwargs):
+                return None
+
+            def get_or_create(self, *args, **kwargs):
+                return FakeState()
+
+            def generate_next_input(self, *args, **kwargs):
+                return ""
+
+        executor = object.__new__(Executor)
+        executor._tool_state = FakeToolState()
+        executor._notify = lambda *args, **kwargs: None
+
+        task = Task(
+            id="t-trace-no-candidate",
+            typ=TaskType.CHAT,
+            prompt="Suche Wetter Berlin",
+            beschreibung="chat",
+            strategy=Strategy(allow_tools=True),
+        )
+
+        async def fake_select(*args, **kwargs):
+            from tool_policy import ToolSelectionDecision
+            return ToolSelectionDecision(selected=None, reason=ToolDecisionReason.ELIGIBLE_BUT_NO_CANDIDATE, metadata={"candidate_count": 0})
+
+        with patch("executor.select_live_tool_for_task", fake_select):
+            ctx, follow = asyncio.run(executor._maybe_use_tool(task, task.prompt, iteration=0, used_tool_ids=set()))
+
+        self.assertEqual(ctx, "")
+        self.assertEqual(follow, "")
+        events = [e.event for e in task.decision_trace.entries if e.phase == TracePhase.SELECTION]
+        self.assertIn("no_candidate", events)
+
+    def test_bug_27_decision_trace_tool_execution_failed(self):
+        class FakeState:
+            def to_dict(self):
+                return {}
+
+        class FakeToolState:
+            def record_call(self, *args, **kwargs):
+                return None
+
+            def get_or_create(self, *args, **kwargs):
+                return FakeState()
+
+            def generate_next_input(self, *args, **kwargs):
+                return ""
+
+        executor = object.__new__(Executor)
+        executor._tool_state = FakeToolState()
+        executor._notify = lambda *args, **kwargs: None
+
+        task = Task(
+            id="t-trace-failed",
+            typ=TaskType.CHAT,
+            prompt="Nutze Tool",
+            beschreibung="chat",
+            strategy=Strategy(allow_tools=True),
+        )
+
+        async def fake_select(*args, **kwargs):
+            from tool_policy import ToolSelectionDecision
+            return ToolSelectionDecision(
+                selected={
+                    "identifier": "tool.fail",
+                    "name": "Fail Tool",
+                    "kind": "api",
+                    "category": "general",
+                    "source": "registry",
+                },
+                reason=ToolDecisionReason.SELECTED_CANDIDATE,
+                metadata={"candidate_count": 1},
+            )
+
+        async def fake_run(*args, **kwargs):
+            return {"ok": False, "error": "boom", "via": "api", "status_code": 500}
+
+        with patch("executor.select_live_tool_for_task", fake_select), patch("executor.run_selected_tool", fake_run):
+            ctx, follow = asyncio.run(executor._maybe_use_tool(task, task.prompt, iteration=0, used_tool_ids=set()))
+
+        self.assertEqual(ctx, "")
+        self.assertEqual(follow, "")
+        events = [e.event for e in task.decision_trace.entries]
+        self.assertIn("execution_failed", events)
+        self.assertIn("context_skipped", events)
+        self.assertIn("followup_not_generated", events)
+
+    def test_bug_28_decision_trace_tool_execution_succeeded(self):
+        class FakeState:
+            def to_dict(self):
+                return {}
+
+        class FakeToolState:
+            def record_call(self, *args, **kwargs):
+                return None
+
+            def get_or_create(self, *args, **kwargs):
+                return FakeState()
+
+            def generate_next_input(self, *args, **kwargs):
+                return "next prompt"
+
+        executor = object.__new__(Executor)
+        executor._tool_state = FakeToolState()
+        executor._notify = lambda *args, **kwargs: None
+
+        task = Task(
+            id="t-trace-success",
+            typ=TaskType.CHAT,
+            prompt="Nutze Tool",
+            beschreibung="chat",
+            strategy=Strategy(allow_tools=True),
+        )
+
+        async def fake_select(*args, **kwargs):
+            from tool_policy import ToolSelectionDecision
+            return ToolSelectionDecision(
+                selected={
+                    "identifier": "tool.ok",
+                    "name": "OK Tool",
+                    "kind": "api",
+                    "category": "general",
+                    "source": "registry",
+                },
+                reason=ToolDecisionReason.SELECTED_CANDIDATE,
+                metadata={"candidate_count": 1},
+            )
+
+        async def fake_run(*args, **kwargs):
+            return {"ok": True, "content": "sunny", "via": "api", "status_code": 200}
+
+        with patch("executor.select_live_tool_for_task", fake_select), patch("executor.run_selected_tool", fake_run):
+            ctx, follow = asyncio.run(executor._maybe_use_tool(task, task.prompt, iteration=0, used_tool_ids=set()))
+
+        self.assertIn("[Tool-Kontext]", ctx)
+        self.assertEqual(follow, "next prompt")
+        events = [e.event for e in task.decision_trace.entries]
+        self.assertIn("execution_succeeded", events)
+        self.assertIn("context_appended", events)
+        self.assertIn("followup_generated", events)
+
+    def test_bug_29_task_to_dict_contains_serializable_decision_trace(self):
+        task = Task(
+            id="t-trace-serialize",
+            typ=TaskType.CHAT,
+            prompt="Hallo",
+            beschreibung="chat",
+        )
+        task.decision_trace.add(TracePhase.ELIGIBILITY, "evaluated", {"eligible": True, "reason": "eligible"})
+
+        data = task.to_dict()
+        self.assertIn("decision_trace", data)
+        self.assertEqual(data["decision_trace"][0]["phase"], "eligibility")
+        self.assertEqual(data["decision_trace"][0]["event"], "evaluated")
+        json.dumps(data)
 
 if __name__ == '__main__':
     unittest.main()

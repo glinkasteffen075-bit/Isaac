@@ -79,7 +79,8 @@ textarea,input{font-size:16px;}
 .tm-filter-btn.active,.tm-filter-btn:hover{color:var(--text);border-color:var(--cyan);}
 .tab-content{display:none;min-height:0;overflow:hidden;}
 .tab-content.active{display:block;height:100%;}
-#tm-container,#log-container,#providers-grid,#directives-list{height:100%;overflow:auto;padding-right:4px;}
+#tm-container,#log-container,#directives-list{height:100%;overflow:auto;padding-right:4px;}
+#tab-providers{height:100%;overflow:auto;padding-right:4px;}
 #providers-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;align-content:start;}
 .provider-card{padding:14px;border-radius:16px;border:1px solid var(--line);background:rgba(10,15,26,.78);display:grid;gap:8px;}
 .provider-card.primary{outline:1px solid rgba(72,199,255,.35);box-shadow:0 0 0 1px rgba(72,199,255,.12) inset;}
@@ -138,6 +139,11 @@ textarea,input{font-size:16px;}
 .badge.inf{font-size:.68rem;color:var(--cyan);border-color:rgba(72,199,255,.35);}
 .directive-row{display:grid;grid-template-columns:auto 1fr auto auto;gap:10px;align-items:center;padding:12px 14px;border-radius:14px;border:1px solid var(--line);background:rgba(10,15,26,.78);}
 .dir-id{font-family:'JetBrains Mono',monospace;font-size:.74rem;color:var(--dim);}
+.provider-form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;}
+.provider-form-grid label{display:grid;gap:6px;font-size:.82rem;color:var(--muted);}
+.provider-form-grid input,.provider-form-grid select{padding:.62rem .72rem;border-radius:10px;border:1px solid var(--line2);background:#09111e;color:var(--text);}
+.provider-config-item{padding:.65rem .7rem;border:1px solid var(--line);border-radius:11px;background:rgba(8,12,20,.68);display:grid;gap:8px;}
+.provider-config-meta{font-size:.78rem;color:var(--muted);display:flex;gap:10px;flex-wrap:wrap;}
 
 .chat{padding:14px;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;gap:12px;min-height:0;}
 .chat-top{display:flex;align-items:center;justify-content:space-between;gap:10px;}
@@ -288,6 +294,43 @@ textarea,input{font-size:16px;}
       </div>
 
       <div class="tab-content" id="tab-providers">
+        <div class="tool-card" style="margin-bottom:12px">
+          <h3>Provider-Konfiguration</h3>
+          <div class="helper">Zentrale Verwaltung für Provider-ID, Typ, Base URL, Modell, API-Key, Aktiv-Status und Standardprovider.</div>
+          <div class="tool-actions" style="margin:.75rem 0">
+            <button class="hbtn" onclick="startProviderCreate()">Neuen Provider</button>
+            <button class="hbtn" onclick="refreshProvidersConfig()">Neu laden</button>
+          </div>
+          <div id="provider-config-list" class="tool-list"></div>
+          <div id="provider-edit-form" style="display:none;margin-top:.75rem;padding:.75rem;border:1px solid var(--line);border-radius:12px;background:rgba(8,12,20,.72)">
+            <div class="provider-form-grid">
+              <label>Provider-ID<input id="prov-provider_id" placeholder="z.B. ollama-local" /></label>
+              <label>Anzeigename<input id="prov-display_name" placeholder="z.B. Local Ollama" /></label>
+              <label>Provider-Typ
+                <select id="prov-provider_type">
+                  <option value="ollama">ollama</option>
+                  <option value="openai_compat">openai_compat</option>
+                  <option value="anthropic">anthropic</option>
+                  <option value="gemini">gemini</option>
+                  <option value="cohere">cohere</option>
+                  <option value="huggingface">huggingface</option>
+                </select>
+              </label>
+              <label>Modell<input id="prov-model" placeholder="z.B. llama3.2:latest" /></label>
+              <label>Base URL / Adresse<input id="prov-base_url" placeholder="http://127.0.0.1:11434/api/chat" /></label>
+              <label>Timeout (Sek.)<input id="prov-timeout" type="number" min="1" value="60" /></label>
+              <label>RPM<input id="prov-rpm" type="number" min="1" value="60" /></label>
+              <label>TPM<input id="prov-tpm" type="number" min="1" value="60000" /></label>
+              <label>API-Key (optional)<input id="prov-api_key" type="password" placeholder="neu setzen, leer = unverändert" /></label>
+            </div>
+            <div class="tool-actions" style="margin-top:.75rem">
+              <label class="helper"><input type="checkbox" id="prov-enabled" checked /> aktiviert</label>
+              <label class="helper"><input type="checkbox" id="prov-is_default" /> als Standard setzen</label>
+              <button class="hbtn" onclick="saveProviderConfig()">Speichern</button>
+              <button class="hbtn" onclick="cancelProviderEdit()">Abbrechen</button>
+            </div>
+          </div>
+        </div>
         <div class="tool-card" style="margin-bottom:12px">
           <h3>OpenRouter</h3>
           <div class="helper">Erzeugt per Browser-Automation einen OpenRouter-Token und speichert ihn lokal als <code>OPENROUTER_API_KEY</code>.</div>
@@ -442,6 +485,8 @@ const state = {
   toolCatalog: [],
   toolBundles: [],
   liveTools: null,
+  providerConfigs: [],
+  providerEdit: null,
   mcpData: { capabilities: {}, tools: [], resources: [] },
   runtimeSettings: {},
   updater: { packages: [], status: null, inspect: null, selected: null },
@@ -690,6 +735,10 @@ function updateState(s) {
   }
 
   if (s.providers) renderProviders(s.providers);
+  if (s.provider_configs) {
+    state.providerConfigs = Array.isArray(s.provider_configs) ? s.provider_configs : [];
+    renderProviderConfigs();
+  }
   if (s.tools) { state.tools = s.tools; renderToolsLive(); updateBadge('tab-tools', s.tools.length); }
   if (s.browser_catalog) renderBrowserCatalog(s.browser_catalog);
   if (s.settings) {
@@ -973,15 +1022,178 @@ function renderProviders(providers) {
       (!p.available ? ' unavail' : '');
     card.innerHTML = `
       <div class="prov-name">
-        ${p.available ? '✓' : '✗'} ${p.name}
+        ${p.available ? '✓' : '✗'} ${escHtml(p.display_name || p.name)}
         ${p.primary ? '<span class="badge inf">PRIMÄR</span>' : ''}
         ${p.allowed === false ? '<span class="badge hot">BLOCKIERT</span>' : ''}
       </div>
+      <div class="prov-rate">${escHtml(p.provider_type || '')}</div>
       <div class="prov-model">${p.model || '–'}</div>
       <div class="prov-rate">${p.rate || '–'}</div>
     `;
     grid.appendChild(card);
   });
+}
+
+function renderProviderConfigs() {
+  const box = document.getElementById('provider-config-list');
+  if (!box) return;
+  const providers = state.providerConfigs || [];
+  if (!providers.length) {
+    box.innerHTML = '<div class="tool-mini">Keine Provider-Konfigurationen vorhanden.</div>';
+    return;
+  }
+  box.innerHTML = providers.map(p => `
+    <div class="provider-config-item">
+      <div><strong>${escHtml(p.display_name || p.provider_id)}</strong> <span class="badge ${p.enabled ? 'on' : 'hot'}">${p.enabled ? 'aktiv' : 'deaktiviert'}</span> ${p.is_default ? '<span class="badge inf">STANDARD</span>' : ''}</div>
+      <div class="provider-config-meta">
+        <span><code>${escHtml(p.provider_id || '')}</code></span>
+        <span>${escHtml(p.provider_type || '')}</span>
+        <span>${escHtml(p.model || '')}</span>
+        <span>${p.has_api_key ? escHtml(p.api_key_masked || 'API-Key gesetzt') : 'kein API-Key'}</span>
+      </div>
+      <div class="provider-config-meta"><span>${escHtml(p.base_url || '')}</span><span>timeout ${p.timeout || 60}s</span></div>
+      <div class="tool-actions">
+        <button class="hbtn" onclick="editProviderConfig('${escHtml(p.provider_id || '')}')">Bearbeiten</button>
+        <button class="hbtn" onclick="testProviderConfig('${escHtml(p.provider_id || '')}')">Health-Test</button>
+        <button class="hbtn" onclick="setDefaultProviderConfig('${escHtml(p.provider_id || '')}')">Als Standard</button>
+        <button class="hbtn danger" onclick="deleteProviderConfig('${escHtml(p.provider_id || '')}')">Löschen</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function startProviderCreate() {
+  state.providerEdit = null;
+  const form = document.getElementById('provider-edit-form');
+  if (form) form.style.display = 'block';
+  document.getElementById('prov-provider_id').disabled = false;
+  document.getElementById('prov-provider_id').value = '';
+  document.getElementById('prov-display_name').value = '';
+  document.getElementById('prov-provider_type').value = 'openai_compat';
+  document.getElementById('prov-model').value = '';
+  document.getElementById('prov-base_url').value = '';
+  document.getElementById('prov-timeout').value = '60';
+  document.getElementById('prov-rpm').value = '60';
+  document.getElementById('prov-tpm').value = '60000';
+  document.getElementById('prov-api_key').value = '';
+  document.getElementById('prov-enabled').checked = true;
+  document.getElementById('prov-is_default').checked = false;
+}
+
+function editProviderConfig(providerId) {
+  const p = (state.providerConfigs || []).find(x => x.provider_id === providerId);
+  if (!p) return;
+  state.providerEdit = providerId;
+  const form = document.getElementById('provider-edit-form');
+  if (form) form.style.display = 'block';
+  document.getElementById('prov-provider_id').disabled = true;
+  document.getElementById('prov-provider_id').value = p.provider_id || '';
+  document.getElementById('prov-display_name').value = p.display_name || '';
+  document.getElementById('prov-provider_type').value = p.provider_type || 'openai_compat';
+  document.getElementById('prov-model').value = p.model || '';
+  document.getElementById('prov-base_url').value = p.base_url || '';
+  document.getElementById('prov-timeout').value = String(p.timeout || 60);
+  document.getElementById('prov-rpm').value = String(p.rpm || 60);
+  document.getElementById('prov-tpm').value = String(p.tpm || 60000);
+  document.getElementById('prov-api_key').value = '';
+  document.getElementById('prov-enabled').checked = !!p.enabled;
+  document.getElementById('prov-is_default').checked = !!p.is_default;
+}
+
+function cancelProviderEdit() {
+  const form = document.getElementById('provider-edit-form');
+  if (form) form.style.display = 'none';
+  state.providerEdit = null;
+}
+
+async function refreshProvidersConfig() {
+  try {
+    const data = await fetchJson('/api/providers');
+    state.providerConfigs = data.providers || [];
+    renderProviderConfigs();
+  } catch (err) {
+    addSysMsg('⚠ Provider-Liste konnte nicht geladen werden: ' + (err.message || err));
+  }
+}
+
+async function saveProviderConfig() {
+  const provider_id = (document.getElementById('prov-provider_id').value || '').trim();
+  const display_name = (document.getElementById('prov-display_name').value || '').trim();
+  const provider_type = (document.getElementById('prov-provider_type').value || '').trim();
+  const model = (document.getElementById('prov-model').value || '').trim();
+  const base_url = (document.getElementById('prov-base_url').value || '').trim();
+  const api_key = (document.getElementById('prov-api_key').value || '').trim();
+  const timeout = Number(document.getElementById('prov-timeout').value || 60);
+  const rpm = Number(document.getElementById('prov-rpm').value || 60);
+  const tpm = Number(document.getElementById('prov-tpm').value || 60000);
+  const enabled = !!document.getElementById('prov-enabled').checked;
+  const is_default = !!document.getElementById('prov-is_default').checked;
+
+  if (!provider_id || !model || !base_url || !provider_type) {
+    addSysMsg('⚠ Provider-ID, Typ, Modell und Base URL sind Pflicht.');
+    return;
+  }
+
+  try {
+    await fetchJson('/api/providers/upsert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_id, display_name, provider_type, model, base_url, api_key, timeout, rpm, tpm, enabled, is_default }),
+    });
+    addSysMsg('Provider gespeichert: ' + provider_id);
+    cancelProviderEdit();
+    await refreshProvidersConfig();
+    const mon = await fetchJson('/api/monitor/state');
+    if (mon.state && mon.state.providers) renderProviders(mon.state.providers);
+  } catch (err) {
+    addSysMsg('⚠ Provider speichern fehlgeschlagen: ' + (err.message || err));
+  }
+}
+
+async function deleteProviderConfig(providerId) {
+  if (!providerId) return;
+  const ok = confirm('Provider wirklich löschen? ' + providerId);
+  if (!ok) return;
+  try {
+    await fetchJson('/api/providers/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_id: providerId }),
+    });
+    addSysMsg('Provider gelöscht: ' + providerId);
+    await refreshProvidersConfig();
+  } catch (err) {
+    addSysMsg('⚠ Provider löschen fehlgeschlagen: ' + (err.message || err));
+  }
+}
+
+async function setDefaultProviderConfig(providerId) {
+  if (!providerId) return;
+  try {
+    await fetchJson('/api/providers/set_default', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_id: providerId }),
+    });
+    addSysMsg('Standardprovider gesetzt: ' + providerId);
+    await refreshProvidersConfig();
+  } catch (err) {
+    addSysMsg('⚠ Standardprovider konnte nicht gesetzt werden: ' + (err.message || err));
+  }
+}
+
+async function testProviderConfig(providerId) {
+  if (!providerId) return;
+  try {
+    const data = await fetchJson('/api/providers/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_id: providerId }),
+    });
+    addSysMsg('Provider-Test OK: ' + providerId + ' → ' + (data.response_preview || 'OK'));
+  } catch (err) {
+    addSysMsg('⚠ Provider-Test fehlgeschlagen (' + providerId + '): ' + (err.message || err));
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1548,8 +1760,10 @@ document.getElementById('dir-input')?.addEventListener('keydown', e => {
 connect();
 refreshTools();
 refreshRuntimeSettings();
+refreshProvidersConfig();
 setInterval(refreshTools, 15000);
 setInterval(refreshRuntimeSettings, 15000);
+setInterval(refreshProvidersConfig, 15000);
 
 
 

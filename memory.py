@@ -250,14 +250,27 @@ class Memory:
         return row["value"] if row else None
 
     def search_facts(self, query: str, limit: int = 10) -> list[dict]:
+        terms = [t for t in re.findall(r"[\w]+", (query or "").lower()) if len(t) >= 2]
+        if not terms:
+            return []
+        fts_query = " OR ".join(terms[:8])
         with _conn() as con:
-            rows = con.execute(
-                """SELECT f.* FROM facts f
-                   JOIN facts_fts ON facts_fts.rowid = f.id
-                   WHERE facts_fts MATCH ?
-                   ORDER BY f.confidence DESC LIMIT ?""",
-                (query, limit)
-            ).fetchall()
+            try:
+                rows = con.execute(
+                    """SELECT f.* FROM facts f
+                       JOIN facts_fts ON facts_fts.rowid = f.id
+                       WHERE facts_fts MATCH ?
+                       ORDER BY f.confidence DESC LIMIT ?""",
+                    (fts_query, limit),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                like = f"%{' '.join(terms[:3])}%"
+                rows = con.execute(
+                    """SELECT * FROM facts
+                       WHERE key LIKE ? OR value LIKE ?
+                       ORDER BY confidence DESC LIMIT ?""",
+                    (like, like, limit),
+                ).fetchall()
         return [dict(r) for r in rows]
 
     def all_facts(self) -> dict[str, str]:

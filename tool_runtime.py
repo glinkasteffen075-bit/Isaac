@@ -14,6 +14,7 @@ from browser_chat import BrowserChatProvider
 from mcp_client import MCPClient
 from mcp_registry import get_mcp_registry
 from task_tool_state import get_task_tool_state_store
+from tool_policy import ToolDecisionReason, ToolPolicy, ToolSelectionDecision
 
 _browser = None
 
@@ -243,7 +244,8 @@ async def list_live_tool_interfaces() -> dict:
     }
 
 
-async def select_live_tool_for_task(task, prompt: str, iteration: int) -> dict | None:
+async def select_live_tool_for_task(task, prompt: str, iteration: int, policy: ToolPolicy | None = None) -> ToolSelectionDecision:
+    del policy
     store = get_task_tool_state_store()
     state = store.get_or_create(task.id, task.prompt)
     reg = get_tool_registry()
@@ -293,11 +295,31 @@ async def select_live_tool_for_task(task, prompt: str, iteration: int) -> dict |
         }))
 
     if not candidates:
-        return None
+        return ToolSelectionDecision(
+            selected=None,
+            reason=ToolDecisionReason.ELIGIBLE_BUT_NO_CANDIDATE,
+            metadata={
+                "candidate_count": 0,
+                "category_pref": list(category_pref),
+                "kind_pref": list(kind_pref),
+                "iteration": iteration,
+            },
+        )
     candidates.sort(key=lambda x: x[0], reverse=True)
+    top_score = candidates[0][0]
     selected = candidates[0][1]
     store.set_selected(task.id, selected["source"], selected["identifier"], selected["name"])
-    return selected
+    return ToolSelectionDecision(
+        selected=selected,
+        reason=ToolDecisionReason.SELECTED_CANDIDATE,
+        metadata={
+            "candidate_count": len(candidates),
+            "selected_score": round(float(top_score), 3),
+            "category_pref": list(category_pref),
+            "kind_pref": list(kind_pref),
+            "iteration": iteration,
+        },
+    )
 
 
 async def run_selected_tool(selection: dict, prompt: str) -> dict:

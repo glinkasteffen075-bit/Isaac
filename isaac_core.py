@@ -26,6 +26,7 @@ import asyncio
 import json
 import re
 import time
+import hashlib
 import logging
 from typing import Optional, Any
 
@@ -174,11 +175,18 @@ class IsaacKernel:
         if not user_input.strip():
             return ""
 
+        t_start = time.perf_counter()
+        timing: dict[str, float] = {}
+
         # 0) Klassifikation als harte Routing-Grundlage
         classification = classify_interaction_result(user_input)
         interaction_class = classification.interaction_class
         if is_lightweight_local_class(interaction_class):
+            timing["classification_ms"] = round((time.perf_counter() - t_start) * 1000, 2)
+            log.info("Latency(lightweight) | total=%sms input='%s'", timing["classification_ms"], user_input[:42])
             return local_class_response(interaction_class, user_input)
+
+        timing["classification_ms"] = round((time.perf_counter() - t_start) * 1000, 2)
 
         t0 = time.monotonic()
 
@@ -192,15 +200,18 @@ class IsaacKernel:
 
         # 1. Empathie
         emp = self.empathie.analysiere(user_input)
+        timing["empathie_ms"] = round((time.perf_counter() - t_start) * 1000, 2)
 
         # 2. Wissensdatenbank konsultieren
         wissen_kontext = self.ki_dialog.als_kontext(user_input)
+        timing["wissen_ms"] = round((time.perf_counter() - t_start) * 1000, 2)
 
         # 3. Intent mit klassifikationsdominierter Korrektur
         detected_intent = detect_intent(user_input)
         intent = self._resolve_intent_from_classification(
             user_input, detected_intent, interaction_class
         )
+        timing["routing_prep_ms"] = round((time.perf_counter() - t_start) * 1000, 2)
 
         log.info(
             f"Input: '{user_input[:50]}' │ Intent: {intent} │ "
@@ -249,6 +260,20 @@ class IsaacKernel:
             wissen_kontext,
             interaction_class,
             classification,
+        )
+        timing["route_done_ms"] = round((time.perf_counter() - t_start) * 1000, 2)
+
+        total_ms = round((time.perf_counter() - t_start) * 1000, 2)
+        log.info(
+            "Latency(process) | total=%sms classify=%sms empathie=%sms wissen=%sms prep=%sms route=%sms class=%s intent=%s",
+            total_ms,
+            timing.get("classification_ms", 0.0),
+            timing.get("empathie_ms", 0.0),
+            timing.get("wissen_ms", 0.0),
+            timing.get("routing_prep_ms", 0.0),
+            timing.get("route_done_ms", 0.0),
+            interaction_class,
+            intent,
         )
 
         return self._post_process(user_input, antwort, emp, score, t0)
@@ -792,6 +817,7 @@ class IsaacKernel:
     def _select_response_strategy(
         self, user_input: str, intent: str, interaction_class: str, retrieval_ctx: dict[str, Any]
     ) -> Strategy:
+        cfg = getattr(self, "cfg", None) or get_config()
         allow_tools = intent == Intent.SEARCH
         allow_followup = interaction_class not in ("SHORT_CLARIFICATION",)
         allow_provider_switch = True
@@ -817,6 +843,18 @@ class IsaacKernel:
         if "quality_regression_risk" in risk_tags and intent == Intent.CHAT:
             allow_provider_switch = False
 
+        if cfg.style_mode == "light_sarcastic":
+            if self._should_allow_light_sarcasm(user_input, intent, interaction_class):
+                if self._light_sarcasm_triggered(user_input):
+                    style_note += (
+                        "\n[Antwortstil] Nach der Lösung ist maximal ein kurzer trockener, leicht "
+                        "sarkastischer Kommentar erlaubt."
+                    )
+                else:
+                    style_note += "\n[Antwortstil] Bleibe knapp, direkt und rein sachlich."
+            else:
+                style_note += "\n[Antwortstil] Kein Sarkasmus in dieser Antwort."
+
         # Kürzeste Klärungen ohne Eskalation.
         if interaction_class in ("SHORT_CLARIFICATION",):
             allow_followup = False
@@ -827,6 +865,26 @@ class IsaacKernel:
             allow_provider_switch=allow_provider_switch,
             style_note=style_note,
         )
+
+    def _should_allow_light_sarcasm(self, user_input: str, intent: str, interaction_class: str) -> bool:
+        text = (user_input or "").lower()
+        if intent in (Intent.SUDO_OPEN, Intent.SUDO_CLOSE, Intent.CODE, Intent.FILE):
+            return False
+        if interaction_class in ("STATUS_QUERY", "SHORT_CLARIFICATION"):
+            return False
+        blocked_markers = (
+            "security", "sicher", "passwort", "token", "api key", "credential", "berechtigung",
+            "debug", "traceback", "stacktrace", "exception", "crash", "fehler", "failed", "timeout",
+            "panic", "kaputt", "not working", "funktioniert nicht",
+        )
+        if any(marker in text for marker in blocked_markers):
+            return False
+        return True
+
+    @staticmethod
+    def _light_sarcasm_triggered(user_input: str) -> bool:
+        digest = hashlib.blake2s((user_input or "").encode("utf-8", errors="ignore"), digest_size=2).digest()
+        return (int.from_bytes(digest, "big") % 4) == 0
 
     def _format_retrieval_context(self, retrieval_ctx: dict[str, Any]) -> str:
         return self.memory.format_retrieval_context(retrieval_ctx)
@@ -861,6 +919,19 @@ class IsaacKernel:
             basis += f"\n\n{wissen_kontext}"
         if strategy_note:
             basis += f"\n{strategy_note}"
+
+        cfg = getattr(self, "cfg", None) or get_config()
+        if cfg.style_mode == "professional":
+            basis += (
+                "\n[Stilmodus] professional: Antworte klar, präzise, lösungsorientiert. "
+                "Keine Ironie oder Sarkasmus."
+            )
+        else:
+            basis += (
+                "\n[Stilmodus] light_sarcastic: Antworte primär direkt, kompetent und hilfreich. "
+                "Gelegentlich ist ein kurzer trockener Seitenhieb erlaubt, aber nie überdreht. "
+                "Kein Sarkasmus bei Fehlerfrust, Sicherheitsthemen oder komplexem Debugging."
+            )
 
         from value_decisions import get_decision_engine
         decisions = get_decision_engine().decide_behavior()

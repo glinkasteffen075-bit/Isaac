@@ -708,7 +708,26 @@ class BrowserManager:
         token = max(candidates, key=len)
         get_secrets_store().set_secret(secret_ref, token, kind="browser_import")
         if secret_ref == "OPENROUTER_API_KEY":
-            self.cfg.providers["openrouter"].api_key = token
+            try:
+                current = self.cfg.providers.get("openrouter")
+                if current:
+                    self.cfg.upsert_provider(
+                        {
+                            "provider_id": "openrouter",
+                            "display_name": current.display_name,
+                            "provider_type": current.provider_type,
+                            "base_url": current.base_url,
+                            "model": current.model,
+                            "enabled": current.enabled,
+                            "is_default": current.is_default,
+                            "timeout": current.timeout,
+                            "rpm": current.rpm,
+                            "tpm": current.tpm,
+                            "api_key": token,
+                        }
+                    )
+            except Exception:
+                self.cfg.providers["openrouter"].api_key = token
         return {
             "ok": True,
             "secret_ref": secret_ref,

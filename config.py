@@ -3,186 +3,313 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except Exception:
     pass
 
-BASE_DIR   = Path(__file__).parent
-DATA_DIR   = BASE_DIR / "data"
-LOG_DIR    = BASE_DIR / "logs"
-WORKSPACE  = BASE_DIR / "workspace"
-DB_PATH    = DATA_DIR / "isaac.db"
+BASE_DIR = Path(__file__).parent
+DATA_DIR = BASE_DIR / "data"
+LOG_DIR = BASE_DIR / "logs"
+WORKSPACE = BASE_DIR / "workspace"
+DB_PATH = DATA_DIR / "isaac.db"
 AUDIT_PATH = DATA_DIR / "audit.jsonl"
 RUNTIME_SETTINGS_PATH = DATA_DIR / "runtime_settings.json"
+PROVIDER_SETTINGS_PATH = DATA_DIR / "provider_settings.json"
 
 for d in [DATA_DIR, LOG_DIR, WORKSPACE]:
     d.mkdir(parents=True, exist_ok=True)
 
+
 class Level:
     STEFFEN = 100
-    ISAAC   = 70
-    TASK    = 40
-    GUEST   = 10
+    ISAAC = 70
+    TASK = 40
+    GUEST = 10
+
 
 @dataclass
 class ProviderConfig:
-    name:          str
-    api_key:       str
-    base_url:      str
-    default_model: str
-    rpm:           int
-    tpm:           int
-    timeout:       int  = 60
-    enabled:       bool = True
+    provider_id: str
+    display_name: str
+    provider_type: str
+    api_key: str
+    base_url: str
+    model: str
+    rpm: int
+    tpm: int
+    timeout: int = 60
+    enabled: bool = True
+    is_default: bool = False
+    api_key_ref: str = ""
+    extra_headers: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def name(self) -> str:
+        return self.provider_id
+
+    @property
+    def default_model(self) -> str:
+        return self.model
+
+    @default_model.setter
+    def default_model(self, value: str):
+        self.model = value
 
     @property
     def available(self) -> bool:
-        return self.enabled and (bool(self.api_key) or self.name == "ollama")
+        ptype = (self.provider_type or "").lower().strip()
+        if ptype in {"ollama", "local_ollama"}:
+            return self.enabled
+        return self.enabled and bool(self.api_key)
 
 
-def _build_providers() -> dict[str, ProviderConfig]:
+def _normalize_provider_id(value: str) -> str:
+    raw = (value or "").strip().lower()
+    normalized = "".join(ch if (ch.isalnum() or ch in {"-", "_"}) else "-" for ch in raw)
+    while "--" in normalized:
+        normalized = normalized.replace("--", "-")
+    return normalized.strip("-_")
+
+
+def _default_provider_ref(provider_id: str) -> str:
+    return f"provider_{provider_id}_api_key"
+
+
+def _bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+        return parsed if parsed > 0 else default
+    except Exception:
+        return default
+
+
+def _provider_defaults_from_env() -> dict[str, ProviderConfig]:
     return {
         "ollama": ProviderConfig(
-            name="ollama",
+            provider_id="ollama",
+            display_name="Local Ollama",
+            provider_type="ollama",
             api_key="",
-            base_url=os.getenv("OLLAMA_HOST", "http://localhost:11434") + "/api/chat",
-            default_model=os.getenv("OLLAMA_MODEL", "phi3:latest"),
-            rpm=999, tpm=999_999,
-            timeout=int(os.getenv("OLLAMA_TIMEOUT", "180")),
-        ),
-        "groq": ProviderConfig(
-            name="groq",
-            api_key=os.getenv("GROQ_API_KEY", ""),
-            base_url="https://api.groq.com/openai/v1/chat/completions",
-            default_model=os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
-            rpm=30, tpm=6_000,
+            base_url=(os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")) + "/api/chat",
+            model=os.getenv("OLLAMA_MODEL", "llama3.2:latest"),
+            rpm=999,
+            tpm=999_999,
+            timeout=_int(os.getenv("OLLAMA_TIMEOUT", "180"), 180),
+            enabled=True,
+            is_default=True,
         ),
         "openrouter": ProviderConfig(
-            name="openrouter",
+            provider_id="openrouter",
+            display_name="OpenRouter",
+            provider_type="openai_compat",
             api_key=os.getenv("OPENROUTER_API_KEY", ""),
-            base_url="https://openrouter.ai/api/v1/chat/completions",
-            default_model=os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.2-3b-instruct:free"),
-            rpm=20, tpm=50_000,
+            base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"),
+            model=os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.2-3b-instruct:free"),
+            rpm=20,
+            tpm=50_000,
+            timeout=60,
         ),
-        "huggingface": ProviderConfig(
-            name="huggingface",
-            api_key=os.getenv("HF_API_KEY", ""),
-            base_url="https://api-inference.huggingface.co/models",
-            default_model=os.getenv("HF_MODEL", "mistralai/Mistral-7B-Instruct-v0.3"),
-            rpm=10, tpm=20_000,
-        ),
-        "together": ProviderConfig(
-            name="together",
-            api_key=os.getenv("TOGETHER_API_KEY", ""),
-            base_url="https://api.together.xyz/v1/chat/completions",
-            default_model=os.getenv("TOGETHER_MODEL", "meta-llama/Llama-3-8b-chat-hf"),
-            rpm=60, tpm=100_000,
-        ),
-        "perplexity": ProviderConfig(
-            name="perplexity",
-            api_key=os.getenv("PERPLEXITY_API_KEY", ""),
-            base_url="https://api.perplexity.ai/chat/completions",
-            default_model=os.getenv("PERPLEXITY_MODEL", "llama-3.1-sonar-small-128k-online"),
-            rpm=20, tpm=50_000,
-        ),
-        "mistral": ProviderConfig(
-            name="mistral",
-            api_key=os.getenv("MISTRAL_API_KEY", ""),
-            base_url="https://api.mistral.ai/v1/chat/completions",
-            default_model=os.getenv("MISTRAL_MODEL", "open-mistral-7b"),
-            rpm=20, tpm=50_000,
-        ),
-        "gemini": ProviderConfig(
-            name="gemini",
-            api_key=os.getenv("GOOGLE_API_KEY", ""),
-            base_url="https://generativelanguage.googleapis.com/v1beta/models",
-            default_model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
-            rpm=15, tpm=32_000,
+        "groq": ProviderConfig(
+            provider_id="groq",
+            display_name="Groq",
+            provider_type="openai_compat",
+            api_key=os.getenv("GROQ_API_KEY", ""),
+            base_url=os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1/chat/completions"),
+            model=os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
+            rpm=30,
+            tpm=6_000,
+            timeout=60,
         ),
         "openai": ProviderConfig(
-            name="openai",
+            provider_id="openai",
+            display_name="OpenAI",
+            provider_type="openai_compat",
             api_key=os.getenv("OPENAI_API_KEY", ""),
-            base_url="https://api.openai.com/v1/chat/completions",
-            default_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-            rpm=20, tpm=40_000,
+            base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1/chat/completions"),
+            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            rpm=20,
+            tpm=40_000,
+            timeout=60,
+        ),
+        "mistral": ProviderConfig(
+            provider_id="mistral",
+            display_name="Mistral",
+            provider_type="openai_compat",
+            api_key=os.getenv("MISTRAL_API_KEY", ""),
+            base_url=os.getenv("MISTRAL_BASE_URL", "https://api.mistral.ai/v1/chat/completions"),
+            model=os.getenv("MISTRAL_MODEL", "open-mistral-7b"),
+            rpm=20,
+            tpm=50_000,
+            timeout=60,
+        ),
+        "together": ProviderConfig(
+            provider_id="together",
+            display_name="Together",
+            provider_type="openai_compat",
+            api_key=os.getenv("TOGETHER_API_KEY", ""),
+            base_url=os.getenv("TOGETHER_BASE_URL", "https://api.together.xyz/v1/chat/completions"),
+            model=os.getenv("TOGETHER_MODEL", "meta-llama/Llama-3-8b-chat-hf"),
+            rpm=60,
+            tpm=100_000,
+            timeout=60,
+        ),
+        "perplexity": ProviderConfig(
+            provider_id="perplexity",
+            display_name="Perplexity",
+            provider_type="openai_compat",
+            api_key=os.getenv("PERPLEXITY_API_KEY", ""),
+            base_url=os.getenv("PERPLEXITY_BASE_URL", "https://api.perplexity.ai/chat/completions"),
+            model=os.getenv("PERPLEXITY_MODEL", "llama-3.1-sonar-small-128k-online"),
+            rpm=20,
+            tpm=50_000,
+            timeout=60,
         ),
         "anthropic": ProviderConfig(
-            name="anthropic",
+            provider_id="anthropic",
+            display_name="Anthropic",
+            provider_type="anthropic",
             api_key=os.getenv("ANTHROPIC_API_KEY", ""),
-            base_url="https://api.anthropic.com/v1/messages",
-            default_model=os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
-            rpm=50, tpm=100_000,
+            base_url=os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1/messages"),
+            model=os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
+            rpm=50,
+            tpm=100_000,
+            timeout=60,
+        ),
+        "gemini": ProviderConfig(
+            provider_id="gemini",
+            display_name="Gemini",
+            provider_type="gemini",
+            api_key=os.getenv("GOOGLE_API_KEY", ""),
+            base_url=os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/models"),
+            model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+            rpm=15,
+            tpm=32_000,
+            timeout=60,
         ),
         "cohere": ProviderConfig(
-            name="cohere",
+            provider_id="cohere",
+            display_name="Cohere",
+            provider_type="cohere",
             api_key=os.getenv("COHERE_API_KEY", ""),
-            base_url="https://api.cohere.ai/v2/chat",
-            default_model=os.getenv("COHERE_MODEL", "command-r"),
-            rpm=20, tpm=100_000,
+            base_url=os.getenv("COHERE_BASE_URL", "https://api.cohere.ai/v2/chat"),
+            model=os.getenv("COHERE_MODEL", "command-r"),
+            rpm=20,
+            tpm=100_000,
+            timeout=60,
+        ),
+        "huggingface": ProviderConfig(
+            provider_id="huggingface",
+            display_name="HuggingFace",
+            provider_type="huggingface",
+            api_key=os.getenv("HF_API_KEY", ""),
+            base_url=os.getenv("HF_BASE_URL", "https://api-inference.huggingface.co/models"),
+            model=os.getenv("HF_MODEL", "mistralai/Mistral-7B-Instruct-v0.3"),
+            rpm=10,
+            tpm=20_000,
+            timeout=90,
         ),
     }
 
+
+def _provider_to_payload(cfg: ProviderConfig) -> dict[str, Any]:
+    return {
+        "provider_id": cfg.provider_id,
+        "display_name": cfg.display_name,
+        "provider_type": cfg.provider_type,
+        "base_url": cfg.base_url,
+        "model": cfg.model,
+        "enabled": cfg.enabled,
+        "is_default": cfg.is_default,
+        "timeout": cfg.timeout,
+        "rpm": cfg.rpm,
+        "tpm": cfg.tpm,
+        "extra_headers": dict(cfg.extra_headers or {}),
+        "api_key_ref": cfg.api_key_ref,
+    }
+
+
 @dataclass
 class LogicConfig:
-    min_quality_score:     float = 5.5
-    max_followup_rounds:   int   = 3
-    max_task_iterations:   int   = 8
-    min_word_count:        int   = 80
-    min_topic_coverage:    float = 0.6
-    weight_length:         float = 0.20
-    weight_coverage:       float = 0.35
-    weight_specificity:    float = 0.25
-    weight_coherence:      float = 0.20
+    min_quality_score: float = 5.5
+    max_followup_rounds: int = 1
+    max_task_iterations: int = 8
+    min_word_count: int = 80
+    min_topic_coverage: float = 0.6
+    weight_length: float = 0.20
+    weight_coverage: float = 0.35
+    weight_specificity: float = 0.25
+    weight_coherence: float = 0.20
     instance_switch_score: float = 7.2
-    default_followup_mode: str   = "targeted"
-    causal_neg_threshold:  float = 0.70
-    qualia_penalty:        float = 2.0
+    default_followup_mode: str = "targeted"
+    causal_neg_threshold: float = 0.70
+    qualia_penalty: float = 2.0
+
 
 @dataclass
 class BrowserConfig:
-    max_instances:           int  = 12
-    page_timeout:            int  = 30
-    headless:                bool = True
-    auto_restart:            bool = True
-    max_errors_per_instance: int  = 5
-    slowmo:                  int  = 0
+    max_instances: int = 12
+    page_timeout: int = 30
+    headless: bool = True
+    auto_restart: bool = True
+    max_errors_per_instance: int = 5
+    slowmo: int = 0
+
 
 @dataclass
 class MonitorConfig:
-    host:               str   = "localhost"
-    port:               int   = int(os.getenv("MONITOR_PORT", "8765"))
-    http_port:          int   = int(os.getenv("DASHBOARD_PORT", "8766"))
-    push_interval:      float = 0.5
-    max_connections:    int   = 10
-    task_history_limit: int   = 500
-    log_history_limit:  int   = 1000
+    host: str = "localhost"
+    port: int = int(os.getenv("MONITOR_PORT", "8765"))
+    http_port: int = int(os.getenv("DASHBOARD_PORT", "8766"))
+    push_interval: float = 0.5
+    max_connections: int = 10
+    task_history_limit: int = 500
+    log_history_limit: int = 1000
+
 
 @dataclass
 class MemoryConfig:
-    max_working_memory:        int   = 50
-    max_facts:                 int   = 10_000
+    max_working_memory: int = 50
+    max_facts: int = 10_000
     fact_similarity_threshold: float = 0.85
+
 
 @dataclass
 class RelayConfig:
-    primary_provider:  str   = os.getenv("ACTIVE_PROVIDER", "ollama")
-    min_interval:      float = float(os.getenv("MIN_REQUEST_INTERVAL", "2.0"))
-    max_retries:       int   = int(os.getenv("MAX_RETRIES", "3"))
-    cache_ttl:         int   = 30
-    max_context_chars: int   = int(os.getenv("MAX_CONTEXT_CHARS", "3000"))
-    strip_user_pii:    bool  = True
+    primary_provider: str = os.getenv("ACTIVE_PROVIDER", "ollama")
+    min_interval: float = float(os.getenv("MIN_REQUEST_INTERVAL", "0.15"))
+    max_retries: int = int(os.getenv("MAX_RETRIES", "3"))
+    cache_ttl: int = 30
+    max_context_chars: int = int(os.getenv("MAX_CONTEXT_CHARS", "3000"))
+    strip_user_pii: bool = True
+
 
 @dataclass
 class IdeenConfig:
-    scan_interval:    int   = 420
-    max_queue:        int   = 20
+    scan_interval: int = 420
+    max_queue: int = 20
     min_notify_score: float = 6.5
-    interesse_topics: list  = None
+    interesse_topics: list = None
 
     def __post_init__(self):
         if self.interesse_topics is None:
@@ -194,52 +321,61 @@ class IdeenConfig:
                 "Rust WASM performance",
             ]
 
+
 @dataclass
 class IsaacConfig:
-    providers: dict[str, ProviderConfig] = field(default_factory=_build_providers)
-    logic:     LogicConfig               = field(default_factory=LogicConfig)
-    browser:   BrowserConfig             = field(default_factory=BrowserConfig)
-    monitor:   MonitorConfig             = field(default_factory=MonitorConfig)
-    memory:    MemoryConfig              = field(default_factory=MemoryConfig)
-    relay:     RelayConfig               = field(default_factory=RelayConfig)
-    ideen:     IdeenConfig               = field(default_factory=IdeenConfig)
-    filesystem_full_access: bool         = True
-    browser_automation: bool             = True
-    browser_external_sites: bool         = True
-    free_only_providers: bool            = True
-    multi_tool_mode: bool                = True
+    providers: dict[str, ProviderConfig] = field(default_factory=_provider_defaults_from_env)
+    logic: LogicConfig = field(default_factory=LogicConfig)
+    browser: BrowserConfig = field(default_factory=BrowserConfig)
+    monitor: MonitorConfig = field(default_factory=MonitorConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
+    relay: RelayConfig = field(default_factory=RelayConfig)
+    ideen: IdeenConfig = field(default_factory=IdeenConfig)
+    filesystem_full_access: bool = True
+    browser_automation: bool = True
+    browser_external_sites: bool = True
+    free_only_providers: bool = False
+    multi_tool_mode: bool = True
+    style_mode: str = os.getenv("ISAAC_STYLE_MODE", "light_sarcastic")
     owner_name: str = os.getenv("ISAAC_OWNER", "Steffen")
 
     def __post_init__(self):
+        self._load_provider_settings()
         self._load_runtime_settings()
+        self._normalize_defaults()
 
     @property
     def available_providers(self) -> list[str]:
         return [n for n, p in self.providers.items() if p.available and self.is_provider_allowed(n)]
 
     def get_provider(self, name: str) -> Optional[ProviderConfig]:
+        if not name:
+            return None
         return self.providers.get(name)
 
     @property
     def free_providers(self) -> list[str]:
-        free = ["ollama", "groq", "openrouter", "huggingface", "together", "perplexity", "mistral"]
-        return [p for p in free if p in self.providers and self.providers[p].available]
+        free = {"ollama", "groq", "openrouter", "huggingface", "together", "perplexity", "mistral"}
+        return [p.provider_id for p in self.providers.values() if p.provider_id in free and p.available]
 
     def is_provider_allowed(self, name: str) -> bool:
         if not name:
             return False
+        provider = self.providers.get(name)
+        if not provider:
+            return False
         if self.free_only_providers and name not in self.free_providers:
             return False
-        provider = self.providers.get(name)
-        return bool(provider and provider.enabled)
+        return bool(provider.enabled)
 
-    def runtime_settings(self) -> dict[str, bool]:
+    def runtime_settings(self) -> dict[str, Any]:
         return {
             "filesystem_full_access": bool(self.filesystem_full_access),
             "browser_automation": bool(self.browser_automation),
             "browser_external_sites": bool(self.browser_external_sites),
             "free_only_providers": bool(self.free_only_providers),
             "multi_tool_mode": bool(self.multi_tool_mode),
+            "style_mode": self.style_mode,
         }
 
     def update_runtime_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
@@ -248,15 +384,237 @@ class IsaacConfig:
             if not hasattr(self, key):
                 continue
             current = getattr(self, key)
-            if not isinstance(current, bool):
+            if key == "style_mode":
+                mode = str(value or "").strip().lower()
+                if mode not in {"professional", "light_sarcastic"}:
+                    continue
+                if current != mode:
+                    setattr(self, key, mode)
+                    changed.append(key)
                 continue
-            normalized = bool(value)
-            if current != normalized:
-                setattr(self, key, normalized)
-                changed.append(key)
+            if isinstance(current, bool):
+                normalized = bool(value)
+                if current != normalized:
+                    setattr(self, key, normalized)
+                    changed.append(key)
         if changed:
             self._save_runtime_settings()
         return {"changed": changed, "settings": self.runtime_settings()}
+
+    def list_provider_configs(self) -> list[dict[str, Any]]:
+        return [self._provider_public_view(self.providers[k]) for k in sorted(self.providers.keys())]
+
+    def upsert_provider(self, payload: dict[str, Any]) -> dict[str, Any]:
+        provider_id = _normalize_provider_id(payload.get("provider_id") or payload.get("name") or "")
+        if not provider_id:
+            raise ValueError("provider_id fehlt")
+
+        current = self.providers.get(provider_id)
+        provider_type = (payload.get("provider_type") or (current.provider_type if current else "openai_compat")).strip().lower()
+        if provider_type not in {"ollama", "openai_compat", "anthropic", "gemini", "cohere", "huggingface"}:
+            raise ValueError("provider_type ungültig")
+
+        display_name = (payload.get("display_name") or payload.get("name") or (current.display_name if current else provider_id)).strip()
+        base_url = (payload.get("base_url") or (current.base_url if current else "")).strip()
+        model = (payload.get("model") or (current.model if current else "")).strip()
+        timeout = _int(payload.get("timeout"), current.timeout if current else 60)
+        rpm = _int(payload.get("rpm"), current.rpm if current else 60)
+        tpm = _int(payload.get("tpm"), current.tpm if current else 60_000)
+        enabled = _bool(payload.get("enabled"), current.enabled if current else True)
+        is_default = _bool(payload.get("is_default"), current.is_default if current else False)
+
+        if not base_url:
+            raise ValueError("base_url fehlt")
+        if not model:
+            raise ValueError("model fehlt")
+
+        api_key = (payload.get("api_key") or "").strip()
+        clear_api_key = _bool(payload.get("clear_api_key"), False)
+        api_key_ref = (payload.get("api_key_ref") or (current.api_key_ref if current else "")).strip()
+        if api_key and not api_key_ref:
+            api_key_ref = _default_provider_ref(provider_id)
+
+        extra_headers = payload.get("extra_headers")
+        if not isinstance(extra_headers, dict):
+            extra_headers = dict(current.extra_headers if current else {})
+
+        cfg = ProviderConfig(
+            provider_id=provider_id,
+            display_name=display_name,
+            provider_type=provider_type,
+            api_key=current.api_key if current else "",
+            base_url=base_url,
+            model=model,
+            timeout=timeout,
+            rpm=rpm,
+            tpm=tpm,
+            enabled=enabled,
+            is_default=is_default,
+            api_key_ref=api_key_ref,
+            extra_headers={str(k): str(v) for k, v in extra_headers.items()},
+        )
+
+        if clear_api_key:
+            cfg.api_key = ""
+            cfg.api_key_ref = ""
+
+        if api_key:
+            self._save_secret(cfg.api_key_ref, api_key)
+            cfg.api_key = api_key
+        elif cfg.api_key_ref:
+            cfg.api_key = self._load_secret(cfg.api_key_ref)
+
+        self.providers[provider_id] = cfg
+        self._normalize_defaults(preferred_default=provider_id if is_default else None)
+        self._save_provider_settings()
+        return self._provider_public_view(self.providers[provider_id])
+
+    def delete_provider(self, provider_id: str) -> bool:
+        pid = _normalize_provider_id(provider_id)
+        if not pid:
+            return False
+        if pid not in self.providers:
+            return False
+        was_default = self.providers[pid].is_default
+        del self.providers[pid]
+        self._normalize_defaults(preferred_default=None if not was_default else "ollama")
+        self._save_provider_settings()
+        return True
+
+    def set_default_provider(self, provider_id: str) -> dict[str, Any]:
+        pid = _normalize_provider_id(provider_id)
+        if pid not in self.providers:
+            raise ValueError("Unbekannter Provider")
+        self._normalize_defaults(preferred_default=pid)
+        self._save_provider_settings()
+        return self._provider_public_view(self.providers[pid])
+
+    def _provider_public_view(self, cfg: ProviderConfig) -> dict[str, Any]:
+        key_mask = ""
+        if cfg.api_key:
+            if len(cfg.api_key) <= 8:
+                key_mask = "*" * len(cfg.api_key)
+            else:
+                key_mask = cfg.api_key[:4] + "*" * max(3, len(cfg.api_key) - 8) + cfg.api_key[-4:]
+        return {
+            "provider_id": cfg.provider_id,
+            "display_name": cfg.display_name,
+            "provider_type": cfg.provider_type,
+            "base_url": cfg.base_url,
+            "model": cfg.model,
+            "enabled": cfg.enabled,
+            "is_default": cfg.is_default,
+            "timeout": cfg.timeout,
+            "rpm": cfg.rpm,
+            "tpm": cfg.tpm,
+            "extra_headers": dict(cfg.extra_headers or {}),
+            "has_api_key": bool(cfg.api_key),
+            "api_key_masked": key_mask,
+        }
+
+    def _normalize_defaults(self, preferred_default: Optional[str] = None):
+        if not self.providers:
+            defaults = _provider_defaults_from_env()
+            self.providers.update(defaults)
+
+        requested = _normalize_provider_id(preferred_default or "")
+        valid_default = requested if requested in self.providers else ""
+
+        if not valid_default:
+            for pid, cfg in self.providers.items():
+                if cfg.is_default:
+                    valid_default = pid
+                    break
+
+        if not valid_default:
+            if "ollama" in self.providers:
+                valid_default = "ollama"
+            else:
+                valid_default = next(iter(self.providers.keys()))
+
+        for pid, cfg in self.providers.items():
+            cfg.is_default = pid == valid_default
+
+        self.relay.primary_provider = valid_default
+
+    def _load_provider_settings(self):
+        if not PROVIDER_SETTINGS_PATH.exists():
+            self._resolve_provider_secrets()
+            self._normalize_defaults()
+            return
+
+        try:
+            raw = json.loads(PROVIDER_SETTINGS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            self._resolve_provider_secrets()
+            self._normalize_defaults()
+            return
+
+        entries = raw.get("providers") if isinstance(raw, dict) else None
+        if not isinstance(entries, list):
+            self._resolve_provider_secrets()
+            self._normalize_defaults()
+            return
+
+        loaded: dict[str, ProviderConfig] = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            provider_id = _normalize_provider_id(entry.get("provider_id") or entry.get("name") or "")
+            if not provider_id:
+                continue
+            base = self.providers.get(provider_id)
+            try:
+                cfg = ProviderConfig(
+                    provider_id=provider_id,
+                    display_name=(entry.get("display_name") or entry.get("name") or (base.display_name if base else provider_id)).strip(),
+                    provider_type=(entry.get("provider_type") or (base.provider_type if base else "openai_compat")).strip().lower(),
+                    api_key="",
+                    base_url=(entry.get("base_url") or (base.base_url if base else "")).strip(),
+                    model=(entry.get("model") or entry.get("default_model") or (base.model if base else "")).strip(),
+                    rpm=_int(entry.get("rpm"), base.rpm if base else 60),
+                    tpm=_int(entry.get("tpm"), base.tpm if base else 60_000),
+                    timeout=_int(entry.get("timeout"), base.timeout if base else 60),
+                    enabled=_bool(entry.get("enabled"), base.enabled if base else True),
+                    is_default=_bool(entry.get("is_default"), False),
+                    api_key_ref=(entry.get("api_key_ref") or (base.api_key_ref if base else "")).strip(),
+                    extra_headers=entry.get("extra_headers") if isinstance(entry.get("extra_headers"), dict) else dict(base.extra_headers if base else {}),
+                )
+            except Exception:
+                continue
+
+            legacy_key = (entry.get("api_key") or "").strip()
+            if legacy_key:
+                if not cfg.api_key_ref:
+                    cfg.api_key_ref = _default_provider_ref(provider_id)
+                self._save_secret(cfg.api_key_ref, legacy_key)
+
+            cfg.api_key = self._load_secret(cfg.api_key_ref) if cfg.api_key_ref else ""
+            loaded[provider_id] = cfg
+
+        if loaded:
+            self.providers.update(loaded)
+
+        self._resolve_provider_secrets()
+
+        primary = _normalize_provider_id((raw.get("primary_provider") or "") if isinstance(raw, dict) else "")
+        self._normalize_defaults(preferred_default=primary or None)
+
+    def _resolve_provider_secrets(self):
+        for provider in self.providers.values():
+            if provider.api_key:
+                continue
+            if provider.api_key_ref:
+                provider.api_key = self._load_secret(provider.api_key_ref)
+            elif provider.api_key and not provider.api_key_ref:
+                provider.api_key_ref = _default_provider_ref(provider.provider_id)
+
+    def _save_provider_settings(self):
+        payload = {
+            "primary_provider": self.relay.primary_provider,
+            "providers": [_provider_to_payload(self.providers[k]) for k in sorted(self.providers.keys())],
+        }
+        PROVIDER_SETTINGS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _load_runtime_settings(self):
         if not RUNTIME_SETTINGS_PATH.exists():
@@ -273,7 +631,31 @@ class IsaacConfig:
             encoding="utf-8",
         )
 
+    @staticmethod
+    def _load_secret(ref: str) -> str:
+        if not ref:
+            return ""
+        try:
+            from secrets_store import get_secrets_store
+
+            return (get_secrets_store().get_secret(ref) or "").strip()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _save_secret(ref: str, value: str):
+        if not ref:
+            return
+        try:
+            from secrets_store import get_secrets_store
+
+            get_secrets_store().set_secret(ref, value.strip(), kind="provider_api_key")
+        except Exception:
+            return
+
+
 _config: Optional[IsaacConfig] = None
+
 
 def get_config() -> IsaacConfig:
     global _config

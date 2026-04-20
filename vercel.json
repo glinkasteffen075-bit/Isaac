@@ -1,5 +1,5 @@
-
 {
+  "buildCommand": "pip install -r requirements.txt && playwright install chromium",
   "builds": [
     {
       "src": "isaac_core.py",

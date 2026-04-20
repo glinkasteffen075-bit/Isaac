@@ -3,7 +3,12 @@
   "builds": [
     {
       "src": "isaac_core.py",
-      "use": "@vercel/python"
+      "use": "@vercel/python",
+      "memory": 3008,
+      "maxDuration": 60,
+      "config": {
+        "pythonVersion": "3.11"
+      }
     }
   ],
   "routes": [
@@ -11,5 +16,8 @@
       "src": "/(.*)",
       "dest": "isaac_core.py"
     }
-  ]
+  ],
+  "env": {
+    "PYTHONUNBUFFERED": "1"
+  }
 }

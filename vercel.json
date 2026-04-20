@@ -2,22 +2,16 @@
   "buildCommand": "pip install -r requirements.txt && playwright install chromium",
   "builds": [
     {
-      "src": "isaac_core.py",
+      "src": "app.py",
       "use": "@vercel/python",
       "memory": 3008,
-      "maxDuration": 60,
-      "config": {
-        "pythonVersion": "3.11"
-      }
+      "maxDuration": 60
     }
   ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "isaac_core.py"
+      "dest": "app.py"
     }
-  ],
-  "env": {
-    "PYTHONUNBUFFERED": "1"
-  }
+  ]
 }

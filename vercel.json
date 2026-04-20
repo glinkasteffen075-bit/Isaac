@@ -1,0 +1,15 @@
+
+{
+  "builds": [
+    {
+      "src": "isaac_core.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "isaac_core.py"
+    }
+  ]
+}

@@ -1,6 +1,8 @@
 from __future__ import annotations
-import json, time
+import time
 from pathlib import Path
+
+from state_io import atomic_write_json, load_json_or_recover
 
 DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -13,17 +15,16 @@ class SecretsStore:
         self._load()
 
     def _load(self):
+        self._cache = load_json_or_recover(
+            self.path,
+            fallback_factory=dict,
+            context=f"secrets store at {self.path}",
+        )
         if not self.path.exists():
-            self._save()
-            return
-        try:
-            self._cache = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:
-            self._cache = {}
             self._save()
 
     def _save(self):
-        self.path.write_text(json.dumps(self._cache, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_json(self.path, self._cache, mode=0o600)
 
     def set_secret(self, ref: str, value: str, kind: str = "api_key"):
         self._cache[ref] = {"value": value, "kind": kind, "updated_at": time.time()}

@@ -200,8 +200,16 @@ class HermesCompatibilityAdapter:
         mcp_registry.register_tool(
             tool.name,
             {"description": tool.description, "inputSchema": tool.input_schema, "category": tool.category},
-            handler=lambda **kwargs: self.execute_tool(tool.name, kwargs, ExecutionContext(caller="mcp")).output,
+            handler=lambda **kwargs: self._invoke_mirrored_tool(tool.name, kwargs),
         )
+
+    def _invoke_mirrored_tool(self, tool_name: str, payload: dict[str, Any]) -> Any:
+        result = self.execute_tool(tool_name, payload, ExecutionContext(caller="mcp"))
+        if not result.ok:
+            queue_id = result.metadata.get("queue_id")
+            queue_suffix = f" | queue_id={queue_id}" if queue_id else ""
+            raise RuntimeError(f"{result.error}{queue_suffix}")
+        return result.output
 
     def _permission_check(self, tool: Tool, ctx: ExecutionContext) -> SecurityVerdict:
         meta = tool.permission.as_policy_meta()

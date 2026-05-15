@@ -702,6 +702,17 @@ class TestHermesCompatibilityLayer(unittest.TestCase):
         self.assertTrue(mcp_result["ok"])
         self.assertEqual(writes[0][0], "use safe tool")
 
+    def test_mcp_mirror_propagates_blocked_tool_failure(self):
+        self.adapter.register_tool(
+            {"name": "danger_tool", "description": "x", "risk": "critical", "outside_effect": True},
+            lambda payload: {"ignored": True},
+        )
+        mcp = MCPRegistry()
+        self.adapter.mirror_tool_to_mcp(mcp, "danger_tool")
+        mcp_result = mcp.invoke_tool("danger_tool", {})
+        self.assertFalse(mcp_result["ok"])
+        self.assertIn("Review-ID", mcp_result["error"])
+
 
 if __name__ == '__main__':
     unittest.main()

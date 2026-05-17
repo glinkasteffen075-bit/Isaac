@@ -711,7 +711,17 @@ class TestHermesCompatibilityLayer(unittest.TestCase):
         self.adapter.mirror_tool_to_mcp(mcp, "danger_tool")
         mcp_result = mcp.invoke_tool("danger_tool", {})
         self.assertFalse(mcp_result["ok"])
+        self.assertIn("danger_tool", mcp_result["error"])
         self.assertIn("Review-ID", mcp_result["error"])
+
+    def test_mcp_mirror_propagates_handler_failure(self):
+        self.adapter.register_tool({"name": "broken_tool", "description": "x"}, lambda payload: 1 / 0)
+        mcp = MCPRegistry()
+        self.adapter.mirror_tool_to_mcp(mcp, "broken_tool")
+        mcp_result = mcp.invoke_tool("broken_tool", {})
+        self.assertFalse(mcp_result["ok"])
+        self.assertIn("broken_tool", mcp_result["error"])
+        self.assertIn("division by zero", mcp_result["error"])
 
 
 if __name__ == '__main__':

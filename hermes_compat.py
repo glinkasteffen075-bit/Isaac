@@ -207,8 +207,14 @@ class HermesCompatibilityAdapter:
         result = self.execute_tool(tool_name, payload, ExecutionContext(caller="mcp"))
         if not result.ok:
             queue_id = result.metadata.get("queue_id")
-            queue_suffix = f" | queue_id={queue_id}" if queue_id else ""
-            raise RuntimeError(f"{result.error}{queue_suffix}")
+            risk = result.metadata.get("risk")
+            details = []
+            if queue_id:
+                details.append(f"queue_id={queue_id}")
+            if risk:
+                details.append(f"risk={risk}")
+            detail_suffix = f" | {'; '.join(details)}" if details else ""
+            raise RuntimeError(f"MCP mirror execution failed for {tool_name}: {result.error}{detail_suffix}")
         return result.output
 
     def _permission_check(self, tool: Tool, ctx: ExecutionContext) -> SecurityVerdict:

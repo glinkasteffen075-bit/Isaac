@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-import json
+import logging
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from config import DATA_DIR
+from state_io import atomic_write_json, load_json_or_recover
 
 STATE_PATH = DATA_DIR / "task_tool_states.json"
+log = logging.getLogger(__name__)
 
 
 def _ts() -> float:
@@ -62,25 +64,35 @@ class TaskToolStateStore:
         self._load()
 
     def _load(self):
-        if not self.path.exists():
-            self._save()
-            return
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-            items: dict[str, TaskToolState] = {}
-            for row in raw:
-                hist = [ToolCallRecord(**x) for x in row.get("tool_history", [])]
+        raw = load_json_or_recover(
+            self.path,
+            fallback_factory=list,
+            context=f"task tool state store at {self.path}",
+        )
+        if not isinstance(raw, list):
+            log.warning("task tool state store has invalid root type: %s", type(raw).__name__)
+            raw = []
+        items: dict[str, TaskToolState] = {}
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            try:
+                hist = [ToolCallRecord(**x) for x in row.get("tool_history", []) if isinstance(x, dict)]
                 row = dict(row)
                 row["tool_history"] = hist
-                items[row["task_id"]] = TaskToolState(**row)
-            self._items = items
-        except Exception:
-            self._items = {}
+                task_id = row.get("task_id")
+                if not isinstance(task_id, str) or not task_id:
+                    continue
+                items[task_id] = TaskToolState(**row)
+            except (TypeError, ValueError) as exc:
+                log.warning("invalid task tool state entry skipped: %s", exc.__class__.__name__)
+        self._items = items
+        if not self.path.exists():
             self._save()
 
     def _save(self):
         payload = [item.to_dict() for item in sorted(self._items.values(), key=lambda x: x.updated_at, reverse=True)[:300]]
-        self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_json(self.path, payload)
 
     def get_or_create(self, task_id: str, prompt: str = "") -> TaskToolState:
         item = self._items.get(task_id)

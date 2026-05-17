@@ -33,7 +33,14 @@ from logic     import get_logic, QualityScore, FollowUpDecision
 from relay     import get_relay
 from tool_runtime import select_live_tool_for_task, run_selected_tool
 from task_tool_state import get_task_tool_state_store
-from low_complexity import ClassificationResult, is_lightweight_local_class
+from low_complexity import ClassificationResult
+from decision_trace import DecisionTrace, TracePhase
+from tool_policy import (
+    ToolPolicy,
+    ToolDecisionReason,
+    ToolEligibilityDecision,
+    evaluate_tool_eligibility,
+)
 
 log = logging.getLogger("Isaac.Executor")
 
@@ -153,9 +160,13 @@ class Task:
     used_tools:    list       = field(default_factory=list)
     tool_strategy: dict       = field(default_factory=dict)
     strategy:      Strategy   = field(default_factory=Strategy)
+    tool_policy:   ToolPolicy = field(default_factory=ToolPolicy)
+    tool_decision_reason: str = ""
+    tool_selection_reason: str = ""
     interaction_class: str    = ""
     classification: Optional[ClassificationResult] = None
     retrieved_context: dict   = field(default_factory=dict)
+    decision_trace: DecisionTrace = field(default_factory=DecisionTrace)
 
     # Watchdog
     _last_watchdog_progress: float = 0.0
@@ -190,7 +201,11 @@ class Task:
             "used_tools":    self.used_tools[-8:],
             "tool_strategy": self.tool_strategy or {},
             "strategy":      self.strategy.as_dict(),
+            "tool_policy":   self.tool_policy.as_dict(),
+            "tool_decision_reason": self.tool_decision_reason,
+            "tool_selection_reason": self.tool_selection_reason,
             "classification": self.classification.as_dict() if self.classification else None,
+            "decision_trace": self.decision_trace.to_list(),
             "sudo":          self.sudo_aktiv,
         }
 
@@ -262,6 +277,7 @@ class Executor:
                     allow_tools: Optional[bool] = None,
                     allow_followup: Optional[bool] = None,
                     allow_provider_switch: Optional[bool] = None,
+                    tool_policy: Optional[ToolPolicy] = None,
                     retrieved_context: Optional[dict] = None) -> Task:
         if strategy is None:
             strategy = Strategy(
@@ -282,6 +298,7 @@ class Executor:
             system_prompt = system_prompt,
             sudo_aktiv    = sudo_aktiv,
             strategy      = strategy,
+            tool_policy   = tool_policy or ToolPolicy(),
             interaction_class = interaction_class,
             classification = classification,
             retrieved_context = retrieved_context or {},
@@ -409,16 +426,22 @@ class Executor:
             self._notify(task)
 
     def _should_try_tool(self, task: Task, prompt: str, iteration: int) -> bool:
-        if not task.allow_tools:
-            return False
-        if task.typ != TaskType.CHAT:
-            return False
-        interaction_class = task.current_interaction_class
-        if interaction_class and (
-            is_lightweight_local_class(interaction_class) or interaction_class == "STATUS_QUERY"
-        ):
-            return False
-        return True
+        return self._evaluate_tool_eligibility(task, prompt, iteration).eligible
+
+    def _evaluate_tool_eligibility(self, task: Task, prompt: str, iteration: int) -> ToolEligibilityDecision:
+        decision = evaluate_tool_eligibility(task, prompt, iteration, task.tool_policy)
+        task.tool_decision_reason = decision.reason.value
+        task.decision_trace.add(
+            TracePhase.ELIGIBILITY,
+            "evaluated",
+            {
+                "eligible": decision.eligible,
+                "reason": decision.reason.value,
+                "iteration": iteration,
+                "prompt_nonempty": bool((prompt or "").strip()),
+            },
+        )
+        return decision
 
     def _tool_context_block(self, tool_name: str, tool_kind: str, via: str, result: dict) -> str:
         content = (result.get('content') or result.get('error') or '').strip()[:2200]
@@ -434,18 +457,64 @@ class Executor:
         return 3 if bool(getattr(get_config(), "multi_tool_mode", False)) else 1
 
     async def _maybe_use_tool(self, task: Task, prompt: str, iteration: int, used_tool_ids: set[str]) -> tuple[str, str]:
-        if not self._should_try_tool(task, prompt, iteration):
+        eligibility = self._evaluate_tool_eligibility(task, prompt, iteration)
+        if not eligibility.eligible:
             return "", ""
+        task.tool_selection_reason = ToolDecisionReason.ELIGIBLE.value
         context_blocks: list[str] = []
         successful_outputs: list[str] = []
         tool_runs = 0
 
         while tool_runs < self._tool_limit():
-            selection = await select_live_tool_for_task(task, prompt, iteration)
-            if not selection or selection.get("identifier") in used_tool_ids:
+            selection_decision = await select_live_tool_for_task(task, prompt, iteration, task.tool_policy)
+            task.tool_selection_reason = selection_decision.reason.value
+            selection = selection_decision.selected
+            if not selection:
+                task.decision_trace.add(
+                    TracePhase.SELECTION,
+                    "no_candidate",
+                    {
+                        "reason": selection_decision.reason.value,
+                        "iteration": iteration,
+                        "metadata": dict(selection_decision.metadata or {}),
+                    },
+                )
                 break
+            if selection.get("identifier") in used_tool_ids:
+                task.decision_trace.add(
+                    TracePhase.SELECTION,
+                    "candidate_skipped_already_used",
+                    {
+                        "identifier": selection.get("identifier", ""),
+                        "name": selection.get("name", ""),
+                    },
+                )
+                break
+            task.decision_trace.add(
+                TracePhase.SELECTION,
+                "selected_candidate",
+                {
+                    "reason": selection_decision.reason.value,
+                    "identifier": selection.get("identifier", ""),
+                    "name": selection.get("name", ""),
+                    "kind": selection.get("kind", ""),
+                    "category": selection.get("category", "general"),
+                    "source": selection.get("source", ""),
+                    "metadata": dict(selection_decision.metadata or {}),
+                },
+            )
             task.log(f"Tool-Auswahl: {selection.get('name')} [{selection.get('kind')}/{selection.get('category')}]")
             self._notify(task)
+            task.decision_trace.add(
+                TracePhase.EXECUTION,
+                "execution_started",
+                {
+                    "identifier": selection.get("identifier", ""),
+                    "name": selection.get("name", ""),
+                    "iteration": iteration,
+                    "run_index": tool_runs + 1,
+                },
+            )
             result = await run_selected_tool(selection, prompt)
             identifier = selection.get("identifier", "")
             name = selection.get("name", identifier)
@@ -461,8 +530,38 @@ class Executor:
             task.tool_strategy = self._tool_state.get_or_create(task.id).to_dict()
             tool_runs += 1
             if not result.get('ok'):
+                task.decision_trace.add(
+                    TracePhase.EXECUTION,
+                    "execution_failed",
+                    {
+                        "identifier": identifier,
+                        "name": name,
+                        "via": via,
+                        "status_code": result.get("status_code"),
+                        "error": result.get("error", ""),
+                    },
+                )
+                task.decision_trace.add(
+                    TracePhase.CONTEXT_INTEGRATION,
+                    "context_skipped",
+                    {
+                        "identifier": identifier,
+                        "name": name,
+                        "reason": "tool_execution_failed",
+                    },
+                )
                 task.log(f"Tool fehlgeschlagen: {name} – {result.get('error', 'unbekannt')}")
                 continue
+            task.decision_trace.add(
+                TracePhase.EXECUTION,
+                "execution_succeeded",
+                {
+                    "identifier": identifier,
+                    "name": name,
+                    "via": via,
+                    "status_code": result.get("status_code"),
+                },
+            )
             used_tool_ids.add(identifier)
             tool_note = {
                 "tool_id": identifier,
@@ -478,7 +577,17 @@ class Executor:
             task.log(f"Tool genutzt: {name}")
             AuditLog.action("Executor", "tool_used", f"task={task.id} tool={name}", Level.ISAAC)
             context_blocks.append(self._tool_context_block(name, kind, via, result))
+            task.decision_trace.add(
+                TracePhase.CONTEXT_INTEGRATION,
+                "context_appended",
+                {
+                    "identifier": identifier,
+                    "name": name,
+                    "via": via,
+                },
+            )
             successful_outputs.append(f"{name}:\n{(result.get('content') or result.get('error') or '').strip()[:1600]}")
+            task.tool_selection_reason = ToolDecisionReason.SELECTED_CANDIDATE.value
 
         next_input = ""
         if successful_outputs:
@@ -488,6 +597,22 @@ class Executor:
                 "mehreren Tools" if len(successful_outputs) > 1 else task.used_tools[-1]["name"],
                 "\n\n".join(successful_outputs),
             )
+        else:
+            task.decision_trace.add(
+                TracePhase.CONTEXT_INTEGRATION,
+                "context_skipped",
+                {
+                    "reason": "no_successful_tool_output",
+                },
+            )
+        task.decision_trace.add(
+            TracePhase.FOLLOWUP,
+            "followup_generated" if bool(next_input) else "followup_not_generated",
+            {
+                "has_successful_outputs": bool(successful_outputs),
+                "output_count": len(successful_outputs),
+            },
+        )
         return "".join(context_blocks), next_input
 
     # ── AI-Task ───────────────────────────────────────────────────────────────
@@ -500,6 +625,7 @@ class Executor:
         stale_rounds = 0
         seen_answers: set[str] = set()
         used_tool_ids: set[str] = set()
+        ai_t0 = time.perf_counter()
 
         for iteration in range(get_config().logic.max_followup_rounds + 1):
             if task.status == TaskStatus.CANCELLED:
@@ -512,12 +638,18 @@ class Executor:
             task.log(f"Iter {iteration}: → {current_prov or 'auto'}")
             self._notify(task)
 
+            choose_t0 = time.perf_counter()
             tool_context, generated_next_input = await self._maybe_use_tool(task, current_prompt, iteration, used_tool_ids)
             effective_prompt = current_prompt + tool_context if tool_context else current_prompt
+            provider_hint_ms = round((time.perf_counter() - choose_t0) * 1000, 2)
+
+            call_t0 = time.perf_counter()
             antwort, prov = await self.relay.ask_with_fallback(
                 effective_prompt, system, preferred=current_prov, task_id=task.id
             )
+            model_call_ms = round((time.perf_counter() - call_t0) * 1000, 2)
             task.provider_used = prov
+            task.log(f"Latency: prep={provider_hint_ms}ms model={model_call_ms}ms provider={prov}")
 
             if task.status == TaskStatus.CANCELLED:
                 task.log("Während Provider-Aufruf abgebrochen")
@@ -538,9 +670,11 @@ class Executor:
             self._get_watchdog().record_progress(task.id)
 
             task.status = TaskStatus.EVALUATING
+            eval_t0 = time.perf_counter()
             score = self.logic.evaluate(antwort, task.prompt, task.id)
+            eval_ms = round((time.perf_counter() - eval_t0) * 1000, 2)
             task.score = score
-            task.log(f"Score: {score.summary()}")
+            task.log(f"Score: {score.summary()} | eval={eval_ms}ms")
             self._notify(task)
 
             if score.total <= last_score_total + 0.2:
@@ -552,9 +686,9 @@ class Executor:
             if score.acceptable or iteration >= get_config().logic.max_followup_rounds:
                 break
 
-            # Kein Follow-up/Provider-Switching für triviale Kurz-Chats.
-            if task.typ == TaskType.CHAT and is_lightweight_local_class(task.current_interaction_class):
-                break
+            # Advisory only: Klassifikation beeinflusst Tool-/Follow-up-Eligibility nicht.
+            if task.typ == TaskType.CHAT and task.current_interaction_class:
+                task.log(f"Hinweis: Klassifikation advisory ({task.current_interaction_class})")
 
             if not task.allow_followup:
                 break
@@ -597,6 +731,8 @@ class Executor:
             await asyncio.sleep(get_config().relay.min_interval)
 
         task.tool_strategy = self._tool_state.get_or_create(task.id).to_dict()
+        total_ai_ms = round((time.perf_counter() - ai_t0) * 1000, 2)
+        task.log(f"Latency total ai={total_ai_ms}ms")
         if task.used_tools:
             tool_lines = ", ".join(f"{t['name']} ({t['kind']})" for t in task.used_tools[-4:])
             antwort = f"[Tools genutzt: {tool_lines}]\n\n" + antwort
@@ -615,6 +751,8 @@ class Executor:
     async def _execute_search(self, task: Task):
         """Echte Websuche über MultiSearch."""
         task.log("Websuche gestartet")
+        used_tool_ids: set[str] = set()
+        tool_context, _ = await self._maybe_use_tool(task, task.prompt, iteration=0, used_tool_ids=used_tool_ids)
         search = self._get_search()
         result = await search.search(
             task.prompt,
@@ -631,6 +769,8 @@ class Executor:
             f"Suchergebnisse:\n{kontext}\n\n"
             f"Antworte ausführlich, strukturiert, mit Quellenangaben."
         )
+        if tool_context:
+            synth_prompt = f"{synth_prompt}\n\nZusätzlicher Tool-Kontext:\n{tool_context}"
         antwort, prov = await self.relay.ask_with_fallback(
             synth_prompt,
             system="Du bist ein Recherche-Synthesizer. "

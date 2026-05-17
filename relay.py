@@ -139,6 +139,17 @@ class AsyncRelay:
             self._limiters[name] = RateLimiter(p.rpm, p.tpm)
             self._health.setdefault(name, ProviderHealth())
 
+    def refresh_provider_config(self):
+        self.cfg = get_config()
+        for name, p in self.cfg.providers.items():
+            lim = self._limiters.get(name)
+            if lim is None or lim.rpm != p.rpm or lim.tpm != p.tpm:
+                self._limiters[name] = RateLimiter(p.rpm, p.tpm)
+            self._health.setdefault(name, ProviderHealth())
+        for stale in [k for k in self._limiters.keys() if k not in self.cfg.providers]:
+            self._limiters.pop(stale, None)
+            self._health.pop(stale, None)
+
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             timeout = aiohttp.ClientTimeout(total=max(30, self.cfg.relay.max_retries * 30))
@@ -150,7 +161,7 @@ class AsyncRelay:
             await self._session.close()
 
     def _is_runtime_available(self, prov_cfg: ProviderConfig) -> bool:
-        if prov_cfg.name == "ollama":
+        if (prov_cfg.provider_type or "").lower() in {"ollama", "local_ollama"}:
             return prov_cfg.enabled
         return prov_cfg.available
 
@@ -179,6 +190,7 @@ class AsyncRelay:
                   tokens: int = 0,
                   task_id: str = "",
                   model_override: Optional[str] = None) -> str:
+        ask_t0 = time.perf_counter()
         prov_name = provider or self.cfg.relay.primary_provider
         if not self.cfg.is_provider_allowed(prov_name):
             return f"[RELAY-FEHLER:{prov_name}] Provider durch Runtime-Policy blockiert"
@@ -210,10 +222,19 @@ class AsyncRelay:
                 t0 = time.monotonic()
                 result, actual_tokens = await self._dispatch(prov_cfg, full_prompt, system, model_override=model_override)
                 dauer = round(time.monotonic() - t0, 2)
+                total_ms = round((time.perf_counter() - ask_t0) * 1000, 2)
                 self._mark_success(prov_name, dauer)
                 if limiter:
                     limiter.record_actual(approx_tokens, actual_tokens)
                 AuditLog.action("Relay", f"ask:{prov_name}", f"task={task_id} t={dauer}s", erfolg=True)
+                log.info(
+                    "Latency(relay) | provider=%s model=%s dispatch=%ss total=%sms retry=%s",
+                    prov_name,
+                    model_override or prov_cfg.model,
+                    dauer,
+                    total_ms,
+                    versuch,
+                )
                 if use_cache:
                     self.cache.set(full_prompt, system, cache_provider, result)
                 return result
@@ -267,56 +288,71 @@ class AsyncRelay:
         return "[RELAY] Alle Provider fehlgeschlagen.", "none"
 
     async def _dispatch(self, cfg: ProviderConfig, prompt: str, system: str, model_override: Optional[str] = None) -> tuple[str, int]:
-        handlers = {
-            "openai": self._openai_compat,
-            "groq": self._openai_compat,
-            "mistral": self._openai_compat,
-            "together": self._openai_compat,
-            "perplexity": self._openai_compat,
+        provider_id = (cfg.provider_id or cfg.name or "").lower()
+        provider_type = (cfg.provider_type or "").lower()
+        by_id = {
             "openrouter": self._openrouter,
+            "ollama": self._ollama,
             "anthropic": self._anthropic,
             "gemini": self._gemini,
             "cohere": self._cohere,
-            "ollama": self._ollama,
             "huggingface": self._huggingface,
         }
-        fn = handlers.get(cfg.name)
+        by_type = {
+            "openai_compat": self._openai_compat,
+            "openai-compatible": self._openai_compat,
+            "openrouter": self._openrouter,
+            "ollama": self._ollama,
+            "local_ollama": self._ollama,
+            "anthropic": self._anthropic,
+            "gemini": self._gemini,
+            "cohere": self._cohere,
+            "huggingface": self._huggingface,
+        }
+        fn = by_id.get(provider_id) or by_type.get(provider_type)
         if not fn:
-            raise ProviderErr(f"Kein Handler: {cfg.name}")
-        return await fn(cfg, prompt, system)
+            raise ProviderErr(f"Kein Handler: {cfg.provider_id}")
+        return await fn(cfg, prompt, system, model_override=model_override)
 
-    async def _openai_compat(self, cfg: ProviderConfig, prompt: str, system: str, model_override: Optional[str] = None) -> str:
+    async def _openai_compat(self, cfg: ProviderConfig, prompt: str, system: str, model_override: Optional[str] = None) -> tuple[str, int]:
         if not cfg.api_key:
-            raise ProviderErr(f"{cfg.name}: API-Key fehlt")
+            raise ProviderErr(f"{cfg.provider_id}: API-Key fehlt")
         session = await self._get_session()
         payload = {
-            "model": model_override or cfg.default_model,
+            "model": model_override or cfg.model,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
             "max_tokens": 1200,
             "temperature": 0.3,
         }
+        headers = {"Authorization": f"Bearer {cfg.api_key}", "Content-Type": "application/json"}
+        for k, v in (cfg.extra_headers or {}).items():
+            if k and isinstance(k, str):
+                headers[k] = str(v)
         async with session.post(
             cfg.base_url,
-            headers={"Authorization": f"Bearer {cfg.api_key}", "Content-Type": "application/json"},
+            headers=headers,
             json=payload,
             timeout=aiohttp.ClientTimeout(total=cfg.timeout),
         ) as r:
             if r.status == 429:
-                raise RateLimitErr(f"{cfg.name} Rate Limit")
+                raise RateLimitErr(f"{cfg.provider_id} Rate Limit")
             if r.status != 200:
                 txt = await r.text()
-                raise ProviderErr(f"{cfg.name} {r.status}: {txt[:120]}")
+                raise ProviderErr(f"{cfg.provider_id} {r.status}: {txt[:160]}")
             data = await r.json()
-            content = data["choices"][0]["message"]["content"]
+            try:
+                content = data["choices"][0]["message"]["content"]
+            except Exception:
+                raise ProviderErr(f"{cfg.provider_id}: ungültige Antwortstruktur")
             usage = ((data.get("usage") or {}).get("total_tokens") or RateLimiter.estimate_tokens(content))
             return content, usage
 
-    async def _openrouter(self, cfg: ProviderConfig, prompt: str, system: str, model_override: Optional[str] = None) -> str:
+    async def _openrouter(self, cfg: ProviderConfig, prompt: str, system: str, model_override: Optional[str] = None) -> tuple[str, int]:
         if not cfg.api_key:
             raise ProviderErr("OpenRouter: API-Key fehlt")
         session = await self._get_session()
         payload = {
-            "model": model_override or cfg.default_model,
+            "model": model_override or cfg.model,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
             "max_tokens": 1200,
             "temperature": 0.3,
@@ -332,6 +368,9 @@ class AsyncRelay:
             headers["HTTP-Referer"] = referer
         if title:
             headers["X-Title"] = title
+        for k, v in (cfg.extra_headers or {}).items():
+            if k and isinstance(k, str):
+                headers[k] = str(v)
         async with session.post(
             cfg.base_url,
             headers=headers,
@@ -344,18 +383,21 @@ class AsyncRelay:
                 txt = await r.text()
                 raise ProviderErr(f"OpenRouter {r.status}: {txt[:160]}")
             data = await r.json()
-            content = data["choices"][0]["message"]["content"]
+            try:
+                content = data["choices"][0]["message"]["content"]
+            except Exception:
+                raise ProviderErr("OpenRouter: ungültige Antwortstruktur")
             usage = ((data.get("usage") or {}).get("total_tokens") or RateLimiter.estimate_tokens(content))
             return content, usage
 
-    async def _anthropic(self, cfg: ProviderConfig, prompt: str, system: str, model_override: Optional[str] = None) -> str:
+    async def _anthropic(self, cfg: ProviderConfig, prompt: str, system: str, model_override: Optional[str] = None) -> tuple[str, int]:
         if not cfg.api_key:
             raise ProviderErr("Anthropic: API-Key fehlt")
         session = await self._get_session()
         async with session.post(
             cfg.base_url,
             headers={"x-api-key": cfg.api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
-            json={"model": cfg.default_model, "max_tokens": 1200, "system": system, "messages": [{"role": "user", "content": prompt}]},
+            json={"model": model_override or cfg.model, "max_tokens": 1200, "system": system, "messages": [{"role": "user", "content": prompt}]},
             timeout=aiohttp.ClientTimeout(total=cfg.timeout),
         ) as r:
             if r.status == 429:
@@ -364,14 +406,17 @@ class AsyncRelay:
                 txt = await r.text()
                 raise ProviderErr(f"Anthropic {r.status}: {txt[:120]}")
             data = await r.json()
-            content = data["content"][0]["text"]
+            try:
+                content = data["content"][0]["text"]
+            except Exception:
+                raise ProviderErr("Anthropic: ungültige Antwortstruktur")
             usage = ((data.get("usage") or {}).get("input_tokens", 0) + (data.get("usage") or {}).get("output_tokens", 0) or RateLimiter.estimate_tokens(content))
             return content, usage
 
-    async def _gemini(self, cfg: ProviderConfig, prompt: str, system: str, model_override: Optional[str] = None) -> str:
+    async def _gemini(self, cfg: ProviderConfig, prompt: str, system: str, model_override: Optional[str] = None) -> tuple[str, int]:
         if not cfg.api_key:
             raise ProviderErr("Gemini: API-Key fehlt")
-        url = f"{cfg.base_url}/{cfg.default_model}:generateContent?key={cfg.api_key}"
+        url = f"{cfg.base_url}/{model_override or cfg.model}:generateContent?key={cfg.api_key}"
         session = await self._get_session()
         async with session.post(
             url,
@@ -384,18 +429,21 @@ class AsyncRelay:
                 txt = await r.text()
                 raise ProviderErr(f"Gemini {r.status}: {txt[:120]}")
             data = await r.json()
-            content = data["candidates"][0]["content"]["parts"][0]["text"]
+            try:
+                content = data["candidates"][0]["content"]["parts"][0]["text"]
+            except Exception:
+                raise ProviderErr("Gemini: ungültige Antwortstruktur")
             usage = (((data.get("usageMetadata") or {}).get("totalTokenCount")) or RateLimiter.estimate_tokens(content))
             return content, usage
 
-    async def _cohere(self, cfg: ProviderConfig, prompt: str, system: str, model_override: Optional[str] = None) -> str:
+    async def _cohere(self, cfg: ProviderConfig, prompt: str, system: str, model_override: Optional[str] = None) -> tuple[str, int]:
         if not cfg.api_key:
             raise ProviderErr("Cohere: API-Key fehlt")
         session = await self._get_session()
         async with session.post(
             cfg.base_url,
             headers={"Authorization": f"Bearer {cfg.api_key}", "Content-Type": "application/json"},
-            json={"model": cfg.default_model, "preamble": system, "messages": [{"role": "user", "content": prompt}], "max_tokens": 1200, "temperature": 0.3},
+            json={"model": model_override or cfg.model, "preamble": system, "messages": [{"role": "user", "content": prompt}], "max_tokens": 1200, "temperature": 0.3},
             timeout=aiohttp.ClientTimeout(total=cfg.timeout),
         ) as r:
             if r.status == 429:
@@ -411,19 +459,20 @@ class AsyncRelay:
             usage = ((((data.get("usage") or {}).get("tokens") or {}).get("output_tokens")) or RateLimiter.estimate_tokens(content))
             return content, usage
 
-    async def _ollama(self, cfg: ProviderConfig, prompt: str, system: str) -> tuple[str, int]:
+    async def _ollama(self, cfg: ProviderConfig, prompt: str, system: str, model_override: Optional[str] = None) -> tuple[str, int]:
         session = await self._get_session()
+        use_model = model_override or cfg.model
         try:
             tags_url = cfg.base_url.rsplit("/api/chat", 1)[0] + "/api/tags"
             async with session.get(tags_url, timeout=aiohttp.ClientTimeout(total=10)) as tag_resp:
                 if tag_resp.status == 200:
                     tag_data = await tag_resp.json()
                     available = {m.get("name", "") for m in tag_data.get("models", [])}
-                    if available and cfg.default_model not in available and f"{cfg.default_model}:latest" not in available:
-                        raise ProviderErr(f"Ollama-Modell '{cfg.default_model}' nicht installiert")
+                    if available and use_model not in available and f"{use_model}:latest" not in available:
+                        raise ProviderErr(f"Ollama-Modell '{use_model}' nicht installiert")
             async with session.post(
                 cfg.base_url,
-                json={"model": cfg.default_model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}], "stream": False, "options": {"temperature": 0.3, "num_predict": 800}},
+                json={"model": use_model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}], "stream": False, "options": {"temperature": 0.25, "num_predict": 320}},
                 timeout=aiohttp.ClientTimeout(total=max(60, cfg.timeout)),
             ) as r:
                 txt = await r.text()
@@ -441,10 +490,10 @@ class AsyncRelay:
         except asyncio.TimeoutError:
             raise ProviderErr("Ollama Timeout")
 
-    async def _huggingface(self, cfg: ProviderConfig, prompt: str, system: str) -> tuple[str, int]:
+    async def _huggingface(self, cfg: ProviderConfig, prompt: str, system: str, model_override: Optional[str] = None) -> tuple[str, int]:
         if not cfg.api_key:
             raise ProviderErr("HuggingFace: API-Key fehlt")
-        url = f"{cfg.base_url}/{cfg.default_model}"
+        url = f"{cfg.base_url}/{model_override or cfg.model}"
         full = f"{system}\n\nUser: {prompt}\nAssistant:"
         session = await self._get_session()
         async with session.post(
@@ -474,11 +523,15 @@ class AsyncRelay:
             health = self._health.get(name, ProviderHealth())
             status.append({
                 "name": name,
+                "provider_id": name,
+                "display_name": pcfg.display_name,
+                "provider_type": pcfg.provider_type,
                 "available": self._is_runtime_available(pcfg),
                 "allowed": self.cfg.is_provider_allowed(name),
-                "model": pcfg.default_model,
+                "model": pcfg.model,
                 "rate": lim.status() if lim else "-",
                 "primary": name == self.cfg.relay.primary_provider,
+                "is_default": bool(pcfg.is_default),
                 "enabled": pcfg.enabled,
                 "has_api_key": bool(pcfg.api_key),
                 "last_error": health.last_error,

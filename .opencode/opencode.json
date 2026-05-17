@@ -1,0 +1,27 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "plan",
+  "share": "disabled",
+  "command": {
+    "arch-map": {
+      "description": "Map Isaac modules into architecture roles",
+      "agent": "plan",
+      "template": "Analyze this repository and map the main files into architecture roles: core, executor, memory, tooling, tests, governance, interfaces. Be file-specific and strict."
+    },
+    "routing-audit": {
+      "description": "Audit routing authority split",
+      "agent": "plan",
+      "template": "Inspect isaac_core.py and low_complexity.py. Identify where routing authority is split between classification and detect_intent/PATTERNS logic. Do not modify code yet."
+    },
+    "executor-audit": {
+      "description": "Audit executor boundaries",
+      "agent": "plan",
+      "template": "Inspect executor.py and explain whether executor still has any hidden routing or tool-decision authority. Be strict and concrete. Do not modify code yet."
+    },
+    "stability-tests": {
+      "description": "Improve stabilization tests only",
+      "agent": "build",
+      "template": "Only improve tests in tests_phase_a_stabilization.py. Add meaningful tests for routing consistency, lightweight short-circuits, strategy propagation, retrieval stability, and no accidental tool overreach. Do not change runtime code unless a test reveals a small necessary fix."
+    }
+  }
+}

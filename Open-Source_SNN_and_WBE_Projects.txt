@@ -1,0 +1,129 @@
+Copilot may make mistakes
+1
+Open-Source SNN and WBE Projects
+Kurzantwort: Ich habe die wichtigsten Open-Source-Projekte und aktuelle wissenschaftliche
+Übersichten zu gehirn-inspirierten Architekturen, Spiking Neural Networks (SNN) und Whole-Brain-
+Emulation zusammengetragen; unten findest du eine vergleichende Übersicht, konkrete
+Implementierungsansätze für Isaac und mehrere neuartige Ideen, die noch wenig verfolgt sind.
+Vergleich: relevante Open-Source Projekte (Kernattribute)
+Projekt
+Fokus
+Reife
+Codebasis /
+Sprache
+Best Use for
+Isaac
+BrainCog /
+Brain-Cog
+Multi-scale SNN
+cognitive engine
+Aktiv, forschu
+ngsorientiert
+Python (SNN libs) Cognitive
+modules, episodic
+memory emulatio
+n.[^1]
+Spiking
+frameworks
+(SpikingJelly,
+snnTorch,
+Norse)
+SNN training &
+simulation
+Mature libraries,
+benchmarks
+exist
+PyTorch / JAX
+Low-power event
+processing,
+temporal coding.[
+^2][^3]
+Open Neuromor
+phic (communi
+ty)
+Ecosystem,
+hardware
+/software bridge
+Active communi
+ty & resources
+Links zu SNN
+tools & hardware
+Roadmap,
+benchmarks,
+deployment
+guidance.[^4]
+Carboncopies /
+BrainGenix (WBE
+tools)
+Whole-brain
+emulation
+tooling & evaluati
+on
+Research platfor
+m, modular
+stacks
+C++ / Python
+mixed
+Long-term
+emulation
+experiments,
+validation
+metrics.[^5]
+Aus deinem System-Analyse-Dokument: “Isaac is a personal AI core system designed for
+privacy-first, trust-based autonomous operation.”“The system works well in production but
+shows architectural strain:”
+Konkrete Integrations- und Implementierungsvorschläge
+1) Hybrid SNN + ANN memory layer (BLAU)
+▪
+Warum: SNNs kodieren Zeit/latency nativ; kombinieren sie mit ANN-Vektor-Embeddings für
+semantic recall reduziert Redundanz und passt zu Isaac’s privacy-first lokalem Speicher.
+Copilot may make mistakes
+2
+Implementierung: nutze snnTorch/SpikingJelly für temporal encoders; synchronisiere mit
+existing vector_memory via adapter.[^2][^3]
+2) Neuromorphic event loop für GRÜN (Execution)
+▪
+Warum: Event-driven Ausführung (sparse spikes) senkt Latenz und Energie; passt zu
+BackgroundLoop/Watchdog. Implementierung: mappe kernel events auf SNN spikes; teste
+mit Rockpool/Lava-DL backends[^2][^4].
+3) Modulare ROT Orchestrator inspiriert von cortical microcircuits
+▪
+Warum: Reduziert Monolith (isaac_core heavy coupling) durch biologisch inspirierte,
+hierarchische control-modules (local inhibitory/excitatory motifs) - bessere fault isolation.
+Phase-wise extraction as in your plan (document).
+Neuartige, wenig erforschte Ansätze (ausführlich)
+1. Dendritic-style local planners: implementiere per-module multi-compartment neuron
+models (dendritic gating) als lightweight policy networks - erlaubt context-dependent gating
+without large symbolic controllers. (Inference: could improve compositional planning; needs
+custom neuron models and sparse training.[^6])
+2. Event-based RAG (retrieval-augmented generation) using spike timing: encode retrieval
+cues as spike patterns; retrieval matches via temporal cross-correlation rather than vector
+cosine - promising for privacy/local matching and robustness to drift. (Novel; requires
+research prototype.)
+3. Functional emulation sandbox (mini-WBE modules): small-scale BrainGenix-style modules
+to validate functional continuity of Isaac subsystems (memory, planning) before full
+integratio[^5]n.
+1.
+Risiken & nächste Schritte
+▪
+Risiken: SNN training complexity; hardware mismatch; evaluation/validation gaps (WBE
+ethics & metrics[^2][^5]).
+▪
+Empfohlen: 1) Proof-of-concept Hybrid SNN memory (4-8 weeks), 2) integrate event loop in
+isolated GRÜN testbed, 3) use Open Neuromorphic community for benchmark[^4][^1]s.
+Wenn du willst, setze ich PoC-Scope und eine priorisierte Task-Liste für Phase-2-Integration (inkl.
+test-cases und metrics) direkt um.
+References (6)
+[^1]: brain-inspired-ai · GitHub Topics · GitHub. https://github.com/topics/brain-inspired-ai
+[^2]: Spiking Neural Network (SNN) Frameworks - Open Neuromorphic. https://open-
+neuromorphic.org/neuromorphic-computing/software/snn-frameworks/
+Copilot may make mistakes
+3
+[^3]: GitHub - fangwei123456/spikingjelly: SpikingJelly is an open-source ....
+https://github.com/fangwei123456/spikingjelly
+[^4]: Neuromorphic Computing - Open Neuromorphic. https://neural-loop.github.io/open-
+neuromorphic.github.io/neuromorphic-computing/
+[^5]: GitHub - carboncopies/BrainGenix-NES: [Mirror of https://gitlab ....
+https://github.com/carboncopies/BrainGenix-NES
+[^6]: Brain-inspired Artificial Intelligence: A Comprehensive Review.
+https://arxiv.org/html/2408.14811v1

@@ -12,7 +12,7 @@ modules = [
     "config","audit","memory","privilege","logic","relay","executor","watchdog",
     "decomposer","dispatcher","ki_dialog","ki_skills","search","sudo_gate",
     "tool_registry","tool_runtime","browser","background_loop","monitor_server",
-    "monitor_api","isaac_core"
+    "monitor_api","neural_core","learning_engine","isaac_core"
 ]
 
 print("Isaac Sanity Check")

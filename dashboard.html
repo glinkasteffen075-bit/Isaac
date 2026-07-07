@@ -178,8 +178,41 @@ textarea,input{font-size:16px;}
 .chat-send{padding:.85rem 1.1rem;border:none;border-radius:14px;background:linear-gradient(135deg,var(--cyan),var(--blue));color:#07111b;font-weight:800;cursor:pointer;min-width:140px;}
 .chat-send:disabled{opacity:.5;cursor:not-allowed;}
 .helper{font-size:.78rem;color:var(--muted);}
-#ws-debug-box{position:static!important;margin-top:auto;width:100%!important;border-radius:12px!important;}
+#ws-debug-box{display:none;margin-top:8px;width:100%;border-radius:12px;padding:8px 10px;background:rgba(8,12,20,.92);border:1px solid var(--line);color:var(--dim);font-family:'JetBrains Mono',monospace;font-size:.72rem;word-break:break-word;}
+#ws-debug-box.visible{display:block;}
 .flash-new{animation:flash .9s ease;}
+.tool-section{display:grid;gap:14px;}
+.tool-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;}
+.tool-card{padding:14px;border-radius:16px;border:1px solid var(--line);background:rgba(10,15,26,.78);display:grid;gap:8px;}
+.tool-card h3{font-size:.92rem;margin:0;}
+.tool-mini{padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(8,12,20,.68);font-size:.82rem;line-height:1.45;}
+.tool-mini strong{display:block;margin-bottom:4px;}
+.tool-meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;color:var(--muted);font-size:.74rem;}
+.tool-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}
+.empty-state{padding:28px 20px;border-radius:16px;border:1px dashed var(--line2);background:rgba(8,12,20,.55);text-align:center;color:var(--muted);}
+.empty-state strong{display:block;color:var(--text);margin-bottom:6px;font-size:.92rem;}
+.quick-chips{display:flex;flex-wrap:wrap;gap:8px;}
+.quick-chip{padding:.42rem .72rem;border-radius:999px;border:1px solid var(--line2);background:rgba(12,18,32,.82);color:var(--muted);font-size:.76rem;cursor:pointer;transition:.18s ease;}
+.quick-chip:hover:not(:disabled){color:var(--text);border-color:rgba(72,199,255,.35);background:rgba(72,199,255,.08);}
+.quick-chip:disabled{opacity:.45;cursor:not-allowed;}
+.msg .who{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);}
+.msg .ts{font-family:'JetBrains Mono',monospace;font-size:.68rem;color:var(--dim);text-transform:none;letter-spacing:0;}
+.msg.isaac{justify-self:start;background:rgba(19,27,46,.88);border:1px solid var(--line);}
+.msg .body{white-space:pre-wrap;overflow-wrap:anywhere;}
+.typing-dots{display:inline-flex;gap:5px;align-items:center;}
+.typing-dots span{width:7px;height:7px;border-radius:50%;background:var(--cyan);opacity:.35;animation:bounce 1.1s infinite;}
+.typing-dots span:nth-child(2){animation-delay:.15s;}
+.typing-dots span:nth-child(3){animation-delay:.3s;}
+.provider-banner{display:none;padding:10px 14px;border-radius:14px;border:1px solid rgba(255,207,91,.35);background:rgba(255,207,91,.08);color:var(--yellow);font-size:.82rem;line-height:1.45;}
+.provider-banner.show{display:block;}
+.provider-banner.ok{display:block;border-color:rgba(51,229,154,.35);background:rgba(51,229,154,.08);color:var(--green);}
+.score-bar-row{display:grid;grid-template-columns:72px 1fr 42px;gap:10px;align-items:center;margin-bottom:6px;}
+.score-bar-lbl{font-size:.76rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;}
+.score-bar-bg{height:8px;border-radius:999px;background:rgba(88,112,157,.18);overflow:hidden;}
+.score-bar-fill{height:100%;border-radius:999px;}
+.score-bar-val{font-family:'JetBrains Mono',monospace;font-size:.78rem;text-align:right;}
+.chat-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;}
+.chat-toolbar .hbtn{padding:.45rem .7rem;font-size:.78rem;}
 @keyframes flash{0%{box-shadow:0 0 0 rgba(72,199,255,0)}35%{box-shadow:0 0 0 2px rgba(72,199,255,.22)}100%{box-shadow:0 0 0 rgba(72,199,255,0)}}
 @media (max-width: 1300px){.app{grid-template-columns:280px minmax(0,1fr);grid-template-rows:74px minmax(340px,.95fr) minmax(360px,1fr);}.chat.panel{grid-column:1/-1;}}
 @media (max-width: 920px){body{overflow:auto;}.app{display:flex;flex-direction:column;height:auto;min-height:100dvh;}.header{position:sticky;top:0;z-index:20;}.sidebar{max-height:none;overflow:visible;}.hero{grid-template-columns:1fr;}.task-header{grid-template-columns:60px 78px minmax(0,1fr) 74px 44px 44px 50px;font-size:.78rem;}.toggle-card-grid{grid-template-columns:1fr;}#chat-input{min-height:96px;}}
@@ -199,6 +232,7 @@ textarea,input{font-size:16px;}
     <div class="status-strip">
       <span class="badge on" id="sys-status">ONLINE</span>
       <span id="conn-label">Verbinde…</span>
+      <span class="badge" id="provider-pill" title="Primärer Provider">–</span>
     </div>
     <div class="header-actions">
       <button class="hbtn" onclick="sendCommand('status')">Status</button>
@@ -231,6 +265,18 @@ textarea,input{font-size:16px;}
         <div class="metric"><span>Fakten</span><span class="mv" id="mem-facts">0</span></div>
         <div class="metric"><span>Task-Ergebnisse</span><span class="mv" id="mem-tasks">0</span></div>
         <div class="metric"><span>Working Memory</span><span class="mv" id="mem-working">0</span></div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Vektor-Gedächtnis</div>
+        <div class="metric"><span>Status</span><span class="mv" id="vec-status">–</span></div>
+        <div class="metric"><span>Embeddings</span><span class="mv" id="vec-conv">0</span></div>
+        <div class="metric"><span>Wissen</span><span class="mv" id="vec-wissen">0</span></div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Neural Core</div>
+        <div class="metric"><span>Regionen</span><span class="mv" id="neural-regions">7</span></div>
+        <div class="metric"><span>Synapsen</span><span class="mv" id="neural-synapses">0</span></div>
+        <div class="metric"><span>Ø Gewicht</span><span class="mv" id="neural-avg">–</span></div>
       </div>
       <div class="stat-card">
         <div class="label">Audit</div>
@@ -266,6 +312,7 @@ textarea,input{font-size:16px;}
       <button class="tab" onclick="showTab('providers')">Provider <span class="tab-badge">⚙</span></button>
       <button class="tab" onclick="showTab('directives')">Direktiven <span class="tab-badge" id="tab-dir">0</span></button>
       <button class="tab" onclick="showTab('tools')">Tools <span class="tab-badge" id="tab-tools">0</span></button>
+      <button class="tab" onclick="showTab('neural')">Neural <span class="tab-badge" id="tab-neural">🧠</span></button>
       <button class="tab" onclick="showTab('updater')">Updater <span class="tab-badge" id="tab-updater">⇪</span></button>
     </div>
 
@@ -393,6 +440,30 @@ textarea,input{font-size:16px;}
         </div>
       </div>
 
+      <div class="tab-content" id="tab-neural">
+        <div class="tool-section">
+          <div class="section-title"><h2>Neural Core</h2><span class="tab-badge" id="neural-tab-badge">Live</span></div>
+          <div class="tool-grid">
+            <div class="tool-card">
+              <h3>Synapsen-Gewichte</h3>
+              <div class="helper">Plastische Verbindungen zwischen den 7 kognitiven Regionen. Gewichte passen sich aus Task-Ergebnissen an.</div>
+              <div id="neural-weights-bars" class="score-bars" style="margin-top:1rem"></div>
+            </div>
+            <div class="tool-card">
+              <h3>Pipeline-Regionen</h3>
+              <div class="helper">Aktiver Verarbeitungspfad: Perception → Retrieval → Integration → Strategy → Execution → Evaluation → Consolidation</div>
+              <div id="neural-pipeline" class="tool-list" style="margin-top:1rem"></div>
+              <div class="metric" style="margin-top:1rem"><span>Min / Max Gewicht</span><span class="mv" id="neural-range">–</span></div>
+            </div>
+            <div class="tool-card">
+              <h3>Vektor-Gedächtnis (ChromaDB)</h3>
+              <div class="helper">Semantische Suche über Konversationen und KI-Wissen – unabhängig von Stichwort-Treffern.</div>
+              <div id="neural-vector-detail" class="tool-list" style="margin-top:1rem"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="tab-content" id="tab-updater">
         <div class="tool-section">
           <div class="section-title"><h2>Updater</h2><span class="tab-badge" id="updater-package-count">0</span></div>
@@ -432,7 +503,7 @@ textarea,input{font-size:16px;}
 
     <div class="toggle-card-grid">
       <div class="ctrl-card">
-        <div class="ctrl-copy"><strong>Orchestrierung</strong><span>Pause/Resume ist live angebunden.</span></div>
+        <div class="ctrl-copy"><strong>Pause / Resume</strong><span>Stoppt oder setzt die Task-Orchestrierung fort.</span></div>
         <label class="switch"><input type="checkbox" id="orchestrator-toggle"><span class="slider"></span></label>
       </div>
       <div class="ctrl-card">
@@ -457,12 +528,24 @@ textarea,input{font-size:16px;}
       </div>
     </div>
 
+    <div id="provider-banner" class="provider-banner"></div>
+
+    <div class="chat-toolbar">
+      <div class="quick-chips" id="quick-chips">
+        <button class="quick-chip" type="button" onclick="sendCommand('status')">Status</button>
+        <button class="quick-chip" type="button" onclick="sendCommand('ki status')">KI-Status</button>
+        <button class="quick-chip" type="button" onclick="sendCommand('Hallo')">Hallo</button>
+        <button class="quick-chip" type="button" onclick="togglePause()">Pause/Resume</button>
+      </div>
+      <button class="hbtn" type="button" onclick="clearChat()">Chat leeren</button>
+    </div>
+
     <div id="chat-messages"></div>
 
     <div class="chat-input-area">
       <textarea id="chat-input" placeholder="Nachricht an Isaac… (Strg+Enter = senden)" disabled></textarea>
       <div class="chat-btns">
-        <div class="helper">Tipp: <strong>Status</strong>, <strong>ki status</strong>, <strong>pause</strong>, <strong>resume</strong></div>
+        <div class="helper">Enter = neue Zeile · Strg+Enter = senden</div>
         <button class="chat-send" id="chat-send-btn" onclick="sendChat()" disabled>Nachricht senden</button>
       </div>
     </div>
@@ -499,6 +582,7 @@ const DEFAULT_WS_PORT = 8765;
 const WS_PROTO = location.protocol === 'https:' ? 'wss' : 'ws';
 const WS_DEBUG_BOX_ID = 'ws-debug-box';
 const WS_HOST = '127.0.0.1';
+const WS_DEBUG = new URLSearchParams(location.search).has('debug');
 let WS_HOST_OVERRIDE = null;
 let wsReconnectTimer = null;
 let wsTriedTargets = [];
@@ -508,19 +592,9 @@ function ensureWsDebugBox() {
   if (!el) {
     el = document.createElement('div');
     el.id = WS_DEBUG_BOX_ID;
-    el.style.position = 'fixed';
-    el.style.right = '10px';
-    el.style.bottom = '10px';
-    el.style.zIndex = '99999';
-    el.style.padding = '8px 10px';
-    el.style.borderRadius = '10px';
-    el.style.background = 'rgba(0,0,0,0.85)';
-    el.style.color = '#fff';
-    el.style.fontSize = '12px';
-    el.style.fontFamily = 'monospace';
-    el.style.maxWidth = '85vw';
-    el.style.wordBreak = 'break-word';
-    document.body.appendChild(el);
+    const chat = document.querySelector('.chat');
+    if (chat) chat.appendChild(el);
+    else document.body.appendChild(el);
   }
   return el;
 }
@@ -528,6 +602,8 @@ function ensureWsDebugBox() {
 function setWsDebugStatus(text) {
   const el = ensureWsDebugBox();
   el.textContent = text;
+  const show = WS_DEBUG || /failed|error|close/i.test(text);
+  el.classList.toggle('visible', show);
 }
 
 async function getWsTargets() {
@@ -677,6 +753,7 @@ function handle(msg) {
 
     case 'providers':
       renderProviders(msg.providers);
+      renderProviderHeader(msg.providers, state.runtimeSettings);
       break;
 
     case 'directives':
@@ -702,6 +779,68 @@ function handle(msg) {
 // ═══════════════════════════════════════════════════════════════
 // STATE UPDATE
 // ═══════════════════════════════════════════════════════════════
+function renderVectorMemory(vector) {
+  const aktiv = vector && vector.aktiv;
+  const statusEl = document.getElementById('vec-status');
+  if (statusEl) {
+    statusEl.textContent = aktiv ? 'AKTIV' : 'INAKTIV';
+    statusEl.className = 'mv ' + (aktiv ? 'g' : 'r');
+  }
+  setText('vec-conv', aktiv ? (vector.konversationen || 0) : '–');
+  setText('vec-wissen', aktiv ? (vector.wissen || 0) : '–');
+
+  const detail = document.getElementById('neural-vector-detail');
+  if (!detail) return;
+  if (!vector) {
+    detail.innerHTML = '<div class="tool-mini"><div class="tool-meta"><span>Keine Vektor-Daten</span></div></div>';
+    return;
+  }
+  if (!vector.aktiv) {
+    detail.innerHTML = `<div class="tool-mini"><strong>ChromaDB inaktiv</strong><div class="tool-meta"><span>${escHtml(vector.grund || 'Nicht verfügbar')}</span></div></div>`;
+    return;
+  }
+  detail.innerHTML = `
+    <div class="tool-mini"><strong>Status: Aktiv</strong><div class="tool-meta"><span>Konversationen ${vector.konversationen || 0}</span><span>Wissen ${vector.wissen || 0}</span></div></div>
+    <div class="tool-mini"><div class="tool-meta"><span>Pfad: ${escHtml(vector.pfad || '–')}</span></div></div>`;
+}
+
+function renderNeuralCore(neural) {
+  if (!neural) return;
+  setText('neural-regions', neural.regions || 7);
+  setText('neural-synapses', neural.synapses || 0);
+  const avg = neural.avg_weight;
+  setTextColored('neural-avg', avg != null ? avg.toFixed(3) : '–',
+    avg >= 0.8 ? 'g' : avg >= 0.5 ? 'y' : 'r');
+  setText('neural-range',
+    (neural.min_weight != null && neural.max_weight != null)
+      ? `${neural.min_weight.toFixed(3)} / ${neural.max_weight.toFixed(3)}`
+      : '–');
+
+  const bars = document.getElementById('neural-weights-bars');
+  if (bars) {
+    const weights = neural.weights || {};
+    const entries = Object.entries(weights).sort((a, b) => a[0].localeCompare(b[0]));
+    if (!entries.length) {
+      bars.innerHTML = '<div class="helper">Noch keine Synapsen-Gewichte vorhanden.</div>';
+    } else {
+      bars.innerHTML = entries.map(([edge, weight]) => {
+        const pct = Math.round(Math.max(0, Math.min(1, Number(weight) || 0)) * 100);
+        const color = pct >= 80 ? 'var(--green)' : pct >= 50 ? 'var(--yellow)' : 'var(--red)';
+        const label = edge.replace(':', ' → ');
+        return `<div class="score-bar"><span class="score-label">${escHtml(label)}</span><div class="score-track"><div class="score-fill" style="width:${pct}%;background:${color}"></div></div><span class="score-val">${Number(weight).toFixed(3)}</span></div>`;
+      }).join('');
+    }
+  }
+
+  const pipeline = document.getElementById('neural-pipeline');
+  if (pipeline) {
+    const regions = Array.isArray(neural.pipeline) ? neural.pipeline : [];
+    pipeline.innerHTML = regions.length
+      ? regions.map((region, idx) => `<div class="tool-mini"><strong>${idx + 1}. ${escHtml(region)}</strong></div>`).join('')
+      : '<div class="helper">Pipeline noch nicht initialisiert.</div>';
+  }
+}
+
 function updateState(s) {
   if (!s) return;
 
@@ -727,14 +866,20 @@ function updateState(s) {
     setText('mem-facts',   s.memory.facts);
     setText('mem-tasks',   s.memory.task_results);
     setText('mem-working', s.memory.working_memory);
+    renderVectorMemory(s.memory.vector);
   }
+
+  if (s.neural) renderNeuralCore(s.neural);
 
   if (s.audit) {
     setText('a-total', s.audit.total_buffer);
     setText('a-size',  s.audit.audit_file_kb + ' KB');
   }
 
-  if (s.providers) renderProviders(s.providers);
+  if (s.providers) {
+    renderProviders(s.providers);
+    renderProviderHeader(s.providers, s.settings);
+  }
   if (s.provider_configs) {
     state.providerConfigs = Array.isArray(s.provider_configs) ? s.provider_configs : [];
     renderProviderConfigs();
@@ -798,6 +943,10 @@ function renderTasks() {
 
   setText('tm-count', tasks.length + ' Tasks');
   container.innerHTML = '';
+  if (!tasks.length) {
+    container.innerHTML = `<div class="empty-state"><strong>Keine Tasks in dieser Ansicht</strong>Isaac zeigt hier laufende, abgeschlossene und fehlgeschlagene Aufgaben in Echtzeit.</div>`;
+    return;
+  }
   tasks.forEach(t => {
     const el = buildTaskRow(t);
     container.appendChild(el);
@@ -860,7 +1009,7 @@ function buildTaskRow(task) {
     <div class="task-header" onclick="toggleTask('${task.id}')">
       <span class="task-id">${task.id}</span>
       <span class="task-type">${icon} ${task.typ}</span>
-      <span class="task-desc" title="${task.beschreibung}">${task.beschreibung}</span>
+      <span class="task-desc" title="${escHtml(task.beschreibung || '')}">${escHtml(task.beschreibung || '')}</span>
       <span class="task-prov">${task.provider}</span>
       <span class="task-iter">#${task.iteration}</span>
       <span class="task-score" style="color:${scoreColor}">${score}</span>
@@ -874,7 +1023,7 @@ function buildTaskRow(task) {
         ${buildScoreBars(task)}
         <div class="detail-block">
           <div class="detail-label">Antwort (Vorschau)</div>
-          <div class="detail-value">${task.antwort_kurz || task.fehler || '–'}</div>
+          <div class="detail-value">${escHtml(task.antwort_kurz || task.fehler || '–')}</div>
         </div>
         <div class="detail-block">
           <div class="detail-label">Sub-Tasks / Modus</div>
@@ -1005,16 +1154,52 @@ function setLogFilter(f, btn) {
   container.innerHTML = '';
   const filtered = f === 'all' ? state.logs :
                    state.logs.filter(e => e.typ === f);
+  if (!filtered.length) {
+    container.innerHTML = `<div class="empty-state"><strong>Keine Log-Einträge</strong>Für den Filter „${escHtml(f)}“ liegen noch keine Audit-Events vor.</div>`;
+    return;
+  }
   filtered.slice(-300).forEach(addLogEntry);
 }
 
 // ═══════════════════════════════════════════════════════════════
 // PROVIDER
 // ═══════════════════════════════════════════════════════════════
+function renderProviderHeader(providers, settings) {
+  const pill = document.getElementById('provider-pill');
+  const banner = document.getElementById('provider-banner');
+  if (!pill && !banner) return;
+  const list = Array.isArray(providers) ? providers : [];
+  const primary = list.find(p => p.primary) || list.find(p => p.available) || list[0];
+  const activeName = (settings && settings.active_provider) || (primary && (primary.display_name || primary.name)) || '–';
+  if (pill) {
+    pill.textContent = activeName;
+    pill.className = 'badge ' + (primary && primary.available ? 'on' : primary ? 'hot' : '');
+    pill.title = primary ? `${primary.model || 'kein Modell'} · ${primary.available ? 'verfügbar' : 'nicht verfügbar'}` : 'Primärer Provider';
+  }
+  if (banner) {
+    if (!primary) {
+      banner.className = 'provider-banner show';
+      banner.textContent = 'Kein Provider konfiguriert. Bitte im Tab „Provider“ einrichten.';
+      return;
+    }
+    if (!primary.available) {
+      banner.className = 'provider-banner show';
+      banner.innerHTML = `⚠ <strong>${escHtml(primary.display_name || primary.name)}</strong> nicht erreichbar (${escHtml(primary.model || 'kein Modell')}). Prüfe Ollama/API-Key im Provider-Tab.`;
+      return;
+    }
+    banner.className = 'provider-banner ok show';
+    banner.textContent = `✓ ${primary.display_name || primary.name} aktiv · ${primary.model || 'Modell unbekannt'}`;
+  }
+}
+
 function renderProviders(providers) {
   const grid = document.getElementById('providers-grid');
   if (!providers || !grid) return;
   grid.innerHTML = '';
+  if (!providers.length) {
+    grid.innerHTML = '<div class="empty-state"><strong>Keine Provider-Daten</strong>Provider-Status erscheint nach der ersten Verbindung.</div>';
+    return;
+  }
   providers.forEach(p => {
     const card = document.createElement('div');
     card.className = 'prov-card' +
@@ -1613,7 +1798,7 @@ function sendChat() {
   addChatMsg('steffen', text, now());
   send({typ: 'chat', text});
   inp.value = '';
-  // Typing indicator
+  autoResizeChatInput();
   addTyping();
 }
 
@@ -1621,10 +1806,23 @@ function addChatMsg(who, text, ts) {
   const el = document.createElement('div');
   el.className = 'msg ' + who;
   const label = who === 'steffen' ? '▶ ' + CONFIG.owner : '⚡ Isaac';
-  el.innerHTML = `<div class="who">${label}<span class="ts">${ts}</span></div><div>${escHtml(text)}</div>`;
+  el.innerHTML = `<div class="who">${label}<span class="ts">${ts}</span></div><div class="body">${escHtml(text)}</div>`;
   const container = document.getElementById('chat-messages');
   container.appendChild(el);
   container.scrollTop = container.scrollHeight;
+}
+
+function clearChat() {
+  const container = document.getElementById('chat-messages');
+  if (container) container.innerHTML = '';
+  removeTyping();
+}
+
+function autoResizeChatInput() {
+  const inp = document.getElementById('chat-input');
+  if (!inp) return;
+  inp.style.height = 'auto';
+  inp.style.height = Math.min(inp.scrollHeight, 240) + 'px';
 }
 
 function addSysMsg(text) {
@@ -1640,10 +1838,9 @@ let typingEl = null;
 function addTyping() {
   removeTyping();
   typingEl = document.createElement('div');
-  typingEl.className = 'msg isaac';
+  typingEl.className = 'typing-indicator';
   typingEl.id = 'typing-indicator';
-  typingEl.innerHTML = `<div class="who">⚡ Isaac</div>
-    <span class="typing-dots"><span>●</span><span>●</span><span>●</span></span>`;
+  typingEl.innerHTML = `<div class="who">⚡ Isaac</div><div class="dots"><span></span><span></span><span></span></div>`;
   const c = document.getElementById('chat-messages');
   c.appendChild(typingEl);
   c.scrollTop = c.scrollHeight;
@@ -1665,7 +1862,7 @@ const CONFIG = { owner: 'Steffen' };
 
 function showTab(name) {
   document.querySelectorAll('.tab').forEach((t, i) => {
-    const names = ['taskmanager', 'log', 'providers', 'directives', 'tools', 'updater'];
+    const names = ['taskmanager', 'log', 'providers', 'directives', 'tools', 'neural', 'updater'];
     t.classList.toggle('active', names[i] === name);
   });
   document.querySelectorAll('.tab-content').forEach(c => {
@@ -1687,6 +1884,8 @@ function setOnline(online) {
   btn.disabled = !online;
   status.textContent = online ? 'online' : 'offline';
   status.style.color = online ? 'var(--green)' : 'var(--dim)';
+  document.querySelectorAll('.quick-chip').forEach(chip => { chip.disabled = !online; });
+  if (online) inp.focus();
 }
 
 function togglePause() {
@@ -1747,9 +1946,12 @@ setInterval(() => {
 // Keyboard shortcuts
 document.addEventListener('keydown', e => {
   if (e.ctrlKey && e.key === 'Enter') {
+    e.preventDefault();
     sendChat();
   }
 });
+
+document.getElementById('chat-input')?.addEventListener('input', autoResizeChatInput);
 
 // Enter in Direktiven-Input
 document.getElementById('dir-input')?.addEventListener('keydown', e => {

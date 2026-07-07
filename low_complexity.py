@@ -40,6 +40,26 @@ _CLARIFY_MARKERS = {
 _STATUS_MARKERS = {"status", "info", "hilfe"}
 _TOOL_PREFIXES = ("suche:", "suche ", "search:", "search ", "recherchiere:", "recherchiere ", "finde:")
 _TOOL_MARKERS = ("internet", "web", "browser", "wetter", "github", "api", "tool", "mcp", "suche", "search")
+_TOOL_ACTION_WORDS = {"suche", "search", "recherchiere"}
+_EXPLANATORY_PREFIXES = (
+    "erkläre ",
+    "erklär ",
+    "erklaere ",
+    "erklaer ",
+    "was bedeutet ",
+    "was ist ",
+)
+_EXPLANATORY_CONTEXT_MARKERS = (
+    " als ",
+    "architektur",
+    "grundlage",
+    "grundlagen",
+    "konzept",
+    "konzeptionell",
+    "literatur",
+    "motiv",
+    "prinzip",
+)
 _ACTION_SHORT_MARKERS = ("mach", "weiter", "fortsetzen", "hilfe", "erklär", "erklär", "wer", "was", "wie", "warum")
 
 
@@ -52,6 +72,18 @@ def normalize_low_complexity(text: str) -> str:
 
 def classify_interaction(text: str) -> str:
     return classify_interaction_result(text).interaction_class
+
+
+def _has_explicit_tool_action(tokens: list[str]) -> bool:
+    return any(token in _TOOL_ACTION_WORDS for token in tokens)
+
+
+def _looks_like_explanatory_chat(normalized: str) -> bool:
+    padded = f" {normalized} "
+    return (
+        normalized.startswith(_EXPLANATORY_PREFIXES) or
+        any(marker in padded for marker in _EXPLANATORY_CONTEXT_MARKERS)
+    )
 
 
 def classify_interaction_result(text: str) -> ClassificationResult:
@@ -88,7 +120,11 @@ def classify_interaction_result(text: str) -> ClassificationResult:
             word_count=word_count,
         )
     if any(marker in normalized for marker in _TOOL_MARKERS) and word_count >= 2:
-        if ":" in (text or "") or word_count >= 3:
+        explanatory_chat = (
+            _looks_like_explanatory_chat(normalized)
+            and not _has_explicit_tool_action(tokens)
+        )
+        if not explanatory_chat and (":" in (text or "") or word_count >= 3):
             return ClassificationResult(
                 interaction_class=InteractionClass.TOOL_REQUEST,
                 normalized_text=normalized,

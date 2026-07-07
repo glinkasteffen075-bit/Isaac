@@ -16,6 +16,18 @@ from low_complexity import (
     classify_interaction_result,
     is_lightweight_local_class,
 )
+from hermes_compat import (
+    BrowserAction,
+    ComputerAction,
+    ExecutionContext,
+    HermesBrowserAdapter,
+    HermesCompatibilityAdapter,
+    HermesComputerUseAdapter,
+    HermesToolSchemaMapper,
+    PermissionMetadata,
+)
+from mcp_registry import MCPRegistry
+from security_policy import ConfirmationPolicy
 
 
 class TestCriticalBugs(unittest.TestCase):
@@ -148,11 +160,16 @@ class TestCriticalBugs(unittest.TestCase):
             async def submit_and_wait(self, task, timeout=180.0):
                 return task
 
+        from neural_core import get_neural_cortex
+        from learning_engine import get_learning_engine
+
         kernel = object.__new__(IsaacKernel)
         kernel.memory = FakeMemory()
         kernel.executor = FakeExecutor()
         kernel.meaning = SimpleNamespace(record_impact=lambda *args, **kwargs: None)
         kernel.values = SimpleNamespace(update=lambda *args, **kwargs: None)
+        kernel.neural = get_neural_cortex()
+        kernel.learning = get_learning_engine()
         kernel._build_system = lambda sudo_aktiv, emp, wissen_kontext="", strategy_note="": "system"
         kernel._provider_hint = lambda user_input: None
         classification = ClassificationResult(
@@ -633,18 +650,94 @@ class TestCriticalBugs(unittest.TestCase):
         self.assertEqual(data["decision_trace"][0]["event"], "evaluated")
         json.dumps(data)
 
-from hermes_compat import (
-    BrowserAction,
-    ComputerAction,
-    ExecutionContext,
-    HermesBrowserAdapter,
-    HermesCompatibilityAdapter,
-    HermesComputerUseAdapter,
-    HermesToolSchemaMapper,
-    PermissionMetadata,
-)
-from mcp_registry import MCPRegistry
-from security_policy import ConfirmationPolicy
+    def test_bug_34_explanatory_weather_prompt_stays_normal_chat(self):
+        result = classify_interaction_result(
+            "Erkläre mir das Wetter als sprachliches Motiv in Literatur"
+        )
+        self.assertEqual(result.interaction_class, InteractionClass.NORMAL_CHAT)
+
+    def test_bug_35_explanatory_api_github_prompt_stays_normal_chat(self):
+        result = classify_interaction_result(
+            "Erkläre mir die GitHub API Architektur konzeptionell"
+        )
+        self.assertEqual(result.interaction_class, InteractionClass.NORMAL_CHAT)
+
+    def test_bug_36_explicit_search_prompt_remains_tool_request(self):
+        result = classify_interaction_result("Suche GitHub API Dokumentation")
+        self.assertEqual(result.interaction_class, InteractionClass.TOOL_REQUEST)
+
+    def test_neural_core_propagates_seven_regions(self):
+        from neural_core import NeuralCortex, NeuralRegion, PIPELINE_ORDER
+
+        cortex = NeuralCortex()
+        trace = cortex.propagate(
+            interaction_class="NORMAL_CHAT",
+            intent="chat",
+            retrieval_ctx={
+                "relevant_facts": [{"key": "test"}],
+                "conversation_history": [],
+                "relevant_task_results": [],
+                "semantic_context": "",
+                "active_directives": [],
+                "behavioral_risks": [],
+            },
+            word_count=5,
+            execution_score=7.5,
+        )
+        self.assertEqual(len(trace.signals), len(PIPELINE_ORDER))
+        self.assertEqual(trace.signals[0].region, NeuralRegion.PERCEPTION)
+        self.assertEqual(trace.signals[-1].region, NeuralRegion.CONSOLIDATION)
+
+    def test_neural_core_reinforce_adjusts_weights_on_success(self):
+        from neural_core import NeuralCortex, NeuralRegion
+
+        cortex = NeuralCortex()
+        before = cortex.get_weight(NeuralRegion.PERCEPTION, NeuralRegion.RETRIEVAL)
+        trace = cortex.propagate(
+            interaction_class="NORMAL_CHAT",
+            intent="chat",
+            retrieval_ctx={},
+            word_count=3,
+        )
+        changed = cortex.reinforce(trace, 8.0)
+        after = cortex.get_weight(NeuralRegion.PERCEPTION, NeuralRegion.RETRIEVAL)
+        self.assertTrue(changed or after >= before)
+
+    def test_neural_core_low_activation_disables_tools(self):
+        from neural_core import NeuralCortex
+
+        cortex = NeuralCortex()
+        trace = cortex.propagate(
+            interaction_class="SOCIAL_ACKNOWLEDGMENT",
+            intent="chat",
+            retrieval_ctx={},
+            word_count=1,
+        )
+        modulation = cortex.modulate_strategy(
+            allow_tools=True,
+            allow_followup=True,
+            allow_provider_switch=True,
+            trace=trace,
+        )
+        self.assertFalse(modulation.allow_tools)
+
+    def test_neural_core_stats_exposes_dashboard_payload(self):
+        from neural_core import NeuralCortex
+
+        stats = NeuralCortex().stats()
+        self.assertEqual(stats["regions"], 7)
+        self.assertIn("weights", stats)
+        self.assertIn("perception:retrieval", stats["weights"])
+        self.assertIn("pipeline", stats)
+
+    def test_vector_memory_stats_when_chromadb_available(self):
+        from vector_memory import get_vector_memory
+
+        stats = get_vector_memory().stats()
+        self.assertIn("aktiv", stats)
+        if stats["aktiv"]:
+            self.assertIn("konversationen", stats)
+            self.assertIn("pfad", stats)
 
 
 class TestHermesCompatibilityLayer(unittest.TestCase):

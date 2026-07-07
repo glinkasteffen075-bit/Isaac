@@ -280,6 +280,13 @@ class MonitorServer:
         except Exception:
             pass
 
+        neural_status = {}
+        try:
+            from neural_core import get_neural_cortex
+            neural_status = get_neural_cortex().stats()
+        except Exception:
+            pass
+
         settings = {
             "owner_name": getattr(self.cfg, "owner_name", "Steffen"),
             "active_provider": getattr(getattr(self.cfg, "relay", None), "primary_provider", ""),
@@ -316,6 +323,7 @@ class MonitorServer:
             "empathie":    empathie_status,
             "watchdog":    watchdog_status,
             "blacklist":   blacklist_status,
+            "neural":      neural_status,
         }
 
     def _get_directives(self) -> list[dict]:

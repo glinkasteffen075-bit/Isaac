@@ -55,6 +55,8 @@ from low_complexity import (
     local_class_response,
     local_fast_response,
 )
+from neural_core   import get_neural_cortex
+from learning_engine import get_learning_engine
 
 log = logging.getLogger("Isaac.Kernel")
 
@@ -157,6 +159,8 @@ class IsaacKernel:
         self.monitor    = get_monitor()
         self.meaning    = get_meaning()
         self.values     = get_values()
+        self.neural     = get_neural_cortex()
+        self.learning   = get_learning_engine()
         self._background = None   # lazy start in main()
 
         set_kernel(self)
@@ -351,12 +355,35 @@ class IsaacKernel:
             intent=intent,
             interaction_class=interaction_class,
         )
+        neural_trace = self.neural.propagate(
+            interaction_class=interaction_class,
+            intent=intent,
+            retrieval_ctx=retrieval_ctx,
+            word_count=classification.word_count,
+        )
         strategy = self._select_response_strategy(
             user_input=user_input,
             intent=intent,
             interaction_class=interaction_class,
             retrieval_ctx=retrieval_ctx,
         )
+        modulation = self.neural.modulate_strategy(
+            allow_tools=strategy.allow_tools,
+            allow_followup=strategy.allow_followup,
+            allow_provider_switch=strategy.allow_provider_switch,
+            trace=neural_trace,
+        )
+        if modulation.allow_tools is not None:
+            strategy = Strategy(
+                allow_tools=modulation.allow_tools,
+                allow_followup=modulation.allow_followup if modulation.allow_followup is not None else strategy.allow_followup,
+                allow_provider_switch=(
+                    modulation.allow_provider_switch
+                    if modulation.allow_provider_switch is not None
+                    else strategy.allow_provider_switch
+                ),
+                style_note=(strategy.style_note or "") + (f"\n{modulation.neural_note}" if modulation.neural_note else ""),
+            )
         typ_map = {
             Intent.SEARCH:    TaskType.SEARCH,
             Intent.CODE:      TaskType.CODE,
@@ -416,6 +443,22 @@ class IsaacKernel:
             task.id, user_input[:200], antwort,
             score=score, iterations=task.iteration + 1,
             provider=task.provider_used,
+        )
+        final_trace = self.neural.propagate(
+            interaction_class=interaction_class,
+            intent=intent,
+            retrieval_ctx=retrieval_ctx,
+            word_count=classification.word_count,
+            execution_score=score,
+        )
+        self.neural.reinforce(final_trace, score)
+        outcome = "success" if score >= 5.0 else "weak" if score > 0 else "failed"
+        self.learning.learn(
+            prompt=user_input,
+            route=f"{interaction_class}/{intent}",
+            outcome=outcome,
+            score=score,
+            notes=json.dumps(final_trace.as_dict(), ensure_ascii=False)[:1000],
         )
         return antwort, score
 

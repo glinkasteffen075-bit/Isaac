@@ -529,12 +529,25 @@ class Executor:
                     "run_index": tool_runs + 1,
                 },
             )
-            blocked = constitution_gate_for_tool(selection, prompt)
+            from config import Level
+            from constitution_override import build_override_context
+
+            override_ctx = build_override_context(
+                prompt=prompt,
+                sudo_active=task.sudo_aktiv,
+                caller_level=Level.STEFFEN if task.sudo_aktiv else Level.TASK,
+                source="executor",
+            )
+            blocked = constitution_gate_for_tool(
+                selection, prompt, override_ctx=override_ctx,
+            )
             if blocked:
                 result = ensure_result_contract(blocked, source="constitution")
             else:
                 result = ensure_result_contract(
-                    await run_selected_tool(selection, prompt),
+                    await run_selected_tool(
+                        selection, prompt, override_ctx=override_ctx,
+                    ),
                     source="executor_boundary",
                 )
             identifier = selection.get("identifier", "")

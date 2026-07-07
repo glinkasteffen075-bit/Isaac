@@ -711,6 +711,21 @@ class DashboardHTTPServer:
                 data = await _request_json(request)
                 name = (data.get("name") or "").strip()
                 args = dict(data.get("arguments") or {})
+                if data.get("owner_override"):
+                    remote = (request.remote or "").strip()
+                    if remote not in {"127.0.0.1", "::1", ""}:
+                        return web.json_response(
+                            {"ok": False, "error": "owner_override nur von localhost"},
+                            status=403,
+                        )
+                    reason = (data.get("override_reason") or args.get("override_reason") or "").strip()
+                    if not reason:
+                        return web.json_response(
+                            {"ok": False, "error": "override_reason fehlt"},
+                            status=400,
+                        )
+                    args["owner_override"] = True
+                    args["override_reason"] = reason
                 result = mcp.invoke_tool(name, args)
                 return web.json_response(result, status=200 if result.get("ok") else 400)
 

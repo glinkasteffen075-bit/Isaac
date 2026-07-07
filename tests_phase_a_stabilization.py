@@ -901,6 +901,74 @@ class TestHermesCompatibilityLayer(unittest.TestCase):
         self.assertIn("division by zero", mcp_result["error"])
 
 
+class TestConstitutionOwnerOverride(unittest.TestCase):
+    def test_privilege_escalation_blocked_without_override(self):
+        from constitution import get_constitution
+        from constitution_override import evaluate_owner_override, build_override_context
+        from config import Level
+
+        verdict = get_constitution().validate_action(
+            "tool_invoke",
+            {"privilege_escalation": True, "owner_approved": False, "audit_logged": True},
+        )
+        self.assertFalse(verdict.get("allowed"))
+        result = evaluate_owner_override(
+            verdict,
+            build_override_context(caller_level=Level.TASK),
+        )
+        self.assertFalse(result.get("allowed"))
+
+    def test_override_prefix_with_sudo_allows_and_audits(self):
+        from constitution_override import apply_constitution_gate, build_override_context
+        from config import Level
+        from memory import get_memory
+
+        gate = apply_constitution_gate(
+            "tool_invoke",
+            {"privilege_escalation": True, "owner_approved": False, "audit_logged": True},
+            build_override_context(
+                prompt="override: notwendiger Zugriff für Wartung",
+                sudo_active=True,
+                caller_level=Level.STEFFEN,
+                source="test",
+            ),
+        )
+        self.assertTrue(gate.get("allowed"))
+        self.assertTrue((gate.get("override") or {}).get("overridden"))
+        events = get_memory().recent_development_events(15)
+        self.assertTrue(
+            any(
+                e.get("event_type") == "constitution_override"
+                and e.get("target_key") == "tool_invoke"
+                for e in events
+            )
+        )
+
+    def test_constitution_self_modify_not_overridable(self):
+        from constitution_override import apply_constitution_gate, build_override_context
+        from config import Level
+
+        gate = apply_constitution_gate(
+            "tool_invoke",
+            {"self_modify_constitution": True, "audit_logged": True},
+            build_override_context(
+                sudo_active=True,
+                caller_level=Level.STEFFEN,
+                override_reason="verfassung ändern",
+                source="test",
+            ),
+        )
+        self.assertFalse(gate.get("allowed"))
+        self.assertIn("constitution_not_self_editable", gate.get("blocked_by", []))
+
+    def test_detect_override_prefix(self):
+        from constitution_override import detect_override_prefix
+
+        explicit, reason = detect_override_prefix("override: Wartungsfenster für Tool-Test")
+        self.assertTrue(explicit)
+        self.assertIn("Wartungsfenster", reason)
+
+
 class TestMcpJsonRpc(unittest.TestCase):
     def setUp(self):
         from mcp_jsonrpc import get_jsonrpc_handler

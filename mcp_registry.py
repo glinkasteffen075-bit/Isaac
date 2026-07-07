@@ -111,18 +111,20 @@ class MCPRegistry:
         tool = self._tools.get(name)
         if not tool:
             return {"ok": False, "error": f"Unknown MCP tool: {name}"}
+        args = dict(arguments or {})
+        override_ctx = _extract_override_context(args, source="mcp")
         denied = _authorize_mcp_tool(name)
         if denied:
             return denied
         if name in MCP_CONSTITUTION_GATED_TOOLS:
-            denied = _constitution_gate_mcp_tool(name)
+            denied = _constitution_gate_mcp_tool(name, override_ctx=override_ctx)
             if denied:
                 return denied
         handler = tool.get("_handler")
         if handler is None:
             return {"ok": False, "error": f"Tool has no handler: {name}"}
         try:
-            result = handler(**(arguments or {}))
+            result = handler(**args)
             return _handler_result_contract(name, result)
         except TypeError as e:
             return ensure_result_contract({"ok": False, "error": f"Argument error: {e}", "metadata": {"tool": name}}, source=f"mcp_registry:{name}")
@@ -190,23 +192,43 @@ def _authorize_mcp_resource(uri: str) -> Optional[Dict[str, Any]]:
     return {"ok": False, "uri": uri, "error": reason, "required_privilege": action}
 
 
-def _constitution_gate_mcp_tool(name: str) -> Optional[Dict[str, Any]]:
-    from constitution import get_constitution
-    from audit import AuditLog
+def _extract_override_context(args: Dict[str, Any], source: str = "mcp"):
+    from config import Level
+    from constitution_override import build_override_context
 
-    verdict = get_constitution().validate_action(
+    owner_override = bool(args.pop("owner_override", False))
+    override_reason = str(args.pop("override_reason", "") or "")
+    return build_override_context(
+        owner_override=owner_override,
+        override_reason=override_reason,
+        caller_level=Level.STEFFEN if owner_override else Level.ISAAC,
+        source=source,
+    )
+
+
+def _constitution_gate_mcp_tool(
+    name: str,
+    override_ctx=None,
+) -> Optional[Dict[str, Any]]:
+    from constitution_override import apply_constitution_gate
+
+    gate = apply_constitution_gate(
         "tool_invoke",
         {"outside_effect": True, "audit_logged": True, "risk": "normal"},
+        override_ctx,
     )
-    if verdict.get("allowed"):
+    if gate.get("allowed"):
         return None
-    blocked = verdict.get("blocked_by", [])
-    AuditLog.action("Constitution", "mcp_tool_blocked", f"{name}:{','.join(blocked)}", erfolg=False)
+    blocked = gate.get("blocked_by", [])
+    override = gate.get("override") or {}
     return ensure_result_contract(
         {
             "ok": False,
-            "error": f"Verfassung blockiert MCP-Tool: {', '.join(blocked)}",
-            "metadata": {"tool": name, "blocked_by": blocked},
+            "error": (
+                f"Verfassung blockiert MCP-Tool: {', '.join(blocked)} "
+                f"({override.get('reason', 'blockiert')})"
+            ),
+            "metadata": {"tool": name, "blocked_by": blocked, "override_denied": override},
         },
         source="mcp_registry:constitution",
     )

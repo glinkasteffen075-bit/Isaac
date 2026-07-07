@@ -326,9 +326,13 @@ async def select_live_tool_for_task(task, prompt: str, iteration: int, policy: T
     )
 
 
-def constitution_gate_for_tool(selection: dict, prompt: str) -> dict | None:
-    """Prüft kritische Tool-Aufrufe gegen die Verfassung."""
-    from constitution import get_constitution
+def constitution_gate_for_tool(
+    selection: dict,
+    prompt: str,
+    override_ctx=None,
+) -> dict | None:
+    """Prüft kritische Tool-Aufrufe gegen die Verfassung (mit optionalem Owner-Override)."""
+    from constitution_override import apply_constitution_gate
 
     selection = selection or {}
     kind = str(selection.get("kind", "")).lower()
@@ -346,29 +350,27 @@ def constitution_gate_for_tool(selection: dict, prompt: str) -> dict | None:
     if metadata.get("privilege_escalation") and not metadata.get("owner_approved"):
         metadata["privilege_escalation"] = True
 
-    verdict = get_constitution().validate_action("tool_invoke", metadata)
-    if verdict.get("allowed"):
+    gate = apply_constitution_gate("tool_invoke", metadata, override_ctx)
+    if gate.get("allowed"):
         return None
 
-    blocked = verdict.get("blocked_by", [])
-    from audit import AuditLog
-
-    AuditLog.action(
-        "Constitution",
-        "tool_blocked",
-        f"blocked_by={','.join(blocked)}",
-        erfolg=False,
-    )
+    blocked = gate.get("blocked_by", [])
+    override = gate.get("override") or {}
+    reason = override.get("reason", "Verfassung blockiert")
     return error_result(
-        f"Verfassung blockiert Tool-Aufruf: {', '.join(blocked)}",
-        metadata={"blocked_by": blocked, "source": "constitution"},
+        f"Verfassung blockiert Tool-Aufruf: {', '.join(blocked)} ({reason})",
+        metadata={
+            "blocked_by": blocked,
+            "source": "constitution",
+            "override_denied": override,
+        },
     )
 
 
-async def run_selected_tool(selection: dict, prompt: str) -> dict:
+async def run_selected_tool(selection: dict, prompt: str, override_ctx=None) -> dict:
     if not selection:
         return error_result("Keine Tool-Auswahl", metadata={"source": "selection"})
-    blocked = constitution_gate_for_tool(selection, prompt)
+    blocked = constitution_gate_for_tool(selection, prompt, override_ctx=override_ctx)
     if blocked:
         return blocked
     source = selection.get("source")

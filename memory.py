@@ -40,6 +40,7 @@ class RetrievalContext:
     behavioral_risks: list[dict]
     relevant_reflections: list[str]
     open_questions: list[str]
+    relevant_procedures: list[dict]
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -54,6 +55,7 @@ class RetrievalContext:
             "behavioral_risks": self.behavioral_risks,
             "relevant_reflections": self.relevant_reflections,
             "open_questions": self.open_questions,
+            "relevant_procedures": self.relevant_procedures,
         }
 
 
@@ -118,6 +120,26 @@ CREATE TABLE IF NOT EXISTS development_events (
     reason              TEXT    DEFAULT '',
     requires_review     INTEGER DEFAULT 0,
     reviewed_by_owner   INTEGER DEFAULT 0,
+    metadata            TEXT    DEFAULT '{}'
+);
+
+-- Wiederverwendbare Task-Verfahren (Skill-/Procedure-Memory)
+CREATE TABLE IF NOT EXISTS task_procedures (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    signature           TEXT    NOT NULL UNIQUE,
+    ts                  TEXT    NOT NULL,
+    task_type           TEXT    NOT NULL,
+    intent_hint         TEXT    DEFAULT '',
+    keywords            TEXT    DEFAULT '[]',
+    tools_used          TEXT    DEFAULT '[]',
+    trace_summary       TEXT    DEFAULT '',
+    reliability         REAL    DEFAULT 0.5,
+    success_count       INTEGER DEFAULT 0,
+    failure_count       INTEGER DEFAULT 0,
+    last_task_id        TEXT    DEFAULT '',
+    last_score          REAL    DEFAULT 0.0,
+    last_status         TEXT    DEFAULT '',
+    degraded            INTEGER DEFAULT 0,
     metadata            TEXT    DEFAULT '{}'
 );
 
@@ -364,6 +386,132 @@ class Memory:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    # ── Task-Verfahren (Procedure Memory) ─────────────────────────────────────
+    def get_procedure_by_signature(self, signature: str) -> Optional[dict]:
+        with _conn() as con:
+            row = con.execute(
+                "SELECT * FROM task_procedures WHERE signature=?", (signature,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def upsert_procedure(
+        self,
+        signature: str,
+        task_type: str,
+        intent_hint: str = "",
+        keywords: list | None = None,
+        tools_used: list | None = None,
+        trace_summary: str = "",
+        reliability: float = 0.5,
+        success_count: int = 0,
+        failure_count: int = 0,
+        last_task_id: str = "",
+        last_score: float = 0.0,
+        last_status: str = "",
+        degraded: bool = False,
+        metadata: dict | None = None,
+    ) -> int:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        with _conn() as con:
+            existing = con.execute(
+                "SELECT id FROM task_procedures WHERE signature=?", (signature,)
+            ).fetchone()
+            values = (
+                ts,
+                task_type,
+                intent_hint[:120],
+                json.dumps(keywords or [], ensure_ascii=False),
+                json.dumps(tools_used or [], ensure_ascii=False),
+                trace_summary[:300],
+                float(reliability),
+                int(success_count),
+                int(failure_count),
+                last_task_id,
+                float(last_score),
+                last_status,
+                1 if degraded else 0,
+                json.dumps(metadata or {}, ensure_ascii=False),
+            )
+            if existing:
+                con.execute(
+                    "UPDATE task_procedures SET ts=?, task_type=?, intent_hint=?, "
+                    "keywords=?, tools_used=?, trace_summary=?, reliability=?, "
+                    "success_count=?, failure_count=?, last_task_id=?, last_score=?, "
+                    "last_status=?, degraded=?, metadata=? WHERE signature=?",
+                    (*values, signature),
+                )
+                proc_id = int(existing["id"])
+            else:
+                cur = con.execute(
+                    "INSERT INTO task_procedures "
+                    "(signature, ts, task_type, intent_hint, keywords, tools_used, "
+                    "trace_summary, reliability, success_count, failure_count, "
+                    "last_task_id, last_score, last_status, degraded, metadata) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (signature, *values),
+                )
+                proc_id = int(cur.lastrowid)
+        AuditLog.memory_write("Memory", "procedure", signature[:12])
+        return proc_id
+
+    def _normalize_procedure(self, proc: dict) -> dict:
+        return {
+            "signature": proc.get("signature", ""),
+            "task_type": proc.get("task_type", ""),
+            "intent_hint": (proc.get("intent_hint") or "")[:120],
+            "keywords": json.loads(proc.get("keywords") or "[]"),
+            "tools_used": json.loads(proc.get("tools_used") or "[]"),
+            "trace_summary": (proc.get("trace_summary") or "")[:200],
+            "reliability": float(proc.get("reliability") or 0.0),
+            "success_count": int(proc.get("success_count") or 0),
+            "failure_count": int(proc.get("failure_count") or 0),
+            "degraded": bool(proc.get("degraded")),
+            "last_status": proc.get("last_status", ""),
+            "last_score": float(proc.get("last_score") or 0.0),
+        }
+
+    def search_procedures(self, query: str, limit: int = 3) -> list[dict]:
+        terms = [t for t in re.findall(r"\w+", (query or "").lower()) if len(t) >= 3]
+        with _conn() as con:
+            rows = con.execute(
+                "SELECT * FROM task_procedures "
+                "ORDER BY reliability DESC, ts DESC LIMIT 80"
+            ).fetchall()
+        scored: list[tuple[float, dict]] = []
+        for row in rows:
+            proc = dict(row)
+            keywords = json.loads(proc.get("keywords") or "[]")
+            hint = (proc.get("intent_hint") or "").lower()
+            overlap = 0.0
+            for term in terms:
+                if any(term in kw or kw in term for kw in keywords):
+                    overlap += 1.0
+                elif term in hint:
+                    overlap += 0.5
+            if not terms:
+                overlap = 0.5
+            reliability = float(proc.get("reliability") or 0.0)
+            rank = overlap * reliability
+            if proc.get("degraded"):
+                rank *= 0.35
+            if overlap > 0 or not terms:
+                scored.append((rank, proc))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [
+            self._normalize_procedure(proc)
+            for rank, proc in scored[: max(1, int(limit))]
+            if rank > 0 or not terms
+        ]
+
+    def list_procedures(self, limit: int = 20) -> list[dict]:
+        with _conn() as con:
+            rows = con.execute(
+                "SELECT * FROM task_procedures "
+                "ORDER BY reliability DESC, ts DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [self._normalize_procedure(dict(r)) for r in rows]
+
     def build_retrieval_context(
         self, user_input: str, intent: str = "", interaction_class: str = "",
         n_history: int = 6
@@ -373,6 +521,7 @@ class Memory:
         directives = self.get_directives()[:3]
         facts = self.search_facts(query, limit=6) if query else []
         relevant_results = self.get_relevant_results(query, limit=4) if query else []
+        relevant_procedures = self.search_procedures(query, limit=3) if query else []
         history = self.get_working_memory(n_history)
         vector = getattr(self, "_vector", None)
         semantic_context = ""
@@ -458,6 +607,14 @@ class Memory:
         if intent == "chat" and interaction_class == "NORMAL_CHAT" and len(user_input.split()) <= 2 and "?" not in user_input:
             open_questions.append("Nutzerabsicht bei sehr kurzem Input potenziell unklar.")
 
+        for proc in relevant_procedures:
+            if proc.get("degraded"):
+                behavioral_risks.append({
+                    "description": proc.get("intent_hint") or proc.get("task_type", "procedure"),
+                    "score": proc.get("reliability", 0.0),
+                    "risks": ["degraded_procedure"],
+                })
+
         return RetrievalContext(
             query=query,
             active_directives=active_directives,
@@ -470,6 +627,7 @@ class Memory:
             behavioral_risks=behavioral_risks[:3],
             relevant_reflections=relevant_reflections[:2],
             open_questions=open_questions[:1],
+            relevant_procedures=relevant_procedures[:3],
         )
 
     def format_retrieval_context(self, retrieval_ctx: RetrievalContext | dict[str, Any]) -> str:
@@ -527,6 +685,16 @@ class Memory:
             sections.append("[open_questions]")
             for q in data["open_questions"]:
                 sections.append(f"  - {q}")
+        if data.get("relevant_procedures"):
+            sections.append("[relevant_procedures]")
+            for proc in data["relevant_procedures"]:
+                tools = ", ".join(proc.get("tools_used") or []) or "keine"
+                flag = " DEGRADED" if proc.get("degraded") else ""
+                sections.append(
+                    f"  - rel={proc.get('reliability', 0.0):.2f}{flag} "
+                    f"{proc.get('task_type', '')} tools={tools}: "
+                    f"{proc.get('trace_summary') or proc.get('intent_hint', '')}"
+                )
         return "\n".join(sections).strip()
 
     # ── Kontext-Aufbau für Relay ───────────────────────────────────────────────
@@ -541,6 +709,7 @@ class Memory:
             n_conv  = con.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
             n_facts = con.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
             n_tasks = con.execute("SELECT COUNT(*) FROM task_results").fetchone()[0]
+            n_proc  = con.execute("SELECT COUNT(*) FROM task_procedures").fetchone()[0]
             n_dir   = con.execute(
                 "SELECT COUNT(*) FROM directives WHERE active=1"
             ).fetchone()[0]
@@ -548,6 +717,7 @@ class Memory:
             "conversations":  n_conv,
             "facts":          n_facts,
             "task_results":   n_tasks,
+            "procedures":     n_proc,
             "directives":     n_dir,
             "working_memory": len(self._working),
             "vector":         self._vector.stats(),

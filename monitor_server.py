@@ -295,6 +295,7 @@ class MonitorServer:
                 "constitution_version": get_constitution().version(),
                 "self_model_phase": get_self_model().summary().get("phase", "unknown"),
                 "development_recent": len(self.memory.recent_development_events(8)),
+                "procedures_total": int(self.memory.stats().get("procedures", 0)),
             }
         except Exception:
             pass
@@ -797,6 +798,14 @@ class DashboardHTTPServer:
                 result = mcp.read_resource("resource://memory/blocks", limit=limit)
                 return web.json_response(result, status=200 if result.get("ok") else 400)
 
+            async def governance_procedures(request):
+                from memory import get_memory
+                limit = max(1, min(int(request.rel_url.query.get("limit", "40")), 100))
+                return web.json_response({
+                    "ok": True,
+                    "procedures": get_memory().list_procedures(limit),
+                })
+
             async def task_checkpoints(request):
                 task_id = (request.rel_url.query.get("task_id") or "").strip()
                 if not task_id:
@@ -859,6 +868,7 @@ class DashboardHTTPServer:
             app.router.add_get("/api/governance/self-model", governance_self_model)
             app.router.add_get("/api/governance/development", governance_development)
             app.router.add_get("/api/governance/memory-blocks", governance_memory_blocks)
+            app.router.add_get("/api/governance/procedures", governance_procedures)
             app.router.add_get("/api/tasks/checkpoints", task_checkpoints)
             app.router.add_get("/api/update/packages", updater_packages)
             app.router.add_post("/api/update/inspect", updater_inspect)

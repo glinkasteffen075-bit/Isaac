@@ -510,6 +510,11 @@ textarea,input{font-size:16px;}
               <div id="memory-blocks-view" class="tool-list" style="margin-top:1rem"></div>
               <div id="memory-diff-view" class="tool-list" style="margin-top:.75rem"></div>
             </div>
+            <div class="tool-card">
+              <h3>Procedure Memory</h3>
+              <div class="helper">Wiederverwendbare Task-Pfade mit Zuverlässigkeit; fehlerhafte Verfahren sind markiert.</div>
+              <div id="procedure-memory-view" class="tool-list" style="margin-top:1rem"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -627,6 +632,7 @@ const state = {
     constitution: null,
     selfModel: null,
     development: [],
+    procedures: [],
     prevBlocks: null,
     currentBlocks: null,
   },
@@ -2056,6 +2062,30 @@ function blockKey(block) {
   return `${block.block_type || 'block'}:${block.key || block.content || ''}`;
 }
 
+function renderProcedureMemoryView(payload) {
+  const box = document.getElementById('procedure-memory-view');
+  if (!box) return;
+  const procedures = payload?.procedures || [];
+  if (!procedures.length) {
+    box.innerHTML = '<div class="helper">Noch keine gespeicherten Verfahren.</div>';
+    return;
+  }
+  box.innerHTML = procedures.slice(0, 25).map(proc => {
+    const tools = (proc.tools_used || []).join(', ') || '–';
+    const degraded = proc.degraded ? ' <span class="tab-badge">degraded</span>' : '';
+    return `
+    <div class="tool-mini">
+      <strong>${escHtml(proc.task_type || 'task')}${degraded}</strong>
+      <div class="tool-meta">
+        <span>rel ${Number(proc.reliability || 0).toFixed(2)}</span>
+        <span>+${proc.success_count || 0}/-${proc.failure_count || 0}</span>
+        <span>tools: ${escHtml(tools)}</span>
+      </div>
+      <div class="helper" style="margin-top:.35rem">${escHtml(String(proc.trace_summary || proc.intent_hint || '').slice(0, 160))}</div>
+    </div>`;
+  }).join('');
+}
+
 function renderMemoryBlocksView(payload) {
   const box = document.getElementById('memory-blocks-view');
   const diffBox = document.getElementById('memory-diff-view');
@@ -2092,21 +2122,24 @@ function renderMemoryBlocksView(payload) {
 
 async function refreshGovernance() {
   try {
-    const [constitution, selfModel, development, blocks] = await Promise.all([
+    const [constitution, selfModel, development, blocks, procedures] = await Promise.all([
       fetchJson('/api/governance/constitution'),
       fetchJson('/api/governance/self-model'),
       fetchJson('/api/governance/development?limit=40'),
       fetchJson('/api/governance/memory-blocks?limit=40'),
+      fetchJson('/api/governance/procedures?limit=40'),
     ]);
     state.governance.prevBlocks = state.governance.currentBlocks;
     state.governance.constitution = constitution;
     state.governance.selfModel = selfModel;
     state.governance.development = development;
+    state.governance.procedures = procedures;
     state.governance.currentBlocks = blocks;
     renderConstitutionInspector(constitution);
     renderSelfModelInspector(selfModel);
     renderDevelopmentTimeline(development);
     renderMemoryBlocksView(blocks);
+    renderProcedureMemoryView(procedures);
     const ver = constitution?.summary?.version || constitution?.constitution?.version;
     if (ver) {
       updateBadge('tab-governance', ver);

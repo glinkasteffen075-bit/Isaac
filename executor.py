@@ -1032,6 +1032,8 @@ class Executor:
                 iterations  = task.iteration + 1,
                 provider    = task.provider_used,
             )
+            from procedure_memory import record_task_outcome
+            record_task_outcome(task)
         except Exception as e:
             log.warning(f"Task-Persistenz: {e}")
 

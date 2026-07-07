@@ -12,6 +12,7 @@ def run() -> dict:
         "resource://constitution",
         "resource://self-model",
         "resource://memory/blocks",
+        "resource://procedures",
         "resource://audit/tail",
     ):
         present = uri in caps.get("resources", [])

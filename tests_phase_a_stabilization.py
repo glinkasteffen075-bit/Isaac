@@ -5,8 +5,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from executor import Executor, Strategy, Task, TaskType
-from decision_trace import TracePhase
+from executor import Executor, Strategy, Task, TaskStatus, TaskType
+from decision_trace import DecisionTrace, TracePhase
+from logic import QualityScore
 from isaac_core import IsaacKernel, Intent, detect_intent
 from tool_policy import ToolDecisionReason
 from tool_runtime import select_live_tool_for_task
@@ -898,6 +899,56 @@ class TestHermesCompatibilityLayer(unittest.TestCase):
         self.assertFalse(mcp_result["ok"])
         self.assertIn("broken_tool", mcp_result["error"])
         self.assertIn("division by zero", mcp_result["error"])
+
+
+class TestProcedureMemory(unittest.TestCase):
+    def test_procedure_capture_success_and_failure_downgrade(self):
+        from procedure_memory import record_task_outcome, build_signature
+        from memory import get_memory
+
+        unique = f"procedure_test_{id(self)}"
+        mem = get_memory()
+
+        task = Task(
+            id=f"proc-{unique}",
+            typ=TaskType.SEARCH,
+            prompt=f"Suche Wetter Berlin {unique}",
+            beschreibung=f"Suche Wetter Berlin {unique}",
+        )
+        task.used_tools = [{"name": "search_web", "kind": "search"}]
+        task.status = TaskStatus.DONE
+        task.score = QualityScore(total=7.5)
+        task.decision_trace = DecisionTrace()
+        task.decision_trace.add(TracePhase.EXECUTION, "search_web ok")
+
+        result = record_task_outcome(task)
+        self.assertIsNotNone(result)
+        self.assertGreater(result["reliability"], 0.5)
+        self.assertFalse(result["degraded"])
+
+        sig = build_signature(task)
+        stored = mem.get_procedure_by_signature(sig)
+        self.assertIsNotNone(stored)
+        rel_after_success = float(stored["reliability"])
+
+        task.status = TaskStatus.FAILED
+        task.score = QualityScore(total=2.0)
+        fail_result = record_task_outcome(task)
+        self.assertIsNotNone(fail_result)
+        self.assertLess(fail_result["reliability"], rel_after_success)
+        self.assertTrue(fail_result["degraded"])
+
+    def test_retrieval_context_exposes_procedures(self):
+        from memory import get_memory
+
+        mem = get_memory()
+        ctx = mem.build_retrieval_context("Wetter Berlin Suche procedure")
+        data = ctx.as_dict()
+        self.assertIn("relevant_procedures", data)
+        self.assertIsInstance(data["relevant_procedures"], list)
+        formatted = mem.format_retrieval_context(ctx)
+        if data["relevant_procedures"]:
+            self.assertIn("[relevant_procedures]", formatted)
 
 
 if __name__ == '__main__':

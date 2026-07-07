@@ -150,6 +150,7 @@ class NeuralCortex:
             len(retrieval_ctx.get("relevant_facts", []))
             + len(retrieval_ctx.get("conversation_history", []))
             + len(retrieval_ctx.get("relevant_task_results", []))
+            + len(retrieval_ctx.get("relevant_procedures", []))
         )
         semantic = 0.15 if (retrieval_ctx.get("semantic_context") or "").strip() else 0.0
         return min(1.0, 0.25 + hits * 0.08 + semantic)

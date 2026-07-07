@@ -22,6 +22,7 @@ MCP_RESOURCE_PRIVILEGES: Dict[str, str] = {
     "resource://constitution": "read_memory",
     "resource://self-model": "read_memory",
     "resource://memory/blocks": "read_memory",
+    "resource://procedures": "read_memory",
     "resource://audit/tail": "read_audit",
     "isaac://tasks/recent": "read_memory",
     "isaac://tools/registry": "read_memory",
@@ -232,6 +233,18 @@ def _read_self_model(**kwargs) -> Dict[str, Any]:
     return get_self_model().snapshot()
 
 
+def _read_procedures(limit: int = 20, **kwargs) -> Dict[str, Any]:
+    from memory import get_memory
+
+    limit = max(1, min(int(limit), 50))
+    procedures = get_memory().list_procedures(limit)
+    return {
+        "procedures": procedures,
+        "count": len(procedures),
+        "degraded": sum(1 for p in procedures if p.get("degraded")),
+    }
+
+
 def _read_memory_blocks(limit: int = 20, **kwargs) -> Dict[str, Any]:
     from memory import get_memory
 
@@ -434,6 +447,11 @@ def _register_defaults(reg: MCPRegistry):
         "resource://memory/blocks",
         {"description": "Strukturierte Memory-Blöcke (Fakten, Direktiven, Entwicklung).", "mimeType": "application/json"},
         handler=_read_memory_blocks,
+    )
+    reg.register_resource(
+        "resource://procedures",
+        {"description": "Gespeicherte Task-Verfahren mit Zuverlässigkeit und Degradierung.", "mimeType": "application/json"},
+        handler=_read_procedures,
     )
     reg.register_resource(
         "resource://audit/tail",

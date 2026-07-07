@@ -132,6 +132,20 @@ class PrivilegeGate:
             self._log_decision(aktion, ctx, False, block_direktive)
             return False, block_direktive
 
+        if ctx.level < Level.STEFFEN and aktion in {
+            "execute_code", "system_command", "file_delete", "wipe_memory", "modify_config",
+        }:
+            from security_policy import get_confirmation_policy
+
+            metadata = {
+                "risk": "high" if aktion in {"execute_code", "system_command", "wipe_memory"} else "medium",
+                "outside_effect": aktion in {"execute_code", "system_command", "file_delete", "wipe_memory"},
+            }
+            verdict = get_confirmation_policy().analyze(aktion, ctx, metadata)
+            if not verdict.allowed:
+                self._log_decision(aktion, ctx, False, verdict.reason)
+                return False, verdict.reason
+
         self._log_decision(aktion, ctx, True, "OK")
         return True, "OK"
 

@@ -51,16 +51,50 @@ class ValueSystem:
     def _normalize_concept(concept: str) -> str:
         return concept.strip().lower().replace(" ", "_")
 
-    def update(self, concept: str, delta: float, reason: str):
+    def update(
+        self,
+        concept: str,
+        delta: float,
+        reason: str,
+        *,
+        repetition: float = 1.0,
+        consistency: float = 1.0,
+        relevance: float = 1.0,
+    ):
+        from learning_policy import bounded_update
+        from memory import get_memory
+
         concept = self._normalize_concept(concept)
         if concept not in self._values:
             self._values[concept] = Value(name=concept)
         v = self._values[concept]
-        v.strength = max(0.0, min(1.0, v.strength + float(delta)))
+        before = v.strength
+        raw_delta = float(delta)
+        bounded_delta = bounded_update(
+            "value",
+            direction=raw_delta,
+            evidence_strength=0.5,
+            repetition=repetition,
+            consistency=consistency,
+            relevance=relevance,
+        )
+        v.strength = max(0.0, min(1.0, before + bounded_delta))
         v.evidence.append(reason[:200])
         v.updated = time.time()
         self._save()
         AuditLog.action("ValueSystem", "update", f"{concept} -> {v.strength:.2f}")
+        get_memory().log_development_event(
+            event_type="value_update",
+            target_kind="value",
+            target_key=concept,
+            delta=bounded_delta,
+            confidence_before=before,
+            confidence_after=v.strength,
+            evidence_refs=[reason[:200]],
+            reason=reason[:300],
+            requires_review=True,
+            metadata={"raw_delta": raw_delta, "bounded_delta": bounded_delta},
+        )
 
     def get(self, concept: str, default: float = 0.5) -> float:
         concept = self._normalize_concept(concept)

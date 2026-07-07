@@ -103,6 +103,37 @@ CREATE TABLE IF NOT EXISTS task_results (
     tags        TEXT    DEFAULT '[]'
 );
 
+-- Entwicklungslog (Lern- und Wertänderungen)
+CREATE TABLE IF NOT EXISTS development_events (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                  TEXT    NOT NULL,
+    event_type          TEXT    NOT NULL,
+    target_kind         TEXT    NOT NULL,
+    target_key          TEXT    NOT NULL,
+    delta               REAL    DEFAULT 0.0,
+    confidence_before   REAL    DEFAULT 0.0,
+    confidence_after    REAL    DEFAULT 0.0,
+    evidence_refs       TEXT    DEFAULT '[]',
+    contradiction_refs  TEXT    DEFAULT '[]',
+    reason              TEXT    DEFAULT '',
+    requires_review     INTEGER DEFAULT 0,
+    reviewed_by_owner   INTEGER DEFAULT 0,
+    metadata            TEXT    DEFAULT '{}'
+);
+
+-- Task-Checkpoints für Resume
+CREATE TABLE IF NOT EXISTS task_checkpoints (
+    checkpoint_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id             TEXT    NOT NULL,
+    ts                  TEXT    NOT NULL,
+    state_name          TEXT    NOT NULL,
+    input_snapshot      TEXT    DEFAULT '{}',
+    tool_snapshot       TEXT    DEFAULT '{}',
+    result_snapshot     TEXT    DEFAULT '{}',
+    memory_refs         TEXT    DEFAULT '[]',
+    side_effect_refs    TEXT    DEFAULT '[]'
+);
+
 -- FTS für Konversationen
 CREATE VIRTUAL TABLE IF NOT EXISTS conv_fts USING fts5(
     text, content='conversations', content_rowid='id'
@@ -531,6 +562,104 @@ class Memory:
                 "FROM conversations ORDER BY id DESC LIMIT ?", (n,)
             ).fetchall()
         self._working = [dict(r) for r in reversed(rows)]
+
+    # ── Entwicklungslog ───────────────────────────────────────────────────────
+    def log_development_event(
+        self,
+        event_type: str,
+        target_kind: str,
+        target_key: str,
+        delta: float = 0.0,
+        confidence_before: float = 0.0,
+        confidence_after: float = 0.0,
+        evidence_refs: list | None = None,
+        contradiction_refs: list | None = None,
+        reason: str = "",
+        requires_review: bool = False,
+        metadata: dict | None = None,
+    ) -> int:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        with _conn() as con:
+            cur = con.execute(
+                "INSERT INTO development_events "
+                "(ts, event_type, target_kind, target_key, delta, confidence_before, "
+                "confidence_after, evidence_refs, contradiction_refs, reason, "
+                "requires_review, reviewed_by_owner, metadata) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    ts,
+                    event_type,
+                    target_kind,
+                    target_key,
+                    float(delta),
+                    float(confidence_before),
+                    float(confidence_after),
+                    json.dumps(evidence_refs or [], ensure_ascii=False),
+                    json.dumps(contradiction_refs or [], ensure_ascii=False),
+                    reason[:300],
+                    1 if requires_review else 0,
+                    0,
+                    json.dumps(metadata or {}, ensure_ascii=False),
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def recent_development_events(self, n: int = 20) -> list[dict]:
+        with _conn() as con:
+            rows = con.execute(
+                "SELECT * FROM development_events ORDER BY id DESC LIMIT ?",
+                (max(1, int(n)),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Task-Checkpoints ──────────────────────────────────────────────────────
+    def save_task_checkpoint(
+        self,
+        task_id: str,
+        state_name: str,
+        input_snapshot: dict | None = None,
+        tool_snapshot: dict | None = None,
+        result_snapshot: dict | None = None,
+        memory_refs: list | None = None,
+        side_effect_refs: list | None = None,
+    ) -> int:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        with _conn() as con:
+            cur = con.execute(
+                "INSERT INTO task_checkpoints "
+                "(task_id, ts, state_name, input_snapshot, tool_snapshot, "
+                "result_snapshot, memory_refs, side_effect_refs) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    task_id,
+                    ts,
+                    state_name,
+                    json.dumps(input_snapshot or {}, ensure_ascii=False),
+                    json.dumps(tool_snapshot or {}, ensure_ascii=False),
+                    json.dumps(result_snapshot or {}, ensure_ascii=False),
+                    json.dumps(memory_refs or [], ensure_ascii=False),
+                    json.dumps(side_effect_refs or [], ensure_ascii=False),
+                ),
+            )
+            return int(cur.lastrowid)
+
+    def get_latest_checkpoint(self, task_id: str) -> dict | None:
+        with _conn() as con:
+            row = con.execute(
+                "SELECT * FROM task_checkpoints WHERE task_id=? "
+                "ORDER BY checkpoint_id DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_checkpoints(self, task_id: str, limit: int = 20) -> list[dict]:
+        with _conn() as con:
+            rows = con.execute(
+                "SELECT * FROM task_checkpoints WHERE task_id=? "
+                "ORDER BY checkpoint_id DESC LIMIT ?",
+                (task_id, max(1, int(limit))),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────────

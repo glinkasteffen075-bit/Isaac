@@ -31,7 +31,8 @@ from privilege import get_gate, isaac_ctx, task_ctx
 from audit     import AuditLog
 from logic     import get_logic, QualityScore, FollowUpDecision
 from relay     import get_relay
-from tool_runtime import select_live_tool_for_task, run_selected_tool
+from tool_runtime import select_live_tool_for_task, run_selected_tool, constitution_gate_for_tool
+from memory import get_memory
 from task_tool_state import get_task_tool_state_store
 from low_complexity import ClassificationResult
 from decision_trace import DecisionTrace, TracePhase
@@ -97,6 +98,8 @@ class TaskStatus(Enum):
     RUNNING    = "running"
     EVALUATING = "evaluating"
     FOLLOWUP   = "followup"
+    RESUMABLE  = "resumable"
+    BLOCKED    = "blocked"
     DONE       = "done"
     FAILED     = "failed"
     CANCELLED  = "cancelled"
@@ -172,6 +175,12 @@ class Task:
     # Watchdog
     _last_watchdog_progress: float = 0.0
 
+    # Checkpoint / Resume
+    checkpoint_state: str = ""
+    checkpoint_ts: str = ""
+    resume_checkpoint_id: int = 0
+    resume_strategy: str = ""
+
     def log(self, msg: str):
         self.log_entries.append({"ts": time.strftime("%H:%M:%S"), "msg": msg})
         if len(self.log_entries) > 50:
@@ -208,6 +217,10 @@ class Task:
             "classification": self.classification.as_dict() if self.classification else None,
             "decision_trace": self.decision_trace.to_list(),
             "sudo":          self.sudo_aktiv,
+            "checkpoint_state": self.checkpoint_state,
+            "checkpoint_ts": self.checkpoint_ts,
+            "resume_checkpoint_id": self.resume_checkpoint_id,
+            "resume_strategy": self.resume_strategy,
         }
 
     @property
@@ -516,7 +529,14 @@ class Executor:
                     "run_index": tool_runs + 1,
                 },
             )
-            result = ensure_result_contract(await run_selected_tool(selection, prompt), source="executor_boundary")
+            blocked = constitution_gate_for_tool(selection, prompt)
+            if blocked:
+                result = ensure_result_contract(blocked, source="constitution")
+            else:
+                result = ensure_result_contract(
+                    await run_selected_tool(selection, prompt),
+                    source="executor_boundary",
+                )
             identifier = selection.get("identifier", "")
             name = selection.get("name", identifier)
             kind = selection.get("kind", "")
@@ -529,6 +549,13 @@ class Executor:
                 output=str(result.get('output') or result.get('error') or '')
             )
             task.tool_strategy = self._tool_state.get_or_create(task.id).to_dict()
+            self._checkpoint(
+                task,
+                "tool_running",
+                tool_snapshot={"tool": name, "identifier": identifier, "kind": kind},
+                result_snapshot={"partial": bool(result.get("ok")), "via": via},
+                side_effect_refs=[f"{kind}:{prompt[:80]}"],
+            )
             tool_runs += 1
             if not result.get('ok'):
                 task.decision_trace.add(
@@ -1063,6 +1090,106 @@ class Executor:
                 await result
         except (RuntimeError, ValueError) as e:
             log.debug(f"Callback async Fehler: {e}")
+
+    # ── Checkpoints / Resume ───────────────────────────────────────────────────
+    def _checkpoint(
+        self,
+        task: Task,
+        state_name: str,
+        tool_snapshot: dict | None = None,
+        result_snapshot: dict | None = None,
+        side_effect_refs: list | None = None,
+        memory_refs: list | None = None,
+    ) -> int:
+        input_snapshot = {
+            "task_id": task.id,
+            "typ": task.typ.value,
+            "prompt": task.prompt,
+            "beschreibung": task.beschreibung,
+            "provider": task.provider,
+            "provider_used": task.provider_used,
+            "iteration": task.iteration,
+            "status": task.status.value,
+            "sudo": task.sudo_aktiv,
+        }
+        cp_id = get_memory().save_task_checkpoint(
+            task.id,
+            state_name,
+            input_snapshot=input_snapshot,
+            tool_snapshot=tool_snapshot or {},
+            result_snapshot=result_snapshot or {},
+            memory_refs=memory_refs or [],
+            side_effect_refs=side_effect_refs or [],
+        )
+        task.checkpoint_state = state_name
+        task.checkpoint_ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        return cp_id
+
+    def resume_task(self, task_id: str) -> bool:
+        task = self._tasks.get(task_id)
+        if not task or task.status != TaskStatus.RESUMABLE:
+            return False
+        cp = get_memory().get_latest_checkpoint(task_id)
+        task.log("Resume angefordert")
+        task.checkpoint_state = "resume_requested"
+        task.checkpoint_ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        task.resume_checkpoint_id = int(cp.get("checkpoint_id", 0)) if cp else 0
+        task.resume_strategy = "from_checkpoint"
+        task.status = TaskStatus.QUEUED
+        task.provider = task.provider or "auto"
+        try:
+            self._queue.put_nowait((-task.prioritaet, task.id))
+        except Exception:
+            pass
+        self._notify(task)
+        return True
+
+    async def _resume_from_checkpoint(self, task: Task) -> bool:
+        cp = get_memory().get_latest_checkpoint(task.id)
+        if not cp:
+            return False
+
+        state_name = cp.get("state_name", "")
+        task.log(f"Resume von Checkpoint: {state_name}")
+        task.checkpoint_state = "resume_completed"
+        task.checkpoint_ts = cp.get("ts", "")
+
+        try:
+            input_snap = json.loads(cp.get("input_snapshot") or "{}")
+        except json.JSONDecodeError:
+            input_snap = {}
+
+        task.prompt = input_snap.get("prompt", task.prompt)
+        task.iteration = int(input_snap.get("iteration", task.iteration) or 0)
+        task.provider = input_snap.get("provider") or task.provider or "none"
+
+        if state_name == "evaluating":
+            task.status = TaskStatus.RUNNING
+            system = self._build_system(task)
+            try:
+                antwort, prov = await asyncio.wait_for(
+                    self.relay.ask_with_fallback(
+                        task.prompt,
+                        system,
+                        preferred=task.provider,
+                        task_id=task.id,
+                    ),
+                    timeout=8.0,
+                )
+            except asyncio.TimeoutError:
+                antwort, prov = "[RELAY] Alle Provider fehlgeschlagen.", "none"
+            task.provider_used = prov
+            task.antwort = antwort
+            score = self.logic.evaluate(antwort, task.prompt, task.id)
+            task.score = score
+            if antwort.startswith("[RELAY") or not score.acceptable:
+                task.status = TaskStatus.FAILED
+            else:
+                task.status = TaskStatus.DONE
+            return True
+
+        task.status = TaskStatus.BLOCKED
+        return True
 
     # ── Abfragen ─────────────────────────────────────────────────────────────
     def get_task(self, task_id: str) -> Optional[Task]:

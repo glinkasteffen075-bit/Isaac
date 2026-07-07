@@ -155,6 +155,17 @@ class AuditLog:
             "status": status, "aktion": aktion, "queue_id": queue_id, "reason": reason[:300]
         })
 
+    @classmethod
+    def development(cls, event_type: str, target_kind: str, target_key: str,
+                    delta: float = 0.0, reason: str = ""):
+        cls._record("development", {
+            "event_type": event_type,
+            "target_kind": target_kind,
+            "target_key": target_key[:100],
+            "delta": delta,
+            "reason": reason[:300],
+        })
+
     # ── Lesen ──────────────────────────────────────────────────────────────────
     @classmethod
     def recent(cls, n: int = 100, typ: Optional[str] = None) -> list[dict]:

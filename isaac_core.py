@@ -46,6 +46,7 @@ from ki_skills      import get_skill_router
 from monitor_server import get_monitor, set_kernel, DashboardHTTPServer
 from meaning        import get_meaning
 from values         import get_values
+from self_model     import get_self_model
 from low_complexity import (
     ClassificationResult,
     InteractionClass,
@@ -463,9 +464,33 @@ class IsaacKernel:
         return antwort, score
 
     # ── Post-Processing ────────────────────────────────────────────────────────
+    def _update_self_model_from_interaction(self, user_input: str, antwort: str, emp) -> None:
+        sm = get_self_model()
+        classification = classify_interaction_result(user_input)
+        interaction_class = classification.interaction_class
+
+        if interaction_class == InteractionClass.SOCIAL_ACKNOWLEDGMENT:
+            sm.note_owner_feedback(user_input[:500])
+            sm.apply_relationship_delta("owner_trust", 0.02, "positive acknowledgment")
+
+        if interaction_class == InteractionClass.NORMAL_CHAT:
+            words = [w.strip(".,!?") for w in user_input.split() if len(w.strip(".,!?")) > 4]
+            if len(words) >= 2:
+                sm.add_shared_theme(" ".join(words[:3])[:80])
+
+        if emp and getattr(emp, "node", None):
+            zustand = str(getattr(emp.node, "zustand", "") or "").lower()
+            if any(token in zustand for token in ("frustriert", "verärgert", "enttäuscht")):
+                sm.note_owner_feedback(user_input[:500])
+
     def _post_process(self, user_input: str, antwort: str, emp,
                       score: float, t0: float) -> str:
         dauer = round(time.monotonic() - t0, 2)
+
+        try:
+            self._update_self_model_from_interaction(user_input, antwort, emp)
+        except Exception as exc:
+            log.debug("SelfModel update skipped: %s", exc)
 
         # Regelwerk nach jeder Interaktion
         erkenntnisse = self.regelwerk.analysiere(

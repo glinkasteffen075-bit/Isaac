@@ -20,6 +20,7 @@ Installation: pip install chromadb
 import json
 import time
 import logging
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -44,37 +45,57 @@ class VectorMemory:
         self._init()
 
     def _init(self):
-        try:
-            import chromadb
-            from chromadb.config import Settings
+        state: dict = {"ready": False, "error": None}
 
-            CHROMA_PATH.mkdir(parents=True, exist_ok=True)
-            self._client = chromadb.PersistentClient(
-                path    = str(CHROMA_PATH),
-                settings= Settings(anonymized_telemetry=False),
-            )
+        def _bootstrap() -> None:
+            try:
+                import chromadb
+                from chromadb.config import Settings
 
-            self._conv_col = self._client.get_or_create_collection(
-                name     = "konversationen",
-                metadata = {"hnsw:space": "cosine"},
-            )
-            self._wissen_col = self._client.get_or_create_collection(
-                name     = "ki_wissen",
-                metadata = {"hnsw:space": "cosine"},
-            )
-            self._aktiv = True
-            log.info(
-                f"VectorMemory aktiv │ "
-                f"Konversationen: {self._conv_col.count()} │ "
-                f"Wissen: {self._wissen_col.count()}"
-            )
-        except ImportError:
+                CHROMA_PATH.mkdir(parents=True, exist_ok=True)
+                client = chromadb.PersistentClient(
+                    path=str(CHROMA_PATH),
+                    settings=Settings(anonymized_telemetry=False),
+                )
+                conv_col = client.get_or_create_collection(
+                    name="konversationen",
+                    metadata={"hnsw:space": "cosine"},
+                )
+                wissen_col = client.get_or_create_collection(
+                    name="ki_wissen",
+                    metadata={"hnsw:space": "cosine"},
+                )
+                self._client = client
+                self._conv_col = conv_col
+                self._wissen_col = wissen_col
+                self._aktiv = True
+                state["ready"] = True
+                log.info(
+                    "VectorMemory aktiv │ Konversationen: %s │ Wissen: %s",
+                    conv_col.count(),
+                    wissen_col.count(),
+                )
+            except ImportError:
+                state["error"] = "import"
+            except Exception as exc:
+                state["error"] = str(exc)
+
+        worker = threading.Thread(target=_bootstrap, daemon=True)
+        worker.start()
+        worker.join(timeout=3.0)
+        if state["ready"]:
+            return
+        if state["error"] == "import":
             log.info(
                 "ChromaDB nicht installiert → SQLite-Fallback aktiv.\n"
                 "Für semantisches Gedächtnis: pip install chromadb"
             )
-        except Exception as e:
-            log.warning(f"ChromaDB Init-Fehler: {e} → Fallback aktiv")
+            return
+        if worker.is_alive():
+            log.warning("ChromaDB Init timeout → SQLite-Fallback aktiv")
+            return
+        if state["error"]:
+            log.warning("ChromaDB Init-Fehler: %s → Fallback aktiv", state["error"])
 
     @property
     def aktiv(self) -> bool:

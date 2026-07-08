@@ -17,10 +17,10 @@ async def _run_replay() -> dict:
         input_snapshot={'task_id': tid, 'typ': 'chat', 'prompt': 'resume me', 'iteration': 0, 'status': 'evaluating'},
         result_snapshot={'answer_preview': 'short answer', 'answer_full': 'short answer', 'provider': 'test-provider'},
     )
-    ok = await exe._resume_from_checkpoint(task)
+    action = await exe._resume_from_checkpoint(task)
     cases = [
-        {'name': 'resume_from_evaluating', 'ok': bool(ok), 'detail': task.to_dict()},
-        {'name': 'resume_completed_state', 'ok': task.status in {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.BLOCKED}, 'detail': task.status.value},
+        {'name': 'resume_from_evaluating', 'ok': action == 'done', 'detail': task.to_dict()},
+        {'name': 'resume_completed_state', 'ok': task.status in {TaskStatus.DONE, TaskStatus.FAILED}, 'detail': task.status.value},
     ]
     passed = sum(1 for c in cases if c['ok'])
     return {'suite': 'replay', 'passed': passed, 'total': len(cases), 'cases': cases}

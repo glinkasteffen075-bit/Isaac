@@ -1016,6 +1016,14 @@ class Memory:
             ).fetchone()
         return dict(row) if row else None
 
+    def get_checkpoint_by_id(self, checkpoint_id: int) -> dict | None:
+        with _conn() as con:
+            row = con.execute(
+                "SELECT * FROM task_checkpoints WHERE checkpoint_id=?",
+                (int(checkpoint_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
     def list_checkpoints(self, task_id: str, limit: int = 20) -> list[dict]:
         with _conn() as con:
             rows = con.execute(

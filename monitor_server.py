@@ -875,6 +875,25 @@ class DashboardHTTPServer:
                     "checkpoints": get_memory().list_checkpoints(task_id, limit=25),
                 })
 
+            async def task_resume(request):
+                remote = (request.remote or "").strip()
+                if remote not in {"127.0.0.1", "::1", "localhost", ""}:
+                    return web.json_response(
+                        {"ok": False, "error": "task resume nur von localhost"},
+                        status=403,
+                    )
+                data = await _request_json(request)
+                task_id = (data.get("task_id") or "").strip()
+                if not task_id:
+                    return web.json_response({"ok": False, "error": "task_id fehlt"}, status=400)
+                ok = get_executor().resume_task(task_id)
+                task = get_executor().get_task(task_id)
+                return web.json_response({
+                    "ok": ok,
+                    "task_id": task_id,
+                    "task": task.to_dict() if task else None,
+                }, status=200 if ok else 400)
+
             async def monitor_state(request):
                 mon = get_monitor()
                 return web.json_response({
@@ -931,6 +950,7 @@ class DashboardHTTPServer:
             app.router.add_get("/api/governance/decay", governance_decay)
             app.router.add_post("/api/governance/decay", governance_decay)
             app.router.add_get("/api/tasks/checkpoints", task_checkpoints)
+            app.router.add_post("/api/tasks/resume", task_resume)
             app.router.add_get("/api/update/packages", updater_packages)
             app.router.add_post("/api/update/inspect", updater_inspect)
             app.router.add_post("/api/update/apply", updater_apply)

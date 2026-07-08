@@ -1175,6 +1175,304 @@ class TestForgettingDecay(unittest.TestCase):
         self.assertLess(float(record["confidence"]), 0.5)
 
 
+class TestTaskCheckpointing(unittest.TestCase):
+    def test_checkpoint_state_machine_constants(self):
+        from task_checkpoint import CheckpointState, is_resumable_state, normalize_state
+
+        self.assertIn(CheckpointState.PLANNING, CheckpointState.ALL)
+        self.assertIn(CheckpointState.TOOL_PENDING, CheckpointState.ALL)
+        self.assertIn(CheckpointState.EVALUATING, CheckpointState.ALL)
+        self.assertIn(CheckpointState.LEARNING_COMMIT, CheckpointState.ALL)
+        self.assertTrue(is_resumable_state(CheckpointState.PLANNING))
+        self.assertTrue(is_resumable_state(CheckpointState.TOOL_RUNNING))
+        self.assertFalse(is_resumable_state(CheckpointState.DONE))
+        self.assertEqual(normalize_state("tool_running"), CheckpointState.TOOL_PENDING)
+
+    def test_checkpoint_writes_input_snapshot_with_current_prompt(self):
+        from executor import get_executor, Task, TaskType, TaskStatus
+        from memory import get_memory
+        from task_checkpoint import CheckpointState, build_input_snapshot
+
+        exe = get_executor()
+        mem = get_memory()
+        tid = f"cp_input_{id(self)}"
+        task = Task(id=tid, typ=TaskType.CHAT, prompt="original", beschreibung="original")
+        task.status = TaskStatus.RUNNING
+        exe._tasks[tid] = task
+        exe._checkpoint(task, CheckpointState.PLANNING, current_prompt="follow-up prompt")
+        cp = mem.get_latest_checkpoint(tid)
+        self.assertIsNotNone(cp)
+        snap = json.loads(cp["input_snapshot"])
+        self.assertEqual(snap["prompt"], "original")
+        self.assertEqual(snap["current_prompt"], "follow-up prompt")
+        expected = build_input_snapshot(task, current_prompt="follow-up prompt")
+        self.assertEqual(snap["task_id"], expected["task_id"])
+
+    def test_resume_task_queues_resumable_task(self):
+        from executor import get_executor, Task, TaskType, TaskStatus
+        from task_checkpoint import CheckpointState
+
+        exe = get_executor()
+        tid = f"cp_resume_{id(self)}"
+        task = Task(id=tid, typ=TaskType.CHAT, prompt="resume me", beschreibung="resume me")
+        task.status = TaskStatus.RESUMABLE
+        exe._tasks[tid] = task
+        exe._checkpoint(task, CheckpointState.EVALUATING)
+        ok = exe.resume_task(tid)
+        task2 = exe.get_task(tid)
+        self.assertTrue(ok)
+        self.assertEqual(task2.status, TaskStatus.QUEUED)
+        self.assertEqual(task2.resume_strategy, "from_checkpoint")
+
+    def test_mark_resumable_sets_status_and_reason(self):
+        from executor import get_executor, Task, TaskType, TaskStatus
+        from memory import get_memory
+        from task_checkpoint import CheckpointState
+
+        exe = get_executor()
+        mem = get_memory()
+        tid = f"cp_mark_{id(self)}"
+        task = Task(id=tid, typ=TaskType.CHAT, prompt="relay fail", beschreibung="relay fail")
+        task.status = TaskStatus.RUNNING
+        task.checkpoint_state = CheckpointState.EVALUATING
+        exe._tasks[tid] = task
+        exe._mark_resumable(task, "relay_failure")
+        self.assertEqual(task.status, TaskStatus.RESUMABLE)
+        cp = mem.get_latest_checkpoint(tid)
+        result = json.loads(cp["result_snapshot"])
+        self.assertEqual(result.get("resume_reason"), "relay_failure")
+        self.assertTrue(result.get("partial"))
+
+    def test_resume_from_evaluating_uses_saved_answer(self):
+        import asyncio
+        from executor import get_executor, Task, TaskType, TaskStatus
+        from logic import QualityScore
+        from memory import get_memory
+
+        async def _run():
+            exe = get_executor()
+            mem = get_memory()
+            tid = f"cp_eval_{id(self)}"
+            task = Task(id=tid, typ=TaskType.CHAT, prompt="saved answer", beschreibung="saved answer")
+            task.status = TaskStatus.RESUMABLE
+            exe._tasks[tid] = task
+            mem.save_task_checkpoint(
+                tid,
+                "evaluating",
+                input_snapshot={
+                    "task_id": tid,
+                    "typ": "chat",
+                    "prompt": "saved answer",
+                    "iteration": 0,
+                    "status": "evaluating",
+                },
+                result_snapshot={
+                    "answer_preview": "kurze Antwort",
+                    "answer_full": "kurze Antwort mit genug Inhalt für eine Bewertung.",
+                    "provider": "test-provider",
+                },
+            )
+            good_score = QualityScore(total=9.0)
+            with patch.object(exe.logic, "evaluate", return_value=good_score):
+                action = await exe._resume_from_checkpoint(task)
+            return action, task
+
+        action, task = asyncio.run(_run())
+        self.assertEqual(action, "done")
+        self.assertEqual(task.status, TaskStatus.DONE)
+
+    def test_resume_from_planning_continues_execution(self):
+        import asyncio
+        from executor import get_executor, Task, TaskType, TaskStatus
+        from memory import get_memory
+
+        async def _run():
+            exe = get_executor()
+            mem = get_memory()
+            tid = f"cp_plan_{id(self)}"
+            task = Task(id=tid, typ=TaskType.CHAT, prompt="plan resume", beschreibung="plan resume")
+            task.status = TaskStatus.RESUMABLE
+            exe._tasks[tid] = task
+            mem.save_task_checkpoint(
+                tid,
+                "planning",
+                input_snapshot={
+                    "task_id": tid,
+                    "typ": "chat",
+                    "prompt": "plan resume",
+                    "current_prompt": "plan resume iter 1",
+                    "iteration": 1,
+                    "status": "running",
+                },
+            )
+            action = await exe._resume_from_checkpoint(task)
+            return action, task
+
+        action, task = asyncio.run(_run())
+        self.assertEqual(action, "continue")
+        self.assertEqual(task.status, TaskStatus.RUNNING)
+        self.assertEqual(task.resume_current_prompt, "plan resume iter 1")
+
+    def test_resume_task_skips_when_already_running(self):
+        from executor import get_executor, Task, TaskType, TaskStatus
+        from task_checkpoint import CheckpointState
+
+        exe = get_executor()
+        tid = f"cp_running_{id(self)}"
+        task = Task(id=tid, typ=TaskType.CHAT, prompt="running", beschreibung="running")
+        task.status = TaskStatus.RESUMABLE
+        exe._tasks[tid] = task
+        exe._running.add(tid)
+        exe._checkpoint(task, CheckpointState.PLANNING)
+        self.assertFalse(exe.resume_task(tid))
+
+    def test_resume_evaluating_unacceptable_score_continues_followup(self):
+        import asyncio
+        from executor import get_executor, Task, TaskType, TaskStatus
+        from logic import FollowUpDecision, QualityScore
+        from memory import get_memory
+
+        async def _run():
+            exe = get_executor()
+            mem = get_memory()
+            tid = f"cp_follow_{id(self)}"
+            task = Task(
+                id=tid,
+                typ=TaskType.CHAT,
+                prompt="explain quantum computing in detail",
+                beschreibung="explain",
+                strategy=Strategy(allow_followup=True),
+            )
+            task.status = TaskStatus.RESUMABLE
+            exe._tasks[tid] = task
+            mem.save_task_checkpoint(
+                tid,
+                "evaluating",
+                input_snapshot={
+                    "task_id": tid,
+                    "typ": "chat",
+                    "prompt": task.prompt,
+                    "current_prompt": task.prompt,
+                    "iteration": 0,
+                    "status": "evaluating",
+                },
+                result_snapshot={
+                    "answer_full": "too short",
+                    "answer_preview": "too short",
+                    "provider": "test-provider",
+                },
+            )
+            bad_score = QualityScore(total=2.0)
+            followup = FollowUpDecision(
+                needed=True,
+                mode="refine",
+                reason="needs detail",
+                followup_prompt="Bitte ausführlicher antworten.",
+            )
+            with patch.object(exe.logic, "evaluate", return_value=bad_score), patch.object(
+                exe.logic, "decide_followup", return_value=followup,
+            ):
+                action = await exe._resume_from_checkpoint(task)
+            return action, task
+
+        action, task = asyncio.run(_run())
+        self.assertEqual(action, "continue")
+        self.assertEqual(task.status, TaskStatus.RUNNING)
+        self.assertEqual(task.resume_current_prompt, "Bitte ausführlicher antworten.")
+        self.assertEqual(task.resume_start_iteration, 1)
+
+    def test_resume_tool_pending_skips_completed_tool(self):
+        import asyncio
+        from executor import get_executor, Task, TaskType, TaskStatus
+        from memory import get_memory
+
+        async def _run():
+            exe = get_executor()
+            mem = get_memory()
+            tid = f"cp_tool_{id(self)}"
+            task = Task(id=tid, typ=TaskType.CHAT, prompt="search weather", beschreibung="search")
+            task.status = TaskStatus.RESUMABLE
+            exe._tasks[tid] = task
+            mem.save_task_checkpoint(
+                tid,
+                "tool_pending",
+                input_snapshot={
+                    "task_id": tid,
+                    "typ": "chat",
+                    "prompt": "search weather",
+                    "current_prompt": "search weather",
+                    "iteration": 0,
+                    "status": "running",
+                },
+                tool_snapshot={
+                    "tool": "search",
+                    "identifier": "search:web",
+                    "kind": "search",
+                    "pending": False,
+                },
+                result_snapshot={
+                    "answer_preview": "sunny",
+                    "answer_full": "sunny 20C",
+                    "via": "search",
+                },
+                side_effect_refs=["search:search weather"],
+            )
+            action = await exe._resume_from_checkpoint(task)
+            return action, task
+
+        action, task = asyncio.run(_run())
+        self.assertEqual(action, "continue")
+        self.assertEqual(task.resume_used_tool_ids, ["search:web"])
+        self.assertIn("[Tool-Kontext]", task.resume_tool_context)
+
+    def test_exception_marks_resumable_from_db_checkpoint(self):
+        import asyncio
+        from executor import get_executor, Task, TaskType, TaskStatus
+        from task_checkpoint import CheckpointState
+
+        async def _run():
+            exe = get_executor()
+            tid = f"cp_exc_{id(self)}"
+            task = Task(id=tid, typ=TaskType.CHAT, prompt="boom", beschreibung="boom")
+            task.status = TaskStatus.RUNNING
+            exe._tasks[tid] = task
+            exe._checkpoint(task, CheckpointState.EVALUATING)
+            task.checkpoint_state = "resume_completed"
+
+            async def _boom(_task):
+                raise RuntimeError("simulated failure")
+
+            with patch.object(exe, "_execute_ai", side_effect=_boom):
+                await exe._execute(task)
+            return task
+
+        task = asyncio.run(_run())
+        self.assertEqual(task.status, TaskStatus.RESUMABLE)
+        self.assertIn("simulated failure", task.fehler)
+
+    def test_watchdog_checkpoint_resume_increments_restarts(self):
+        from executor import get_executor, Task, TaskType, TaskStatus
+        from memory import get_memory
+        from task_checkpoint import CheckpointState
+        from watchdog import TaskWatchdog
+
+        exe = get_executor()
+        wd = TaskWatchdog()
+        wd.set_executor(exe)
+        tid = f"cp_wd_{id(self)}"
+        task = Task(id=tid, typ=TaskType.CHAT, prompt="hang", beschreibung="hang")
+        task.status = TaskStatus.RUNNING
+        exe._tasks[tid] = task
+        get_memory().save_task_checkpoint(
+            tid,
+            CheckpointState.PLANNING,
+            input_snapshot={"task_id": tid, "prompt": "hang", "iteration": 0},
+        )
+        asyncio.run(wd._handle_hang(task, 120.0))
+        self.assertEqual(wd._restarts.get(tid), 1)
+        self.assertEqual(task.status, TaskStatus.QUEUED)
+
+
 class TestProcedureMemory(unittest.TestCase):
     def test_procedure_capture_success_and_failure_downgrade(self):
         from procedure_memory import record_task_outcome, build_signature

@@ -33,6 +33,13 @@ from logic     import get_logic, QualityScore, FollowUpDecision
 from relay     import get_relay
 from tool_runtime import select_live_tool_for_task, run_selected_tool, constitution_gate_for_tool
 from memory import get_memory
+from task_checkpoint import (
+    CheckpointState,
+    build_input_snapshot,
+    build_result_snapshot,
+    is_resumable_state,
+    normalize_state,
+)
 from task_tool_state import get_task_tool_state_store
 from low_complexity import ClassificationResult
 from decision_trace import DecisionTrace, TracePhase
@@ -180,6 +187,11 @@ class Task:
     checkpoint_ts: str = ""
     resume_checkpoint_id: int = 0
     resume_strategy: str = ""
+    resume_current_prompt: str = ""
+    resume_used_tool_ids: list = field(default_factory=list)
+    resume_tool_context: str = ""
+    resume_start_iteration: int = 0
+    watchdog_resume_pending: bool = False
 
     def log(self, msg: str):
         self.log_entries.append({"ts": time.strftime("%H:%M:%S"), "msg": msg})
@@ -360,7 +372,8 @@ class Executor:
                         self._queue.get(), timeout=5.0
                     )
                     task = self._tasks.get(task_id)
-                    if task and task.status == TaskStatus.QUEUED:
+                    if (task and task.status == TaskStatus.QUEUED
+                            and task_id not in self._running):
                         self._running.add(task_id)
                         asyncio.create_task(self._with_sem(task, sem))
                 except asyncio.TimeoutError:
@@ -374,6 +387,11 @@ class Executor:
         async with sem:
             await self._execute(task)
         self._running.discard(task.id)
+        if task.watchdog_resume_pending:
+            task.watchdog_resume_pending = False
+            if task.status == TaskStatus.CANCELLED:
+                task.status = TaskStatus.RESUMABLE
+                self.resume_task(task.id)
 
     # ── Pre-Flight-Validation ─────────────────────────────────────────────────
     def _preflight(self, task: Task) -> Optional[str]:
@@ -400,18 +418,30 @@ class Executor:
             self._notify(task)
             return
 
-        task.status    = TaskStatus.RUNNING
-        task.gestartet = time.strftime("%Y-%m-%d %H:%M:%S")
-        task.progress  = 0.1
-        t0             = time.monotonic()
-        task.log(f"Start │ {task.typ.value} │ sudo={task.sudo_aktiv}")
-        state = self._tool_state.get_or_create(task.id, task.prompt)
-        if state.status not in ("idle", "done", "failed"):
-            self._tool_state.mark_resume(task.id)
-        self._tool_state.set_status(task.id, "running")
-        task.tool_strategy = self._tool_state.get_or_create(task.id).to_dict()
-        self._notify(task)
-        AuditLog.task(task.id, "running", task.beschreibung[:80])
+        t0 = time.monotonic()
+        resumed_mid = False
+        if task.resume_strategy == "from_checkpoint" or task.resume_checkpoint_id:
+            resume_action = await self._resume_from_checkpoint(task)
+            task.resume_strategy = ""
+            if resume_action == "done":
+                self._finalize_execute(task, t0)
+                return
+            resumed_mid = resume_action == "continue"
+
+        if task.status != TaskStatus.RUNNING:
+            task.status = TaskStatus.RUNNING
+            task.gestartet = time.strftime("%Y-%m-%d %H:%M:%S")
+            task.progress = 0.1
+            task.log(f"Start │ {task.typ.value} │ sudo={task.sudo_aktiv}")
+            state = self._tool_state.get_or_create(task.id, task.prompt)
+            if state.status not in ("idle", "done", "failed"):
+                self._tool_state.mark_resume(task.id)
+            self._tool_state.set_status(task.id, "running")
+            task.tool_strategy = self._tool_state.get_or_create(task.id).to_dict()
+            self._notify(task)
+            AuditLog.task(task.id, "running", task.beschreibung[:80])
+            if not resumed_mid:
+                self._checkpoint(task, CheckpointState.PLANNING)
 
         try:
             if task.typ == TaskType.FILE:
@@ -426,18 +456,50 @@ class Executor:
             else:
                 await self._execute_ai(task)
         except Exception as e:
-            task.status = TaskStatus.FAILED
-            task.fehler = str(e)[:200]
             task.log(f"Fehler: {e}")
             AuditLog.error("Executor", str(e), f"task={task.id}")
+            cp = get_memory().get_latest_checkpoint(task.id)
+            cp_state = normalize_state((cp or {}).get("state_name", ""))
+            if is_resumable_state(cp_state):
+                self._mark_resumable(task, f"exception:{type(e).__name__}")
+                task.fehler = str(e)[:200]
+            else:
+                task.status = TaskStatus.FAILED
+                task.fehler = str(e)[:200]
         finally:
-            task.dauer_sek     = round(time.monotonic() - t0, 2)
-            task.abgeschlossen = time.strftime("%Y-%m-%d %H:%M:%S")
-            task.progress      = 1.0
-            self._tool_state.set_status(task.id, task.status.value)
-            task.tool_strategy = self._tool_state.get_or_create(task.id).to_dict()
+            self._finalize_execute(task, t0)
+
+    def _finalize_execute(self, task: Task, t0: float) -> None:
+        if task.status == TaskStatus.CANCELLED:
+            return
+        if task.status in (TaskStatus.DONE, TaskStatus.FAILED):
+            self._checkpoint(
+                task,
+                CheckpointState.LEARNING_COMMIT,
+                result_snapshot=build_result_snapshot(
+                    antwort=task.antwort,
+                    provider=task.provider_used,
+                    score_total=task.score.total if task.score else None,
+                ),
+            )
+            self._checkpoint(
+                task,
+                CheckpointState.DONE if task.status == TaskStatus.DONE else CheckpointState.FAILED,
+                result_snapshot=build_result_snapshot(
+                    antwort=task.antwort,
+                    provider=task.provider_used,
+                    score_total=task.score.total if task.score else None,
+                ),
+            )
             self._persist_task(task)
-            self._notify(task)
+        elif task.status == TaskStatus.RESUMABLE:
+            self._persist_task(task)
+        task.dauer_sek = round(time.monotonic() - t0, 2)
+        task.abgeschlossen = time.strftime("%Y-%m-%d %H:%M:%S")
+        task.progress = 1.0 if task.status != TaskStatus.RESUMABLE else task.progress
+        self._tool_state.set_status(task.id, task.status.value)
+        task.tool_strategy = self._tool_state.get_or_create(task.id).to_dict()
+        self._notify(task)
 
     def _should_try_tool(self, task: Task, prompt: str, iteration: int) -> bool:
         return self._evaluate_tool_eligibility(task, prompt, iteration).eligible
@@ -529,6 +591,17 @@ class Executor:
                     "run_index": tool_runs + 1,
                 },
             )
+            self._checkpoint(
+                task,
+                CheckpointState.TOOL_PENDING,
+                current_prompt=prompt,
+                tool_snapshot={
+                    "tool": selection.get("name", ""),
+                    "identifier": selection.get("identifier", ""),
+                    "kind": selection.get("kind", ""),
+                    "pending": True,
+                },
+            )
             from config import Level
             from constitution_override import build_override_context
 
@@ -564,9 +637,14 @@ class Executor:
             task.tool_strategy = self._tool_state.get_or_create(task.id).to_dict()
             self._checkpoint(
                 task,
-                "tool_running",
-                tool_snapshot={"tool": name, "identifier": identifier, "kind": kind},
-                result_snapshot={"partial": bool(result.get("ok")), "via": via},
+                CheckpointState.TOOL_PENDING,
+                current_prompt=prompt,
+                tool_snapshot={"tool": name, "identifier": identifier, "kind": kind, "pending": False},
+                result_snapshot=build_result_snapshot(
+                    partial=bool(result.get("ok")),
+                    via=via,
+                    antwort=str(result.get("output") or result.get("error") or "")[:1200],
+                ),
                 side_effect_refs=[f"{kind}:{prompt[:80]}"],
             )
             tool_runs += 1
@@ -659,16 +737,25 @@ class Executor:
     # ── AI-Task ───────────────────────────────────────────────────────────────
     async def _execute_ai(self, task: Task):
         system = self._build_system(task)
-        current_prompt = task.prompt
+        current_prompt = task.resume_current_prompt or task.prompt
+        if task.resume_current_prompt:
+            task.resume_current_prompt = ""
         current_prov = task.provider
         antwort = ""
         last_score_total = -1.0
         stale_rounds = 0
         seen_answers: set[str] = set()
-        used_tool_ids: set[str] = set()
+        used_tool_ids: set[str] = set(task.resume_used_tool_ids or [])
+        task.resume_used_tool_ids = []
+        saved_tool_context = task.resume_tool_context or ""
+        task.resume_tool_context = ""
+        start_iteration = int(task.resume_start_iteration or 0)
+        task.resume_start_iteration = 0
         ai_t0 = time.perf_counter()
 
         for iteration in range(get_config().logic.max_followup_rounds + 1):
+            if iteration < start_iteration:
+                continue
             if task.status == TaskStatus.CANCELLED:
                 task.log("Vor Ausführung abgebrochen")
                 return
@@ -677,10 +764,23 @@ class Executor:
             task.progress = 0.1 + (iteration / (get_config().logic.max_followup_rounds + 1)) * 0.7
             task.status = TaskStatus.RUNNING
             task.log(f"Iter {iteration}: → {current_prov or 'auto'}")
+            self._checkpoint(
+                task,
+                CheckpointState.PLANNING,
+                current_prompt=current_prompt,
+                result_snapshot={"iteration": iteration, "provider": current_prov or "auto"},
+            )
             self._notify(task)
 
             choose_t0 = time.perf_counter()
-            tool_context, generated_next_input = await self._maybe_use_tool(task, current_prompt, iteration, used_tool_ids)
+            if saved_tool_context:
+                tool_context = saved_tool_context
+                generated_next_input = ""
+                saved_tool_context = ""
+            else:
+                tool_context, generated_next_input = await self._maybe_use_tool(
+                    task, current_prompt, iteration, used_tool_ids,
+                )
             effective_prompt = current_prompt + tool_context if tool_context else current_prompt
             provider_hint_ms = round((time.perf_counter() - choose_t0) * 1000, 2)
 
@@ -702,19 +802,41 @@ class Executor:
                 break
             seen_answers.add(fp)
 
-            if antwort.startswith("[RELAY") and iteration >= 1:
-                task.log("Loop-Schutz: wiederholter Relay-Fehler")
-                task.status = TaskStatus.FAILED
-                task.fehler = antwort[:200]
+            if antwort.startswith("[RELAY"):
+                if iteration >= 1:
+                    task.log("Loop-Schutz: wiederholter Relay-Fehler")
+                    task.status = TaskStatus.FAILED
+                    task.fehler = antwort[:200]
+                    return
+                self._mark_resumable(task, "relay_failure")
                 return
 
             self._get_watchdog().record_progress(task.id)
 
             task.status = TaskStatus.EVALUATING
+            self._checkpoint(
+                task,
+                CheckpointState.EVALUATING,
+                current_prompt=effective_prompt,
+                result_snapshot=build_result_snapshot(
+                    antwort=antwort,
+                    provider=prov,
+                ),
+            )
             eval_t0 = time.perf_counter()
             score = self.logic.evaluate(antwort, task.prompt, task.id)
             eval_ms = round((time.perf_counter() - eval_t0) * 1000, 2)
             task.score = score
+            self._checkpoint(
+                task,
+                CheckpointState.EVALUATING,
+                current_prompt=effective_prompt,
+                result_snapshot=build_result_snapshot(
+                    antwort=antwort,
+                    provider=prov,
+                    score_total=score.total,
+                ),
+            )
             task.log(f"Score: {score.summary()} | eval={eval_ms}ms")
             self._notify(task)
 
@@ -1107,26 +1229,36 @@ class Executor:
             log.debug(f"Callback async Fehler: {e}")
 
     # ── Checkpoints / Resume ───────────────────────────────────────────────────
+    def _mark_resumable(self, task: Task, reason: str) -> None:
+        task.status = TaskStatus.RESUMABLE
+        state = normalize_state(task.checkpoint_state) or CheckpointState.PLANNING
+        if state not in CheckpointState.RESUMABLE:
+            state = CheckpointState.EVALUATING
+        self._checkpoint(
+            task,
+            state,
+            result_snapshot=build_result_snapshot(
+                antwort=task.antwort,
+                provider=task.provider_used,
+                score_total=task.score.total if task.score else None,
+                partial=True,
+                resume_reason=reason,
+            ),
+        )
+        task.log(f"Resumable: {reason}")
+
     def _checkpoint(
         self,
         task: Task,
         state_name: str,
+        *,
+        current_prompt: str = "",
         tool_snapshot: dict | None = None,
         result_snapshot: dict | None = None,
         side_effect_refs: list | None = None,
         memory_refs: list | None = None,
     ) -> int:
-        input_snapshot = {
-            "task_id": task.id,
-            "typ": task.typ.value,
-            "prompt": task.prompt,
-            "beschreibung": task.beschreibung,
-            "provider": task.provider,
-            "provider_used": task.provider_used,
-            "iteration": task.iteration,
-            "status": task.status.value,
-            "sudo": task.sudo_aktiv,
-        }
+        input_snapshot = build_input_snapshot(task, current_prompt=current_prompt)
         cp_id = get_memory().save_task_checkpoint(
             task.id,
             state_name,
@@ -1144,6 +1276,8 @@ class Executor:
         task = self._tasks.get(task_id)
         if not task or task.status != TaskStatus.RESUMABLE:
             return False
+        if task_id in self._running:
+            return False
         cp = get_memory().get_latest_checkpoint(task_id)
         task.log("Resume angefordert")
         task.checkpoint_state = "resume_requested"
@@ -1159,32 +1293,117 @@ class Executor:
         self._notify(task)
         return True
 
-    async def _resume_from_checkpoint(self, task: Task) -> bool:
-        cp = get_memory().get_latest_checkpoint(task.id)
-        if not cp:
-            return False
+    @staticmethod
+    def _checkpoint_json_field(raw: Any, default: Any) -> Any:
+        if raw is None:
+            return default
+        if isinstance(raw, (dict, list)):
+            return raw
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return default
 
-        state_name = cp.get("state_name", "")
+    async def _resume_from_checkpoint(self, task: Task) -> str:
+        cp = None
+        if task.resume_checkpoint_id:
+            cp = get_memory().get_checkpoint_by_id(task.resume_checkpoint_id)
+        if not cp:
+            cp = get_memory().get_latest_checkpoint(task.id)
+        if not cp:
+            return "none"
+
+        state_name = normalize_state(cp.get("state_name", ""))
+        if not is_resumable_state(state_name) and state_name not in {
+            CheckpointState.DONE,
+            CheckpointState.FAILED,
+        }:
+            return "none"
+
         task.log(f"Resume von Checkpoint: {state_name}")
         task.checkpoint_state = "resume_completed"
         task.checkpoint_ts = cp.get("ts", "")
 
-        try:
-            input_snap = json.loads(cp.get("input_snapshot") or "{}")
-        except json.JSONDecodeError:
-            input_snap = {}
+        input_snap = self._checkpoint_json_field(cp.get("input_snapshot"), {})
+        result_snap = self._checkpoint_json_field(cp.get("result_snapshot"), {})
+        tool_snap = self._checkpoint_json_field(cp.get("tool_snapshot"), {})
+        side_effect_refs = self._checkpoint_json_field(cp.get("side_effect_refs"), [])
 
         task.prompt = input_snap.get("prompt", task.prompt)
         task.iteration = int(input_snap.get("iteration", task.iteration) or 0)
         task.provider = input_snap.get("provider") or task.provider or "none"
+        if input_snap.get("provider_used"):
+            task.provider_used = input_snap.get("provider_used", "")
+        current_prompt = input_snap.get("current_prompt") or task.prompt
 
-        if state_name == "evaluating":
+        if state_name in {
+            CheckpointState.PLANNING,
+            CheckpointState.TOOL_PENDING,
+            CheckpointState.TOOL_RUNNING,
+        }:
+            task.status = TaskStatus.RUNNING
+            task.progress = max(task.progress, 0.2)
+            if current_prompt and current_prompt != task.prompt:
+                task.resume_current_prompt = current_prompt
+            task.resume_start_iteration = task.iteration
+            identifier = tool_snap.get("identifier", "")
+            if identifier and not tool_snap.get("pending", True):
+                task.resume_used_tool_ids = [identifier]
+                tool_output = (
+                    result_snap.get("answer_full")
+                    or result_snap.get("answer_preview")
+                    or ""
+                )
+                if tool_output or side_effect_refs:
+                    task.resume_tool_context = self._tool_context_block(
+                        tool_snap.get("tool", identifier),
+                        tool_snap.get("kind", ""),
+                        result_snap.get("via") or tool_snap.get("kind", ""),
+                        {"output": tool_output},
+                    )
+            return "continue"
+
+        if state_name == CheckpointState.EVALUATING:
+            antwort = result_snap.get("answer_full") or result_snap.get("answer_preview") or ""
+            prov = result_snap.get("provider") or task.provider_used or "none"
+            if antwort:
+                task.provider_used = prov
+                task.antwort = antwort
+                score = self.logic.evaluate(antwort, task.prompt, task.id)
+                task.score = score
+                if antwort.startswith("[RELAY"):
+                    task.status = TaskStatus.FAILED
+                    task.fehler = antwort[:200]
+                    return "done"
+                if score.acceptable:
+                    task.status = TaskStatus.DONE
+                    return "done"
+                iteration = int(input_snap.get("iteration", task.iteration) or 0)
+                max_rounds = get_config().logic.max_followup_rounds
+                if iteration >= max_rounds or not task.allow_followup:
+                    task.status = TaskStatus.FAILED
+                    task.fehler = "Resume: Score nicht akzeptabel"
+                    return "done"
+                decision = self.logic.decide_followup(
+                    antwort, task.prompt, score, iteration, prov, task.id,
+                )
+                if not decision.needed:
+                    task.status = TaskStatus.FAILED
+                    task.fehler = "Resume: Score nicht akzeptabel"
+                    return "done"
+                task.status = TaskStatus.RUNNING
+                task.resume_start_iteration = iteration + 1
+                task.resume_current_prompt = (
+                    decision.followup_prompt or current_prompt or task.prompt
+                )
+                return "continue"
+
             task.status = TaskStatus.RUNNING
             system = self._build_system(task)
             try:
                 antwort, prov = await asyncio.wait_for(
                     self.relay.ask_with_fallback(
-                        task.prompt,
+                        current_prompt or task.prompt,
                         system,
                         preferred=task.provider,
                         task_id=task.id,
@@ -1201,10 +1420,30 @@ class Executor:
                 task.status = TaskStatus.FAILED
             else:
                 task.status = TaskStatus.DONE
-            return True
+            return "done"
 
-        task.status = TaskStatus.BLOCKED
-        return True
+        if state_name == CheckpointState.LEARNING_COMMIT:
+            antwort = result_snap.get("answer_full") or task.antwort
+            if antwort:
+                task.antwort = antwort
+                task.status = TaskStatus.DONE
+            else:
+                task.status = TaskStatus.FAILED
+                task.fehler = "Resume: learning_commit ohne Antwort"
+            return "done"
+
+        if state_name == CheckpointState.DONE:
+            task.antwort = result_snap.get("answer_full") or task.antwort
+            task.status = TaskStatus.DONE
+            return "done"
+
+        if state_name == CheckpointState.FAILED:
+            task.antwort = result_snap.get("answer_full") or task.antwort
+            task.status = TaskStatus.FAILED
+            task.fehler = result_snap.get("resume_reason") or task.fehler
+            return "done"
+
+        return "none"
 
     # ── Abfragen ─────────────────────────────────────────────────────────────
     def get_task(self, task_id: str) -> Optional[Task]:

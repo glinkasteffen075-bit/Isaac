@@ -271,6 +271,9 @@ class TaskWatchdog:
 
     async def _handle_hang(self, task, inaktiv: float):
         from executor import TaskStatus
+        from memory import get_memory
+        from task_checkpoint import is_resumable_state, normalize_state
+
         task_id  = task.id
         restarts = self._restarts.get(task_id, 0)
 
@@ -282,6 +285,31 @@ class TaskWatchdog:
             "Watchdog", "hang_detected", task_id,
             erfolg=False
         )
+
+        cp = get_memory().get_latest_checkpoint(task_id)
+        cp_state = normalize_state((cp or {}).get("state_name", ""))
+        if cp and is_resumable_state(cp_state) and self._executor:
+            self._restarts[task_id] = restarts + 1
+            if task_id in self._executor._running:
+                task.watchdog_resume_pending = True
+                task.status = TaskStatus.CANCELLED
+                task.fehler = f"Watchdog: hängt seit {int(inaktiv)}s"
+                task.log(
+                    f"Watchdog: hängende Ausführung abbrechen, "
+                    f"Resume von Checkpoint ({cp_state}) folgt"
+                )
+                self._last_progress[task_id] = time.monotonic()
+                log.info(f"Task {task_id} Abbruch für Checkpoint-Resume angefordert")
+                AuditLog.action("Watchdog", "task_abort_for_resume", task_id)
+                return
+            task.status = TaskStatus.RESUMABLE
+            task.fehler = f"Watchdog: hängt seit {int(inaktiv)}s"
+            task.log(f"Watchdog: Resume von Checkpoint ({cp_state})")
+            self._last_progress[task_id] = time.monotonic()
+            if self._executor.resume_task(task_id):
+                log.info(f"Task {task_id} aus Checkpoint fortgesetzt")
+                AuditLog.action("Watchdog", "task_resumed_from_checkpoint", task_id)
+                return
 
         if restarts < self.MAX_RESTARTS:
             # Task neustarten

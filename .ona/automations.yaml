@@ -21,10 +21,19 @@ services:
       - postEnvironmentStart
     commands:
       start: |
+        cd /workspaces/Isaac
         ona environment port open 8766 --dont-wait --admission creator_only --name "Isaac Dashboard"
-        ona environment port open 8765 --dont-wait --admission creator_only --name "Isaac WebSocket"
-        ALLOWED_HOST="$(ona environment port get 8766 -f URL | cut -c 9-)"
-        mkdir -p logs runtime workspace
+        # Port 8765 is often reserved in Ona; Isaac WS uses MONITOR_PORT (8767).
+        ona environment port open 8767 --dont-wait --admission creator_only --name "Isaac WebSocket"
+        export MONITOR_PORT=8767
+        export MONITOR_HTTP_PORT=8766
+        export ISAAC_DISABLE_VECTOR_MEMORY=1
+        mkdir -p logs runtime workspace data
+        if [ ! -x .venv/bin/python ]; then
+          python3 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+        fi
         exec .venv/bin/python isaac_core.py
       ready: |
-        curl -sf http://localhost:8766/
+        curl -sf http://127.0.0.1:8766/

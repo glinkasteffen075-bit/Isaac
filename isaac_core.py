@@ -31,6 +31,7 @@ import logging
 from typing import Optional, Any
 
 from config         import get_config, Level, WORKSPACE
+from constitution_override import apply_constitution_gate, build_override_context
 from privilege      import get_gate, steffen_ctx, isaac_ctx
 from audit          import AuditLog, setup_privilege_audit
 from memory         import get_memory
@@ -245,6 +246,11 @@ class IsaacKernel:
             f"Input: '{user_input[:50]}' │ Intent: {intent} │ "
             f"Node: {emp.node.zustand} │ Sudo: {sudo_aktiv}"
         )
+
+        blocked_msg = self._enforce_constitution_gate(user_input, intent, sudo_aktiv)
+        if blocked_msg:
+            AuditLog.isaac_output(blocked_msg)
+            return blocked_msg
 
         # SUDO-Handshake
         if intent == Intent.SUDO_OPEN:
@@ -562,6 +568,97 @@ class IsaacKernel:
 
         AuditLog.isaac_output(antwort)
         return antwort
+
+    _CONSTITUTION_GATED_INTENTS = frozenset({
+        Intent.SUDO_OPEN,
+        Intent.CODE,
+        Intent.FILE,
+        Intent.LOGIN_ADD,
+        Intent.DIRECTIVE,
+        Intent.FACT_SET,
+    })
+
+    def _build_constitution_metadata(
+        self, intent: str, user_input: str, sudo_aktiv: bool
+    ) -> tuple[str, dict[str, Any]]:
+        text = (user_input or "").lower()
+        metadata: dict[str, Any] = {
+            "audit_logged": True,
+            "outside_effect": True,
+        }
+
+        if intent == Intent.SUDO_OPEN:
+            return "grant_privilege", {
+                **metadata,
+                "privilege_escalation": True,
+                "owner_approved": True,
+                "risk": "high",
+            }
+        if intent == Intent.CODE:
+            meta = {**metadata, "risk": "high"}
+            if "constitution" in text and any(
+                token in text for token in ("änder", "umschreib", "modify", "rewrite")
+            ):
+                meta["self_modify_constitution"] = True
+            return "execute_code", meta
+        if intent == Intent.FILE:
+            write_markers = ("schreibe", "write", "speichere", "lösch", "delete")
+            is_write = any(marker in text for marker in write_markers)
+            meta = {**metadata, "risk": "high" if is_write else "low"}
+            if "constitution" in text and any(
+                token in text for token in ("änder", "umschreib", "modify", "rewrite")
+            ):
+                meta["self_modify_constitution"] = True
+            return ("file_delete" if is_write else "system_command"), meta
+        if intent == Intent.LOGIN_ADD:
+            return "modify_config", {
+                **metadata,
+                "privilege_escalation": True,
+                "owner_approved": True,
+                "risk": "high",
+            }
+        if intent == Intent.DIRECTIVE:
+            return "modify_config", {**metadata, "risk": "normal"}
+        if intent == Intent.FACT_SET:
+            return "system_command", {
+                **metadata,
+                "uncertain_claim_as_fact": False,
+                "risk": "low",
+            }
+        return "", {}
+
+    def _enforce_constitution_gate(
+        self, user_input: str, intent: str, sudo_aktiv: bool
+    ) -> Optional[str]:
+        if intent not in self._CONSTITUTION_GATED_INTENTS:
+            return None
+        action, metadata = self._build_constitution_metadata(
+            intent, user_input, sudo_aktiv
+        )
+        if not action:
+            return None
+
+        gate = apply_constitution_gate(
+            action,
+            metadata,
+            build_override_context(
+                prompt=user_input,
+                sudo_active=sudo_aktiv,
+                caller_level=Level.STEFFEN,
+                source="isaac_core",
+            ),
+        )
+        if gate.get("allowed"):
+            return None
+
+        blocked_by = list(gate.get("blocked_by") or [])
+        override = gate.get("override") or {}
+        reason = str(override.get("reason") or "Verfassung blockiert diese Aktion")
+        return (
+            f"[Verfassung] Aktion blockiert: {', '.join(blocked_by)}. "
+            f"{reason}. "
+            f"Owner-Override: 'override: <Begründung>' (mit SUDO wenn nötig)."
+        )
 
     def _persist_regelwerk_answer_to_memory(self, frage_id: str, antwort: str) -> None:
         frage = self.regelwerk.get_frage(frage_id)

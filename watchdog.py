@@ -191,7 +191,7 @@ class TaskWatchdog:
     Plant kritische Tasks automatisch neu.
     """
 
-    HANG_TIMEOUT    = 120.0   # Sekunden ohne Progress → Task hängt
+    HANG_TIMEOUT    = 300.0   # Sekunden ohne Progress → Task hängt (Ollama auf Mobile braucht länger)
     CHECK_INTERVAL  = 15.0    # Wie oft prüfen
     MAX_RESTARTS    = 2       # Maximale Neustart-Versuche
 

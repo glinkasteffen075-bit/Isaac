@@ -112,7 +112,7 @@ def _provider_defaults_from_env() -> dict[str, ProviderConfig]:
             provider_type="ollama",
             api_key="",
             base_url=(os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")) + "/api/chat",
-            model=os.getenv("OLLAMA_MODEL", "qwen3.5:latest"),
+            model=os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b"),
             rpm=999,
             tpm=999_999,
             timeout=_int(os.getenv("OLLAMA_TIMEOUT", "180"), 180),

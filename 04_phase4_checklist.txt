@@ -11,7 +11,7 @@ GATE 0 — PHASE 3 ABSCHLUSS
 [x] 0.1 Phase-3-Arbeit committen
 [x] 0.2 computer_use.py / file_access.py → LATER (Modul vorhanden, nicht Kernel-Pfad)
 [x] 0.3 AGENTS.md + 04_phase4_checklist.txt
-[ ] 0.4 PR/Merge feature/phase-3-refine → main
+[x] 0.4 PR/Merge feature/phase-3-refine → main
 
 ──────────────────────────────────────────────────────────────────────────────
 4.1 DURCHSETZUNG & NACHVOLLZIEHBARKEIT

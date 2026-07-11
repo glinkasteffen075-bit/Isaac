@@ -52,7 +52,19 @@ _KNOWN_SYSTEM_TERMS = {
     "status", "module", "modul", "system", "dashboard", "provider",
     "groq", "ollama", "isaac", "steffen", "kernel", "executor",
     "relay", "memory", "browser", "python", "linux", "android", "termux",
+    "hallo", "danke", "bitte", "morgen", "abend",
 }
+
+_TERM_QUESTION_STOPWORDS = frozenset({
+    "kennst", "kenne", "kennt", "hast", "habe", "hat", "bist", "bin", "ist",
+    "kannst", "kann", "machst", "mache", "macht", "sollst", "soll", "wirst",
+    "wird", "warst", "waren", "hattest", "konntest", "weißt", "weisst",
+    "hallo", "danke", "bitte", "guten", "morgen", "abend", "tag", "servus",
+    "was", "wie", "warum", "wann", "wo", "wer", "welche", "welcher", "welches",
+    "und", "oder", "nicht", "noch", "auch", "schon", "mal", "nur", "sehr",
+    "du", "ich", "wir", "sie", "es", "der", "die", "das", "ein", "eine",
+    "dein", "deine", "mein", "meine", "alle", "alles", "jede", "jeder",
+})
 
 
 # ── Datenstrukturen ───────────────────────────────────────────────────────────
@@ -314,7 +326,10 @@ class Regelwerk:
             if frage.beantwortet:
                 continue
             term = self._extract_term_from_frage(frage)
-            if term and term.lower() in _KNOWN_SYSTEM_TERMS:
+            if term and (
+                term.lower() in _KNOWN_SYSTEM_TERMS
+                or term.lower() in _TERM_QUESTION_STOPWORDS
+            ):
                 frage.beantwortet = True
                 frage.antwort = "Systembegriff — keine Rückfrage nötig."
                 changed = True
@@ -333,13 +348,20 @@ class Regelwerk:
 
     def _erkenne_unbekannte_begriffe(self, text: str) -> str:
         """Findet möglicherweise unbekannte Eigennamen / Abkürzungen."""
-        # Großgeschriebene Wörter die keine Standard-Substantive sind
-        worte = re.findall(r"[A-Za-zÄÖÜäöüß]+", text or "")
+        normalized = (text or "").strip()
+        if re.match(
+            r"(?i)^(kennst|kenne|hast|habe|bist|bin|kannst|kann|weißt|weisst|kennt)\s+du\b",
+            normalized,
+        ):
+            return ""
+
+        worte = re.findall(r"[A-Za-zÄÖÜäöüß]+", normalized)
         kandidaten = [
             w for w in worte
             if len(w) > 3
             and w[0].isupper()
             and w.lower() not in _KNOWN_SYSTEM_TERMS
+            and w.lower() not in _TERM_QUESTION_STOPWORDS
             and w.lower() not in ["isaac", "steffen", "python", "claude",
                                    "gemini", "openai", "google", "linux",
                                    "windows", "docker", "github"]
@@ -426,6 +448,21 @@ class Regelwerk:
     def offene_fragen(self) -> list[Frage]:
         """Öffentliche, rückwärtskompatible Sicht auf offene Fragen."""
         return list(self._offene_fragen())
+
+    def open_questions_dict(self, limit: int = 20) -> list[dict]:
+        """Serialisierte offene Fragen für Dashboard/API."""
+        limit = max(1, min(int(limit), 50))
+        offene = sorted(self._offene_fragen(), key=lambda f: f.prioritaet, reverse=True)
+        return [
+            {
+                "id": f.id,
+                "text": f.text,
+                "kontext": f.kontext,
+                "prioritaet": round(float(f.prioritaet), 3),
+                "erstellt": f.erstellt,
+            }
+            for f in offene[:limit]
+        ]
 
     # ── Regel-Management ──────────────────────────────────────────────────────
     def _init_basisregeln(self):

@@ -620,6 +620,37 @@ class Memory:
             ).fetchall()
         return [self._normalize_procedure(dict(r)) for r in rows]
 
+    @staticmethod
+    def _regelwerk_open_questions_for_retrieval(user_input: str) -> list[str]:
+        try:
+            from regelwerk import get_regelwerk
+
+            rw = get_regelwerk()
+            pending = sorted(
+                rw.offene_fragen(),
+                key=lambda f: float(getattr(f, "prioritaet", 0.0)),
+                reverse=True,
+            )
+            if not pending:
+                return []
+            input_l = (user_input or "").lower()
+            matched: list[str] = []
+            for frage in pending:
+                term = rw._extract_term_from_frage(frage)
+                text = (frage.text or "").strip()
+                if not text:
+                    continue
+                if term and term.lower() in input_l:
+                    matched.append(f"[Offene Frage] {text}")
+            if matched:
+                return matched
+            top = pending[0]
+            if (top.text or "").strip():
+                return [f"[Offene Frage] {top.text.strip()}"]
+        except Exception:
+            return []
+        return []
+
     def build_retrieval_context(
         self, user_input: str, intent: str = "", interaction_class: str = "",
         n_history: int = 6
@@ -733,6 +764,9 @@ class Memory:
         open_questions = []
         if intent == "chat" and interaction_class == "NORMAL_CHAT" and len(user_input.split()) <= 2 and "?" not in user_input:
             open_questions.append("Nutzerabsicht bei sehr kurzem Input potenziell unklar.")
+        open_questions.extend(
+            self._regelwerk_open_questions_for_retrieval(user_input)[:3]
+        )
 
         for proc in relevant_procedures:
             if proc.get("degraded"):
@@ -753,7 +787,7 @@ class Memory:
             project_context=project_context,
             behavioral_risks=behavioral_risks[:3],
             relevant_reflections=relevant_reflections[:2],
-            open_questions=open_questions[:1],
+            open_questions=open_questions[:3],
             relevant_procedures=relevant_procedures[:3],
         )
 
@@ -826,7 +860,18 @@ class Memory:
 
     # ── Kontext-Aufbau für Relay ───────────────────────────────────────────────
     def build_context(self, query: str = "", n_history: int = 6) -> str:
-        """Legacy-Wrapper: nutzt den strukturierten Retrieval-Kontext."""
+        """Deprecated legacy wrapper.
+
+        Prefer ``build_retrieval_context()`` + ``format_retrieval_context()`` in callers.
+        The kernel standard path must not depend on this string builder.
+        """
+        import warnings
+
+        warnings.warn(
+            "memory.build_context() is deprecated; use build_retrieval_context()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         retrieval_ctx = self.build_retrieval_context(query, n_history=n_history)
         return self.format_retrieval_context(retrieval_ctx)
 
@@ -1000,6 +1045,11 @@ class Memory:
         memory_refs: list | None = None,
         side_effect_refs: list | None = None,
     ) -> int:
+        from task_checkpoint import (
+            CHECKPOINT_GLOBAL_MAX,
+            CHECKPOINT_MAX_PER_TASK,
+        )
+
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
         with _conn() as con:
             cur = con.execute(
@@ -1018,7 +1068,16 @@ class Memory:
                     json.dumps(side_effect_refs or [], ensure_ascii=False),
                 ),
             )
-            return int(cur.lastrowid)
+            checkpoint_id = int(cur.lastrowid)
+        try:
+            self.cleanup_task_checkpoints(
+                task_id=task_id,
+                max_per_task=CHECKPOINT_MAX_PER_TASK,
+                global_max=CHECKPOINT_GLOBAL_MAX,
+            )
+        except Exception as exc:
+            log.debug("Checkpoint cleanup skipped: %s", exc)
+        return checkpoint_id
 
     def get_latest_checkpoint(self, task_id: str) -> dict | None:
         with _conn() as con:
@@ -1045,6 +1104,137 @@ class Memory:
                 (task_id, max(1, int(limit))),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def checkpoint_stats(self) -> dict[str, Any]:
+        with _conn() as con:
+            total = int(con.execute("SELECT COUNT(*) FROM task_checkpoints").fetchone()[0])
+            tasks = int(con.execute(
+                "SELECT COUNT(DISTINCT task_id) FROM task_checkpoints"
+            ).fetchone()[0])
+        return {"total": total, "tasks": tasks}
+
+    @staticmethod
+    def _parse_checkpoint_ts(ts: str) -> datetime | None:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(ts, fmt)
+            except ValueError:
+                continue
+        return None
+
+    def cleanup_task_checkpoints(
+        self,
+        *,
+        task_id: str | None = None,
+        max_per_task: int | None = None,
+        max_age_days: int | None = None,
+        global_max: int | None = None,
+    ) -> dict[str, Any]:
+        from task_checkpoint import (
+            CHECKPOINT_GLOBAL_MAX,
+            CHECKPOINT_MAX_AGE_DAYS,
+            CHECKPOINT_MAX_PER_TASK,
+            TERMINAL_CHECKPOINT_STATES,
+        )
+
+        max_per_task = max(1, int(max_per_task or CHECKPOINT_MAX_PER_TASK))
+        max_age_days = int(max_age_days if max_age_days is not None else CHECKPOINT_MAX_AGE_DAYS)
+        global_max = int(global_max if global_max is not None else CHECKPOINT_GLOBAL_MAX)
+        removed = 0
+        trimmed_tasks = 0
+        aged_removed = 0
+        global_removed = 0
+
+        with _conn() as con:
+            task_ids = [task_id] if task_id else [
+                row[0] for row in con.execute(
+                    "SELECT DISTINCT task_id FROM task_checkpoints"
+                ).fetchall()
+            ]
+
+            for current_task_id in task_ids:
+                rows = con.execute(
+                    "SELECT checkpoint_id, ts, state_name FROM task_checkpoints "
+                    "WHERE task_id=? ORDER BY checkpoint_id DESC",
+                    (current_task_id,),
+                ).fetchall()
+                if not rows:
+                    continue
+
+                latest_id = int(rows[0]["checkpoint_id"])
+                keep_ids = {latest_id}
+                drop_ids: list[int] = []
+
+                if len(rows) > max_per_task:
+                    for row in rows[max_per_task:]:
+                        cp_id = int(row["checkpoint_id"])
+                        if cp_id != latest_id:
+                            drop_ids.append(cp_id)
+                    if drop_ids:
+                        trimmed_tasks += 1
+
+                if max_age_days > 0:
+                    cutoff = datetime.now() - timedelta(days=max_age_days)
+                    for row in rows[1:]:
+                        cp_id = int(row["checkpoint_id"])
+                        if cp_id in keep_ids or cp_id in drop_ids:
+                            continue
+                        state_name = (row["state_name"] or "").strip().lower()
+                        if state_name not in TERMINAL_CHECKPOINT_STATES:
+                            continue
+                        parsed = self._parse_checkpoint_ts(row["ts"] or "")
+                        if parsed and parsed < cutoff:
+                            drop_ids.append(cp_id)
+                            aged_removed += 1
+
+                drop_ids = [cp_id for cp_id in drop_ids if cp_id not in keep_ids]
+                if drop_ids:
+                    con.executemany(
+                        "DELETE FROM task_checkpoints WHERE checkpoint_id=?",
+                        [(cp_id,) for cp_id in sorted(set(drop_ids))],
+                    )
+                    removed += len(set(drop_ids))
+
+            if global_max > 0:
+                total = int(con.execute("SELECT COUNT(*) FROM task_checkpoints").fetchone()[0])
+                if total > global_max:
+                    latest_per_task = {
+                        row[0]: int(row[1])
+                        for row in con.execute(
+                            "SELECT task_id, MAX(checkpoint_id) "
+                            "FROM task_checkpoints GROUP BY task_id"
+                        ).fetchall()
+                    }
+                    overflow = total - global_max
+                    rows = con.execute(
+                        "SELECT checkpoint_id, task_id FROM task_checkpoints "
+                        "ORDER BY checkpoint_id ASC LIMIT ?",
+                        (overflow + len(latest_per_task),),
+                    ).fetchall()
+                    for row in rows:
+                        if overflow <= 0:
+                            break
+                        cp_id = int(row["checkpoint_id"])
+                        if latest_per_task.get(row["task_id"]) == cp_id:
+                            continue
+                        con.execute(
+                            "DELETE FROM task_checkpoints WHERE checkpoint_id=?",
+                            (cp_id,),
+                        )
+                        global_removed += 1
+                        overflow -= 1
+                    removed += global_removed
+
+        summary = {
+            "removed": removed,
+            "trimmed_tasks": trimmed_tasks,
+            "aged_removed": aged_removed,
+            "global_removed": global_removed,
+            "remaining": self.checkpoint_stats().get("total", 0),
+        }
+        if removed:
+            AuditLog.action("Memory", "checkpoint_cleanup", json.dumps(summary, ensure_ascii=False))
+        return summary
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────────

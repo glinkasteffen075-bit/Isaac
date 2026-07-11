@@ -5,6 +5,7 @@ Explizites Selbstmodell mit stabilen und lernbaren Bereichen.
 """
 
 import json
+import re
 import time
 import logging
 from copy import deepcopy
@@ -16,6 +17,8 @@ from audit import AuditLog
 
 log = logging.getLogger("Isaac.SelfModel")
 SELF_MODEL_PATH = DATA_DIR / "self_model.json"
+CONFIRMED_CONFIDENCE_THRESHOLD = 0.75
+MEMORY_SYNC_MIN_CONFIRMATIONS = 2
 
 
 def _default_self_model() -> Dict[str, Any]:
@@ -80,6 +83,7 @@ class SelfModel:
     def __init__(self, path: Path = SELF_MODEL_PATH):
         self.path = path
         self.data = self._load()
+        self._pending_confirmation: list[tuple[str, str]] = []
 
     def _load(self) -> Dict[str, Any]:
         if self.path.exists():
@@ -145,6 +149,102 @@ class SelfModel:
         except Exception as exc:
             log.debug("Constitution sync skipped: %s", exc)
 
+    @staticmethod
+    def _preference_fact_key(entry: dict[str, Any]) -> str:
+        base = (entry.get("key") or "preference").strip().lower()[:40]
+        value_slug = re.sub(
+            r"[^\w]+",
+            "_",
+            (entry.get("value") or "")[:40].lower(),
+        ).strip("_")
+        return f"pref.{base}.{value_slug}" if value_slug else f"pref.{base}"
+
+    def _should_sync_preference_to_memory(self, entry: dict[str, Any]) -> bool:
+        source = (entry.get("source") or "").strip()
+        confidence = float(entry.get("confidence", 0.0) or 0.0)
+        confirmations = int(entry.get("confirmations", 1) or 1)
+        return (
+            source == "owner_correction"
+            or confidence >= CONFIRMED_CONFIDENCE_THRESHOLD
+            or confirmations >= MEMORY_SYNC_MIN_CONFIRMATIONS
+        )
+
+    def sync_confirmed_preference_to_memory(self, entry: dict[str, Any]) -> bool:
+        if not self._should_sync_preference_to_memory(entry):
+            return False
+        value = str(entry.get("value") or "").strip()
+        if not value:
+            return False
+        try:
+            from memory import get_memory
+
+            fact_key = self._preference_fact_key(entry)
+            get_memory().set_fact(
+                fact_key,
+                value[:500],
+                source="Steffen",
+                confidence=1.0,
+            )
+            return True
+        except Exception as exc:
+            log.debug("Preference memory-sync: %s", exc)
+            return False
+
+    def mark_pending_confirmation(self, key: str, value: str) -> None:
+        normalized_key = (key or "").strip()[:80]
+        normalized_value = str(value or "").strip()[:180]
+        if not normalized_key or not normalized_value:
+            return
+        pair = (normalized_key, normalized_value)
+        pending = [item for item in self._pending_confirmation if item != pair]
+        pending.append(pair)
+        self._pending_confirmation = pending[-3:]
+
+    def confirm_pending_preferences(self, boost: float = 0.06, reason: str = "") -> int:
+        if not self._pending_confirmation:
+            return 0
+        prefs = self.data.setdefault("preference_state", {})
+        targets = set(self._pending_confirmation)
+        updated = 0
+        confirmed_entries: list[dict[str, Any]] = []
+        for bucket in ("owner_prefers", "avoid"):
+            for item in prefs.get(bucket, []):
+                if not isinstance(item, dict):
+                    continue
+                pair = (str(item.get("key", "")), str(item.get("value", "")))
+                if pair not in targets:
+                    continue
+                before = float(item.get("confidence", 0.5))
+                item["confidence"] = min(1.0, before + float(boost))
+                item["confirmations"] = int(item.get("confirmations", 1)) + 1
+                item["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                item["source"] = "owner_confirmation"
+                updated += 1
+                confirmed_entries.append(item)
+        response_style = prefs.get("response_style")
+        for _key, value in targets:
+            if _key != "response_style" or not response_style:
+                continue
+            for item in prefs.get("owner_prefers", []):
+                if not isinstance(item, dict):
+                    continue
+                if item.get("key") == "response_style" and item.get("value") == value:
+                    before = float(item.get("confidence", 0.5))
+                    item["confidence"] = min(1.0, before + float(boost))
+                    item["confirmations"] = int(item.get("confirmations", 1)) + 1
+                    item["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                    item["source"] = "owner_confirmation"
+                    updated += 1
+                    confirmed_entries.append(item)
+            prefs["response_style"] = value
+        if updated:
+            self._save(self.data)
+            AuditLog.development("preference_confirmed", "self_model", "pending", boost, reason)
+            for entry in confirmed_entries:
+                self.sync_confirmed_preference_to_memory(entry)
+        self._pending_confirmation = []
+        return updated
+
     def record_owner_preference(
         self,
         key: str,
@@ -183,7 +283,11 @@ class SelfModel:
             }
             items.append(existing)
         items.sort(key=lambda item: float(item.get("confidence", 0.0)), reverse=True)
-        del items[20:]
+        if len(items) > 20:
+            if existing in items[20:]:
+                items.remove(existing)
+                items.insert(19, existing)
+            del items[20:]
         self._save(self.data)
         AuditLog.action("SelfModel", "record_preference", f"{bucket}:{normalized_key}")
         try:
@@ -202,6 +306,9 @@ class SelfModel:
             )
         except Exception as exc:
             log.debug("Preference development-log: %s", exc)
+        if source in {"owner_statement", "owner_correction", "owner_style_hint"}:
+            self.mark_pending_confirmation(normalized_key, normalized_value)
+        self.sync_confirmed_preference_to_memory(existing)
         return existing
 
     def reinforce_recent_preferences(self, boost: float = 0.05, reason: str = "") -> int:
@@ -307,6 +414,163 @@ class SelfModel:
         dev["last_reflection"] = time.strftime("%Y-%m-%d %H:%M:%S")
         self._save(self.data)
         return after
+
+    @staticmethod
+    def _normalize_compare_value(value: Any) -> str:
+        return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+    @staticmethod
+    def _values_semantically_conflict(left: str, right: str) -> bool:
+        a = SelfModel._normalize_compare_value(left)
+        b = SelfModel._normalize_compare_value(right)
+        if not a or not b:
+            return False
+        if a == b:
+            return False
+        opposing = (
+            ("kurz", "ausführlich"),
+            ("kurz", "detailliert"),
+            ("knapp", "ausführlich"),
+            ("knapp", "lang"),
+            ("nüchtern", "emotional"),
+        )
+        for token_a, token_b in opposing:
+            if (token_a in a and token_b in b) or (token_b in a and token_a in b):
+                return True
+        return False
+
+    def _iter_preference_entries(self) -> list[dict[str, Any]]:
+        prefs = self.data.get("preference_state", {})
+        entries: list[dict[str, Any]] = []
+        response_style = prefs.get("response_style")
+        if response_style:
+            entries.append({
+                "bucket": "response_style",
+                "key": "response_style",
+                "value": response_style,
+                "confidence": 0.8,
+            })
+        for bucket in ("owner_prefers", "avoid"):
+            for item in prefs.get(bucket, []):
+                if isinstance(item, str):
+                    entries.append({
+                        "bucket": bucket,
+                        "key": bucket,
+                        "value": item,
+                        "confidence": 0.5,
+                    })
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                entries.append({
+                    "bucket": bucket,
+                    "key": item.get("key", bucket),
+                    "value": item.get("value", ""),
+                    "confidence": float(item.get("confidence", 0.0) or 0.0),
+                })
+        return entries
+
+    def detect_fact_contradictions(self, memory: Any = None) -> list[dict[str, Any]]:
+        """Erkennt Widersprüche zwischen Self-Model-Präferenzen und Memory-Fakten."""
+        contradictions: list[dict[str, Any]] = []
+        entries = self._iter_preference_entries()
+        prefers = [e for e in entries if e.get("bucket") != "avoid"]
+        avoids = [e for e in entries if e.get("bucket") == "avoid"]
+
+        for left in prefers:
+            for right in avoids:
+                if SelfModel._values_semantically_conflict(left.get("value", ""), right.get("value", "")):
+                    contradictions.append({
+                        "kind": "self_model_internal",
+                        "left": left,
+                        "right": right,
+                        "reason": "prefer/avoid widersprechen sich",
+                    })
+
+        try:
+            mem = memory
+            if mem is None:
+                from memory import get_memory
+
+                mem = get_memory()
+        except Exception as exc:
+            log.debug("Contradiction memory lookup skipped: %s", exc)
+            return contradictions[:12]
+
+        for entry in self.relevant_preferences(limit=12, min_confidence=0.6):
+            fact_key = self._preference_fact_key(entry)
+            record = mem.get_fact_record(fact_key)
+            if not record:
+                continue
+            mem_value = (record.get("value") or "").strip()
+            pref_value = str(entry.get("value") or "").strip()
+            if (
+                mem_value
+                and pref_value
+                and SelfModel._values_semantically_conflict(pref_value, mem_value)
+            ):
+                contradictions.append({
+                    "kind": "self_model_vs_memory",
+                    "preference": entry,
+                    "fact_key": fact_key,
+                    "memory_value": mem_value,
+                    "reason": "Self-Model-Präferenz widerspricht Memory-Fakt",
+                })
+
+        memory_facts = {}
+        try:
+            memory_facts = mem.all_facts()
+        except Exception as exc:
+            log.debug("Contradiction all_facts skipped: %s", exc)
+
+        for avoid in avoids:
+            avoid_value = str(avoid.get("value") or "").strip()
+            if not avoid_value:
+                continue
+            avoid_norm = self._normalize_compare_value(avoid_value)
+            for fact_key, fact_value in memory_facts.items():
+                lowered_key = (fact_key or "").lower()
+                if not (
+                    lowered_key.startswith("pref.")
+                    or lowered_key.startswith("definition.")
+                ):
+                    continue
+                if self._normalize_compare_value(fact_value) == avoid_norm:
+                    contradictions.append({
+                        "kind": "avoid_vs_memory_fact",
+                        "avoid": avoid,
+                        "fact_key": fact_key,
+                        "memory_value": fact_value,
+                        "reason": "vermiedene Präferenz ist als Fakt gespeichert",
+                    })
+                elif self._values_semantically_conflict(avoid_value, fact_value):
+                    contradictions.append({
+                        "kind": "avoid_conflicts_memory_fact",
+                        "avoid": avoid,
+                        "fact_key": fact_key,
+                        "memory_value": fact_value,
+                        "reason": "avoid widerspricht Memory-Fakt",
+                    })
+
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in contradictions:
+            signature = json.dumps(
+                {
+                    "kind": item.get("kind"),
+                    "fact_key": item.get("fact_key"),
+                    "left": (item.get("left") or item.get("preference") or {}).get("value"),
+                    "right": (item.get("right") or item.get("avoid") or {}).get("value"),
+                    "memory_value": item.get("memory_value"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            if signature in seen:
+                continue
+            seen.add(signature)
+            deduped.append(item)
+        return deduped[:12]
 
 
 _model: Optional[SelfModel] = None

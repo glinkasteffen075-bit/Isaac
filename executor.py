@@ -115,6 +115,7 @@ class TaskStatus(Enum):
 class TaskType(Enum):
     CHAT       = "chat"
     SEARCH     = "search"
+    RESEARCH   = "research"
     ANALYSIS   = "analysis"
     TRANSLATE  = "translate"
     CODE       = "code"
@@ -450,6 +451,8 @@ class Executor:
                 await self._execute_code(task)
             elif task.typ == TaskType.SEARCH:
                 await self._execute_search(task)
+            elif task.typ == TaskType.RESEARCH:
+                await self._execute_research(task)
             elif task.typ in (TaskType.BROADCAST, TaskType.SPLIT,
                               TaskType.PIPELINE):
                 await self._execute_multi_ki(task)
@@ -946,6 +949,50 @@ class Executor:
         task.score         = self.logic.evaluate(antwort, task.prompt, task.id)
         task.log(f"Suche: {len(result.hits)} Hits aus {result.quellen}")
 
+    async def _execute_research(self, task: Task):
+        """Tiefere Web-Recherche: mehr Engines, Volltext, Quellen-Synthese."""
+        task.log("Recherche gestartet")
+        used_tool_ids: set[str] = set()
+        tool_context, _ = await self._maybe_use_tool(task, task.prompt, iteration=0, used_tool_ids=used_tool_ids)
+        search = self._get_search()
+        query = task.prompt
+        for prefix in ("recherche:", "recherchiere:"):
+            if query.lower().startswith(prefix):
+                query = query.split(":", 1)[1].strip()
+                break
+        result = await search.search(
+            query,
+            max_hits=15,
+            load_fulltext=True,
+            engines=["ddg", "brave", "wikipedia", "searxng", "reddit", "arxiv", "github"],
+        )
+        task.progress = 0.65
+        self._notify(task)
+
+        kontext = result.als_kontext(max_hits=12)
+        synth_prompt = (
+            f"Führe eine eigenständige Web-Recherche durch und beantworte: {query}\n\n"
+            f"Recherche-Ergebnisse:\n{kontext}\n\n"
+            "Strukturiere die Antwort mit:\n"
+            "1) Kurzfassung\n2) Kernerkenntnisse\n3) Quellenliste (URL/Titel)\n"
+            "Markiere Unsicherheiten explizit."
+        )
+        if tool_context:
+            synth_prompt = f"{synth_prompt}\n\nZusätzlicher Tool-Kontext:\n{tool_context}"
+        antwort, prov = await self.relay.ask_with_fallback(
+            synth_prompt,
+            system=(
+                "Du bist ein Recherche-Analyst. Nutze nur die gelieferten Quellen, "
+                "halluziniere keine Fakten, und nenne Unsicherheiten."
+            ),
+            task_id=task.id,
+        )
+        task.antwort = antwort
+        task.provider_used = prov
+        task.status = TaskStatus.DONE
+        task.score = self.logic.evaluate(antwort, task.prompt, task.id)
+        task.log(f"Recherche: {len(result.hits)} Hits aus {result.quellen}")
+
     # ── Multi-KI-Task ─────────────────────────────────────────────────────────
     async def _execute_multi_ki(self, task: Task):
         """Verteilt Task auf mehrere KI-Instanzen."""
@@ -1052,57 +1099,34 @@ class Executor:
 
     # ── File-Task ────────────────────────────────────────────────────────────
     async def _execute_file(self, task: Task):
-        ctx = isaac_ctx("Executor", f"Datei-Op: task {task.id}")
-        prompt_lower = task.prompt.lower()
-        full_access = bool(get_config().filesystem_full_access)
-        wants_write = "schreibe" in prompt_lower or "write" in prompt_lower
-        wants_delete = any(token in prompt_lower for token in ("lösche", "loesche", "delete", "entferne"))
+        from file_access import parse_file_command, execute_file_command
 
-        if wants_write:
+        ctx = isaac_ctx("Executor", f"Datei-Op: task {task.id}")
+        cmd = parse_file_command(task.prompt)
+        if not cmd:
+            task.antwort = (
+                "[FILE] Befehl nicht erkannt.\n"
+                "Beispiele:\n"
+                "  lese: workspace/notiz.txt\n"
+                "  datei: read isaac_core.py\n"
+                "  datei: list workspace\n"
+                "  datei: write workspace/out.txt inhalt: Hallo\n"
+                "  datei: info config.py"
+            )
+            task.status = TaskStatus.FAILED
+            return
+
+        op = (cmd.operation or "read").lower()
+        if op in {"write", "append"}:
             self.gate.require("file_write", ctx)
-        elif wants_delete:
+        elif op == "delete":
             self.gate.require("file_delete", ctx)
         else:
             self.gate.require("file_read", ctx)
 
-        pfad_match = re.search(r"[\"']([^\"']+)[\"']", task.prompt)
-        if not pfad_match:
-            task.antwort = "[FILE] Pfad nicht erkannt"
-            task.status = TaskStatus.FAILED
-            return
-
-        try:
-            raw_path = Path(os.path.expanduser(pfad_match.group(1).strip()))
-            candidate = (raw_path if raw_path.is_absolute() else (WORKSPACE / raw_path)).resolve()
-            workspace_root = WORKSPACE.resolve()
-            if not full_access and not candidate.is_relative_to(workspace_root):
-                task.antwort = "[FILE] Zugriff außerhalb des Workspace blockiert"
-                task.status = TaskStatus.FAILED
-                return
-        except Exception:
-            task.antwort = "[FILE] Ungültiger Pfad"
-            task.status = TaskStatus.FAILED
-            return
-
-        if wants_write:
-            content_match = re.search(r'(?:inhalt|content)\s*:\s*(.+)$', task.prompt, re.IGNORECASE | re.S)
-            if not content_match:
-                task.antwort = "[FILE] Kein Schreibinhalt gefunden. Nutze: inhalt: ..."
-                task.status = TaskStatus.FAILED
-                return
-            candidate.parent.mkdir(parents=True, exist_ok=True)
-            candidate.write_text(content_match.group(1).strip(), encoding="utf-8")
-            task.antwort = f"[FILE] Gespeichert: {candidate if full_access else candidate.relative_to(workspace_root)}"
-            task.status = TaskStatus.DONE
-            return
-
-        if candidate.exists() and candidate.is_file():
-            task.antwort = candidate.read_text(encoding="utf-8", errors="replace")[:4000]
-            task.status = TaskStatus.DONE
-            return
-
-        task.antwort = "[FILE] Datei nicht gefunden"
-        task.status = TaskStatus.FAILED
+        antwort, ok = execute_file_command(cmd)
+        task.antwort = antwort
+        task.status = TaskStatus.DONE if ok else TaskStatus.FAILED
 
     # ── Sub-Tasks ─────────────────────────────────────────────────────────────
     async def _execute_sub_tasks(self, parent: Task,

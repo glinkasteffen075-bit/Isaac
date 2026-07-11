@@ -46,6 +46,11 @@ def _is_port_in_use(host: str, port: int) -> bool:
         return False
 
 
+def is_localhost_request(remote: str) -> bool:
+    """Dashboard-Resume/Checkpoints nur von localhost (Phase 3.4.3)."""
+    return (remote or "").strip() in {"127.0.0.1", "::1", "localhost", ""}
+
+
 def _request_json(request):
     async def _inner():
         try:
@@ -315,6 +320,8 @@ class MonitorServer:
             "filesystem_full_access": bool(getattr(self.cfg, "filesystem_full_access", False)),
             "browser_automation": bool(getattr(self.cfg, "browser_automation", False)),
             "browser_external_sites": bool(getattr(self.cfg, "browser_external_sites", False)),
+            "auto_provision_providers": bool(getattr(self.cfg, "auto_provision_providers", True)),
+            "auto_provision_all_providers": bool(getattr(self.cfg, "auto_provision_all_providers", True)),
             "free_only_providers": bool(getattr(self.cfg, "free_only_providers", False)),
             "multi_tool_mode": bool(getattr(self.cfg, "multi_tool_mode", False)),
         }
@@ -334,6 +341,8 @@ class MonitorServer:
             "gate":        self.gate.status_dict(),
             "running":     self.executor.running_tasks(),
             "directives":  self._get_directives(),
+            "open_questions": self._get_open_questions(),
+            "regelwerk":   self._get_regelwerk_status(),
             "empathie":    empathie_status,
             "watchdog":    watchdog_status,
             "blacklist":   blacklist_status,
@@ -344,6 +353,20 @@ class MonitorServer:
     def _get_directives(self) -> list[dict]:
         return [{"id": d.id, "text": d.text, "priority": d.priority}
                 for d in self.gate.active_directives()]
+
+    def _get_open_questions(self) -> list[dict]:
+        try:
+            from regelwerk import get_regelwerk
+            return get_regelwerk().open_questions_dict()
+        except Exception:
+            return []
+
+    def _get_regelwerk_status(self) -> dict:
+        try:
+            from regelwerk import get_regelwerk
+            return get_regelwerk().status()
+        except Exception:
+            return {}
 
     async def _metric_pusher(self):
         interval = self.cfg.monitor.push_interval
@@ -680,6 +703,29 @@ class DashboardHTTPServer:
                 except PermissionError as e:
                     return web.json_response({"ok": False, "error": str(e)}, status=403)
 
+            async def browser_provider_token(request):
+                data = await _request_json(request)
+                try:
+                    _ensure_local_owner_request(request, "browser_provider_token")
+                    from browser import get_browser
+                    provider_id = (data.get("provider_id") or "groq").strip().lower() or "groq"
+                    auto = bool(data.get("auto"))
+                    browser = get_browser()
+                    if auto:
+                        result = await browser.auto_provision_providers(
+                            provider_ids=data.get("provider_ids") or None,
+                            provision_all=bool(data.get("all", True)),
+                        )
+                    else:
+                        result = await browser.provision_provider_token(
+                            provider_id=provider_id,
+                            secret_ref=(data.get("secret_ref") or "").strip(),
+                            key_name=(data.get("key_name") or "Isaac").strip() or "Isaac",
+                        )
+                    return web.json_response(result, status=200 if result.get("ok") else 400)
+                except PermissionError as e:
+                    return web.json_response({"ok": False, "error": str(e)}, status=403)
+
 
             async def mcp_capabilities(request):
                 return web.json_response({"ok": True, "capabilities": mcp.capabilities()})
@@ -726,7 +772,9 @@ class DashboardHTTPServer:
                         )
                     args["owner_override"] = True
                     args["override_reason"] = reason
-                result = mcp.invoke_tool(name, args)
+                from tool_runtime import invoke_mcp_tool
+
+                result = await invoke_mcp_tool(name, args)
                 return web.json_response(result, status=200 if result.get("ok") else 400)
 
             async def mcp_jsonrpc(request):
@@ -804,6 +852,18 @@ class DashboardHTTPServer:
             async def updater_status_api(request):
                 return web.json_response(updater_status())
 
+            async def regelwerk_open_questions(request):
+                from regelwerk import get_regelwerk
+
+                limit = max(1, min(int(request.rel_url.query.get("limit", "20")), 50))
+                rw = get_regelwerk()
+                return web.json_response({
+                    "ok": True,
+                    "count": len(rw.offene_fragen()),
+                    "questions": rw.open_questions_dict(limit=limit),
+                    "status": rw.status(),
+                })
+
             async def governance_constitution(request):
                 from constitution import get_constitution
                 c = get_constitution()
@@ -865,6 +925,11 @@ class DashboardHTTPServer:
                 })
 
             async def task_checkpoints(request):
+                if not is_localhost_request(request.remote):
+                    return web.json_response(
+                        {"ok": False, "error": "task checkpoints nur von localhost"},
+                        status=403,
+                    )
                 task_id = (request.rel_url.query.get("task_id") or "").strip()
                 if not task_id:
                     return web.json_response({"ok": False, "error": "task_id fehlt"}, status=400)
@@ -876,8 +941,7 @@ class DashboardHTTPServer:
                 })
 
             async def task_resume(request):
-                remote = (request.remote or "").strip()
-                if remote not in {"127.0.0.1", "::1", "localhost", ""}:
+                if not is_localhost_request(request.remote):
                     return web.json_response(
                         {"ok": False, "error": "task resume nur von localhost"},
                         status=403,
@@ -907,6 +971,8 @@ class DashboardHTTPServer:
                     'live_tools': await __import__('tool_runtime').list_live_tool_interfaces(),
                     'task_tool_states': get_task_tool_state_store().export_for_tasks([t.get('id') for t in get_executor().all_tasks(50)]),
                     'audit': AuditLog.recent(20),
+                    'open_questions': mon._get_open_questions() if hasattr(mon, '_get_open_questions') else [],
+                    'regelwerk': mon._get_regelwerk_status() if hasattr(mon, '_get_regelwerk_status') else {},
                 })
 
             app = web.Application()
@@ -934,6 +1000,7 @@ class DashboardHTTPServer:
             app.router.add_get("/api/browser/state", browser_state)
             app.router.add_post("/api/browser/activate_site", browser_activate_site)
             app.router.add_post("/api/browser/openrouter_token", browser_openrouter_token)
+            app.router.add_post("/api/browser/provider_token", browser_provider_token)
             app.router.add_get("/api/mcp/capabilities", mcp_capabilities)
             app.router.add_get("/api/mcp/resources", mcp_resources)
             app.router.add_post("/api/mcp/resource/read", mcp_read_resource)
@@ -942,6 +1009,7 @@ class DashboardHTTPServer:
             app.router.add_get("/api/mcp/tools", mcp_tools)
             app.router.add_post("/api/mcp/tools/invoke", mcp_invoke_tool)
             app.router.add_post("/api/mcp/jsonrpc", mcp_jsonrpc)
+            app.router.add_get("/api/regelwerk/open-questions", regelwerk_open_questions)
             app.router.add_get("/api/governance/constitution", governance_constitution)
             app.router.add_get("/api/governance/self-model", governance_self_model)
             app.router.add_get("/api/governance/development", governance_development)

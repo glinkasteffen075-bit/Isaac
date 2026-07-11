@@ -155,6 +155,7 @@ class HermesComputerUseAdapter:
     ALLOWED_ACTIONS = {
         "screenshot", "browser_navigate", "browser_click", "browser_type", "browser_extract",
         "file_read", "file_write", "shell_command", "wait", "observe",
+        "clipboard_get", "clipboard_set", "open", "tap", "type_text", "swipe",
     }
     BLOCKED_ACTIONS = {"file_delete", "credential_access", "privilege_escalation", "background_persist"}
 
@@ -175,6 +176,48 @@ class HermesComputerUseAdapter:
             if any(fragment in cmd for fragment in blocked_fragments):
                 return ToolResult(ok=False, error="shell_command violates safety policy")
         return ToolResult(ok=True, output={"validated": True, "action": action.action, "scope": action.permission.allowed_scope})
+
+    async def run(self, action: ComputerAction, dry_run: bool = False) -> ToolResult:
+        validation = self.validate(action)
+        if not validation.ok:
+            return validation
+        from computer_use import AgentAction, get_computer_use, computer_use_enabled
+
+        if not computer_use_enabled():
+            return ToolResult(ok=False, error="Computer-Use ist deaktiviert")
+        mapped = self._map_action(action)
+        if not mapped:
+            return ToolResult(ok=False, error=f"Nicht abbildbare Aktion: {action.action}")
+        result = await get_computer_use().execute(mapped, dry_run=dry_run)
+        return ToolResult(ok=bool(result.get("ok")), output=result, error=result.get("error", ""))
+
+    @staticmethod
+    def _map_action(action: ComputerAction) -> "AgentAction | None":
+        from computer_use import AgentAction
+
+        name = (action.action or "").strip().lower()
+        params = dict(action.params or {})
+        if name == "shell_command":
+            return AgentAction("shell", {"command": params.get("command", "")})
+        if name == "observe":
+            return AgentAction("observe")
+        if name == "screenshot":
+            return AgentAction("screenshot", {"path": params.get("path", "")})
+        if name == "wait":
+            return AgentAction("wait", {"seconds": float(params.get("seconds", 1.0))})
+        if name == "clipboard_get":
+            return AgentAction("clipboard_get")
+        if name == "clipboard_set":
+            return AgentAction("clipboard_set", {"text": params.get("text", "")})
+        if name == "open":
+            return AgentAction("open", {"target": params.get("target", "")})
+        if name == "tap":
+            return AgentAction("tap", {"x": params.get("x", 0), "y": params.get("y", 0)})
+        if name == "type_text":
+            return AgentAction("type_text", {"text": params.get("text", "")})
+        if name == "swipe":
+            return AgentAction("swipe", params)
+        return None
 
 
 class HermesBrowserAdapter:

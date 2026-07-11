@@ -26,5 +26,8 @@ if grep -q '^ACTIVE_PROVIDER=ollama' .env 2>/dev/null; then
   echo "[Isaac] Hinweis: Für ACTIVE_PROVIDER=ollama muss Ollama separat laufen."
 fi
 
+echo "[Isaac] Optional für Live-Agent (Screenshot/Clipboard):"
+echo "  pkg install termux-api"
+echo "  (Termux:API-App aus F-Droid/Google Play installieren)"
 echo "[Isaac] Termux-Installation abgeschlossen."
 echo "Start:  cd $TARGET_DIR && bash run_isaac.sh"

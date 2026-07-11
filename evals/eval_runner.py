@@ -45,4 +45,9 @@ def run_suite(name: str) -> dict:
 
 
 if __name__ == "__main__":
-    print(json.dumps(run_all(), ensure_ascii=False, indent=2))
+    import sys
+
+    result = run_all()
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if not result.get("ok"):
+        sys.exit(1)

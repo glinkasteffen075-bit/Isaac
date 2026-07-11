@@ -4,7 +4,8 @@ set -euo pipefail
 ISAAC_DIR="${1:-$(cd "$(dirname "$0")" && pwd)}"
 cd "$ISAAC_DIR"
 
-mkdir -p logs runtime workspace data
+mkdir -p logs runtime workspace data workspace/screenshots
+chmod -R u+rwX logs runtime workspace data 2>/dev/null || true
 [ -f .env ] || cp .env.example .env
 
 export PYTHONUNBUFFERED=1
@@ -27,6 +28,7 @@ echo "[Isaac] Startpfad: $ISAAC_DIR"
 echo "[Isaac] Python: $($PY --version 2>&1 || true)"
 echo "[Isaac] Provider: ${ACTIVE_PROVIDER:-$(grep -m1 '^ACTIVE_PROVIDER=' .env 2>/dev/null | cut -d= -f2 || echo groq)}"
 echo "[Isaac] Dashboard: http://127.0.0.1:${MONITOR_HTTP_PORT}"
+echo "[Isaac] Computer-Use: agent: observe | screenshot | shell … (termux-api empfohlen)"
 echo "[Isaac] Starte isaac_core.py …"
 
 if command -v termux-open-url >/dev/null 2>&1; then

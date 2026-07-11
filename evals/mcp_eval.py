@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 from mcp_jsonrpc import get_jsonrpc_handler
 from mcp_registry import get_mcp_registry, MCP_RESOURCE_PRIVILEGES, MCP_TOOL_PRIVILEGES
 
@@ -42,6 +49,22 @@ def run() -> dict:
         "detail": {"has_content": bool((tool_call or {}).get("result", {}).get("content"))},
     })
 
+    resource_read = handler.dispatch({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "resources/read",
+        "params": {"uri": "resource://constitution"},
+    })
+    resource_text = ""
+    contents = (resource_read or {}).get("result", {}).get("contents") or []
+    if contents:
+        resource_text = str(contents[0].get("text", ""))
+    cases.append({
+        "name": "jsonrpc_resources_read",
+        "ok": bool(resource_read and contents and "constitution" in resource_text.lower()),
+        "detail": {"bytes": len(resource_text)},
+    })
+
     for uri in (
         "resource://constitution",
         "resource://self-model",
@@ -81,6 +104,15 @@ def run() -> dict:
             "name": "query_memory_tool",
             "ok": bool(query.get("ok")),
             "detail": {"has_output": "output" in query},
+        }
+    )
+
+    unknown = reg.invoke_tool("isaac.does_not_exist", {})
+    cases.append(
+        {
+            "name": "unknown_tool_rejected",
+            "ok": not unknown.get("ok") and "Unknown MCP tool" in str(unknown.get("error", "")),
+            "detail": {"error": unknown.get("error", "")},
         }
     )
 

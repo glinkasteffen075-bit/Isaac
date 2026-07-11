@@ -36,6 +36,7 @@ class BackgroundState:
     letzter_dump:       float = 0.0
     letzter_decay:      float = 0.0
     letzter_ideen:      float = 0.0
+    letzter_provider:   float = 0.0
     zyklen:             int   = 0
     dialoge_gesamt:     int   = 0
     diskussionen_gesamt: int  = 0
@@ -57,6 +58,7 @@ class BackgroundLoop:
 
     # MOBILE: Alle Intervalle deutlich größer
     HEALTH_INTERVAL     = 120      # 2 Minuten
+    PROVIDER_INTERVAL   = 1800     # 30 Minuten
     KNOWLEDGE_INTERVAL  = 600      # 10 Minuten
     IDEEN_INTERVAL      = 900      # 15 Minuten
     KI_DIALOG_INTERVAL  = 1200     # 20 Minuten
@@ -174,6 +176,14 @@ class BackgroundLoop:
                     await self._health_check()
                     self.state.letzter_health = now
 
+                if (
+                    akku["plugged"]
+                    and self._kernel
+                    and now - self.state.letzter_provider > self._intervall(self.PROVIDER_INTERVAL, akku)
+                ):
+                    await self._provider_provision_check()
+                    self.state.letzter_provider = now
+
                 # Knowledge Check (nur bei Ladegerät)
                 if akku["plugged"] and now - self.state.letzter_knowledge > self.KNOWLEDGE_INTERVAL:
                     await self._knowledge_check()
@@ -216,6 +226,14 @@ class BackgroundLoop:
                 await asyncio.sleep(60)
 
     # ── Health Check ─────────────────────────────────────────────────────────
+    async def _provider_provision_check(self):
+        try:
+            if not self._kernel or not hasattr(self._kernel, "maintain_provider_keys"):
+                return
+            await self._kernel.maintain_provider_keys()
+        except Exception as e:
+            log.debug("Provider-Provisioning-Hintergrundzyklus: %s", e)
+
     async def _health_check(self):
         try:
             from relay import get_relay

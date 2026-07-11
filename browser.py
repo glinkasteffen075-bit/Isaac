@@ -43,6 +43,110 @@ log = logging.getLogger("Isaac.Browser")
 # Credentials-Datei (verschlüsselt gespeichert)
 CREDS_PATH = DATA_DIR / "browser_creds.json"
 
+# Browser-Flows zum automatischen API-Key-Provisioning
+PROVIDER_PROVISION_SPECS: dict[str, dict[str, Any]] = {
+    "openrouter": {
+        "secret_ref": "OPENROUTER_API_KEY",
+        "keys_url": "https://openrouter.ai/settings/keys",
+        "instance_id": "openrouter",
+        "label": "OpenRouter",
+        "token_prefixes": ("sk-or-", "sk-"),
+        "create_labels": [
+            "Create Key", "New Key", "Create API Key", "Generate Key", "New Token",
+        ],
+        "confirm_labels": ["Create", "Generate", "Save", "Submit"],
+    },
+    "groq": {
+        "secret_ref": "GROQ_API_KEY",
+        "keys_url": "https://console.groq.com/keys",
+        "instance_id": "groq",
+        "label": "Groq",
+        "token_prefixes": ("gsk_",),
+        "create_labels": [
+            "Create API Key", "Create Key", "New API Key", "Generate API Key", "New Key",
+        ],
+        "confirm_labels": ["Create", "Generate", "Save", "Submit", "Create API Key"],
+    },
+    "openai": {
+        "secret_ref": "OPENAI_API_KEY",
+        "keys_url": "https://platform.openai.com/api-keys",
+        "instance_id": "openai",
+        "label": "OpenAI",
+        "token_prefixes": ("sk-",),
+        "create_labels": [
+            "Create new secret key", "Create API key", "Create key", "+ Create new secret key",
+        ],
+        "confirm_labels": ["Create secret key", "Create", "Save", "Submit"],
+    },
+    "mistral": {
+        "secret_ref": "MISTRAL_API_KEY",
+        "keys_url": "https://console.mistral.ai/api-keys/",
+        "instance_id": "mistral",
+        "label": "Mistral",
+        "token_prefixes": (),
+        "create_labels": ["Create API key", "Create key", "New API key", "Generate key"],
+        "confirm_labels": ["Create", "Generate", "Save", "Submit"],
+    },
+    "together": {
+        "secret_ref": "TOGETHER_API_KEY",
+        "keys_url": "https://api.together.xyz/settings/api-keys",
+        "instance_id": "together",
+        "label": "Together",
+        "token_prefixes": (),
+        "create_labels": ["Create API key", "Create key", "New API key", "Add key"],
+        "confirm_labels": ["Create", "Generate", "Save", "Submit"],
+    },
+    "perplexity": {
+        "secret_ref": "PERPLEXITY_API_KEY",
+        "keys_url": "https://www.perplexity.ai/settings/api",
+        "instance_id": "perplexity",
+        "label": "Perplexity",
+        "token_prefixes": ("pplx-",),
+        "create_labels": ["Generate", "Create API key", "Create key", "New API key"],
+        "confirm_labels": ["Generate", "Create", "Save", "Submit"],
+    },
+    "huggingface": {
+        "secret_ref": "HF_API_KEY",
+        "keys_url": "https://huggingface.co/settings/tokens",
+        "instance_id": "huggingface",
+        "label": "HuggingFace",
+        "token_prefixes": ("hf_",),
+        "create_labels": ["New token", "Create new token", "Add new token", "Create token"],
+        "confirm_labels": ["Create token", "Create", "Save", "Submit"],
+    },
+    "anthropic": {
+        "secret_ref": "ANTHROPIC_API_KEY",
+        "keys_url": "https://console.anthropic.com/settings/keys",
+        "instance_id": "anthropic",
+        "label": "Anthropic",
+        "token_prefixes": ("sk-ant-",),
+        "create_labels": ["Create Key", "Create API key", "New Key", "Generate Key"],
+        "confirm_labels": ["Create", "Generate", "Save", "Submit"],
+    },
+    "gemini": {
+        "secret_ref": "GOOGLE_API_KEY",
+        "keys_url": "https://aistudio.google.com/app/apikey",
+        "instance_id": "gemini",
+        "label": "Gemini",
+        "token_prefixes": ("AIza",),
+        "create_labels": ["Create API key", "Get API key", "Create key"],
+        "confirm_labels": ["Create", "Create API key", "Save", "Submit"],
+    },
+    "cohere": {
+        "secret_ref": "COHERE_API_KEY",
+        "keys_url": "https://dashboard.cohere.com/api-keys",
+        "instance_id": "cohere",
+        "label": "Cohere",
+        "token_prefixes": (),
+        "create_labels": ["Create API key", "Create key", "Generate API key", "New API key"],
+        "confirm_labels": ["Create", "Generate", "Save", "Submit"],
+    },
+}
+
+
+def provisionable_provider_ids() -> tuple[str, ...]:
+    return tuple(PROVIDER_PROVISION_SPECS.keys())
+
 
 # ── Login-Profil ───────────────────────────────────────────────────────────────
 @dataclass
@@ -536,14 +640,257 @@ class BrowserManager:
         except Exception:
             return "[Keine Antwort extrahiert]"
 
-    def _extract_candidate_secret(self, text: str) -> str:
+    def _extract_candidate_secret(self, text: str, prefixes: tuple[str, ...] = ()) -> str:
         if not text:
             return ""
+        if prefixes:
+            for prefix in prefixes:
+                match = re.search(rf"{re.escape(prefix)}[A-Za-z0-9_\-]{{10,}}", text)
+                if match:
+                    return match.group(0)
         candidates = re.findall(r"[A-Za-z0-9_\-]{20,}", text)
         if not candidates:
             return ""
         candidates.sort(key=len, reverse=True)
         return candidates[0]
+
+    def _refresh_relay_after_provision(self, provider_id: str):
+        try:
+            from relay import get_relay
+
+            relay = get_relay()
+            relay.refresh_provider_config()
+            health = relay._health.get(provider_id)
+            if health:
+                health.consecutive_failures = 0
+                health.last_error = ""
+        except Exception as e:
+            log.warning("Relay-Refresh nach Provisioning fehlgeschlagen: %s", e)
+
+    def _connect_provisioned_token(self, secret_ref: str, provider_id: str, token: str) -> None:
+        get_secrets_store().set_secret(secret_ref, token, kind="browser_import")
+        current = self.cfg.providers.get(provider_id)
+        if not current:
+            return
+        try:
+            self.cfg.upsert_provider(
+                {
+                    "provider_id": provider_id,
+                    "display_name": current.display_name,
+                    "provider_type": current.provider_type,
+                    "base_url": current.base_url,
+                    "model": current.model,
+                    "enabled": True,
+                    "is_default": current.is_default or provider_id == self.cfg.relay.primary_provider,
+                    "timeout": current.timeout,
+                    "rpm": current.rpm,
+                    "tpm": current.tpm,
+                    "api_key": token,
+                    "api_key_ref": secret_ref,
+                }
+            )
+        except Exception:
+            current.api_key = token
+            if not current.api_key_ref:
+                current.api_key_ref = secret_ref
+        self.cfg = get_config()
+        self._refresh_relay_after_provision(provider_id)
+
+    async def _click_first_label(self, page, labels: list[str], *, timeout: int = 2500, pick: str = "first") -> bool:
+        for label in labels:
+            try:
+                locator = page.get_by_text(label, exact=False)
+                target = locator.first if pick == "first" else locator.last
+                await target.click(timeout=timeout)
+                return True
+            except Exception:
+                continue
+        return False
+
+    async def _extract_tokens_from_page(self, page, prefixes: tuple[str, ...] = ()) -> list[str]:
+        candidates: list[str] = []
+        selectors = ["code", "input[readonly]", "input[type='text']", "textarea", "[data-token]"]
+        for selector in selectors:
+            try:
+                loc = page.locator(selector)
+                count = await loc.count()
+                for idx in range(min(count, 8)):
+                    node = loc.nth(idx)
+                    text = ""
+                    try:
+                        text = await node.input_value(timeout=500)
+                    except Exception:
+                        try:
+                            text = await node.inner_text(timeout=500)
+                        except Exception:
+                            text = ""
+                    token = self._extract_candidate_secret(text, prefixes=prefixes)
+                    if token:
+                        candidates.append(token)
+            except Exception:
+                continue
+        return candidates
+
+    _FREE_PROVIDER_IDS = frozenset({
+        "ollama", "groq", "openrouter", "huggingface", "together", "perplexity", "mistral",
+    })
+
+    def _provision_candidate_allowed(self, provider_id: str) -> bool:
+        cfg = self.cfg.providers.get((provider_id or "").strip().lower())
+        if not cfg or not cfg.enabled:
+            return False
+        if getattr(self.cfg, "free_only_providers", False):
+            return (provider_id or "").strip().lower() in self._FREE_PROVIDER_IDS
+        return True
+
+    def providers_needing_provision(self, provider_ids: Optional[list[str]] = None) -> list[str]:
+        targets = provider_ids or []
+        if not targets:
+            primary = (self.cfg.relay.primary_provider or "").strip()
+            if primary:
+                targets.append(primary)
+            for pid in self.cfg.providers.keys():
+                if pid not in targets and self._provision_candidate_allowed(pid):
+                    targets.append(pid)
+
+        missing: list[str] = []
+        for pid in targets:
+            spec = PROVIDER_PROVISION_SPECS.get((pid or "").strip().lower())
+            if not spec:
+                continue
+            cfg = self.cfg.providers.get(pid)
+            if not cfg or not self._provision_candidate_allowed(pid):
+                continue
+            ptype = (cfg.provider_type or "").lower()
+            if ptype in {"ollama", "local_ollama"}:
+                continue
+            if not (cfg.api_key or "").strip():
+                missing.append(pid)
+        return missing
+
+    async def provision_provider_token(
+        self,
+        provider_id: str,
+        secret_ref: str = "",
+        key_name: str = "Isaac",
+    ) -> dict[str, Any]:
+        pid = (provider_id or "").strip().lower()
+        spec = PROVIDER_PROVISION_SPECS.get(pid)
+        if not spec:
+            return {"ok": False, "error": f"Kein Browser-Provisioning für Provider '{provider_id}'"}
+
+        ref = (secret_ref or spec["secret_ref"]).strip() or spec["secret_ref"]
+        keys_url = spec["keys_url"]
+        instance_id = spec["instance_id"]
+        prefixes = tuple(spec.get("token_prefixes") or ())
+        create_labels = list(spec.get("create_labels") or [])
+        confirm_labels = list(spec.get("confirm_labels") or ["Create", "Generate", "Save", "Submit"])
+
+        plan = [
+            {"action": "goto", "url": keys_url},
+            {"action": "wait", "seconds": 1.2},
+        ]
+        result = await self.run_flow(instance_id, keys_url, plan, name=spec.get("label") or pid)
+        if not result.get("ok"):
+            return result
+
+        inst = self._instances.get(instance_id)
+        if not inst or not inst.page:
+            return {"ok": False, "error": f"{spec.get('label', pid)}-Instanz nicht verfügbar"}
+
+        page = inst.page
+        clicked = await self._click_first_label(page, create_labels)
+        if not clicked:
+            return {
+                "ok": False,
+                "error": f"{spec.get('label', pid)}-Key-Button nicht gefunden (Login nötig?)",
+                "current_url": page.url,
+                "provider_id": pid,
+            }
+
+        try:
+            await asyncio.sleep(1.0)
+            for selector in ["input[name*=name]", "input[placeholder*=name]", "input[type='text']"]:
+                try:
+                    await page.locator(selector).first.fill(key_name, timeout=1500)
+                    break
+                except Exception:
+                    continue
+            await self._click_first_label(page, confirm_labels, timeout=1500, pick="last")
+            await asyncio.sleep(1.5)
+        except Exception as e:
+            return {
+                "ok": False,
+                "error": f"{spec.get('label', pid)}-Key-Dialog fehlgeschlagen: {e}",
+                "current_url": page.url,
+                "provider_id": pid,
+            }
+
+        candidates = await self._extract_tokens_from_page(page, prefixes=prefixes)
+        if not candidates:
+            return {
+                "ok": False,
+                "error": f"{spec.get('label', pid)}-Token konnte nicht extrahiert werden",
+                "current_url": page.url,
+                "provider_id": pid,
+            }
+
+        token = max(candidates, key=len)
+        self._connect_provisioned_token(ref, pid, token)
+        AuditLog.action("Browser", "provision_token", f"provider={pid}", level=40)
+        return {
+            "ok": True,
+            "provider_id": pid,
+            "secret_ref": ref,
+            "current_url": page.url,
+            "token_preview": token[:6] + "..." + token[-4:],
+        }
+
+    async def provision_groq_token(self, secret_ref: str = "GROQ_API_KEY", key_name: str = "Isaac") -> dict[str, Any]:
+        return await self.provision_provider_token("groq", secret_ref=secret_ref, key_name=key_name)
+
+    async def auto_provision_providers(
+        self,
+        provider_ids: Optional[list[str]] = None,
+        *,
+        provision_all: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        if not self.cfg.browser_automation or not self.cfg.browser_external_sites:
+            return {"ok": False, "error": "Browser-Automation deaktiviert", "results": []}
+        if not getattr(self.cfg, "auto_provision_providers", True):
+            return {"ok": False, "error": "Auto-Provisioning deaktiviert", "results": []}
+
+        missing = self.providers_needing_provision(provider_ids)
+        if not missing:
+            return {"ok": True, "message": "Keine fehlenden Provider-Keys", "results": [], "attempted": []}
+
+        try_all = (
+            provision_all
+            if provision_all is not None
+            else bool(getattr(self.cfg, "auto_provision_all_providers", True))
+        )
+
+        results: list[dict[str, Any]] = []
+        for pid in missing:
+            self.cfg = get_config()
+            result = await self.provision_provider_token(pid)
+            results.append(result)
+            if result.get("ok"):
+                log.info("Auto-Provisioning erfolgreich: %s", pid)
+                if not try_all:
+                    break
+            else:
+                log.warning("Auto-Provisioning fehlgeschlagen (%s): %s", pid, result.get("error", "unbekannt"))
+
+        ok_count = sum(1 for r in results if r.get("ok"))
+        ok = ok_count > 0
+        return {
+            "ok": ok,
+            "results": results,
+            "attempted": missing,
+            "provisioned": ok_count,
+            "failed": len(results) - ok_count,
+        }
 
     def _resolve_target(self, page, action: dict):
         selector = (action.get("selector") or "").strip()
@@ -637,103 +984,11 @@ class BrowserManager:
         }
 
     async def provision_openrouter_token(self, secret_ref: str = "OPENROUTER_API_KEY", key_name: str = "Isaac") -> dict[str, Any]:
-        plan = [
-            {"action": "goto", "url": "https://openrouter.ai/settings/keys"},
-            {"action": "wait", "seconds": 1.2},
-        ]
-        result = await self.run_flow("openrouter", "https://openrouter.ai/settings/keys", plan, name="OpenRouter")
-        if not result.get("ok"):
-            return result
-
-        inst = self._instances.get("openrouter")
-        if not inst or not inst.page:
-            return {"ok": False, "error": "OpenRouter-Instanz nicht verfügbar"}
-
-        page = inst.page
-        create_labels = ["Create Key", "New Key", "Create API Key", "Generate Key", "New Token"]
-        clicked = False
-        for label in create_labels:
-            try:
-                await page.get_by_text(label, exact=False).first.click(timeout=2500)
-                clicked = True
-                break
-            except Exception:
-                continue
-        if not clicked:
-            return {"ok": False, "error": "OpenRouter-Key-Button nicht gefunden", "current_url": page.url}
-
-        try:
-            await asyncio.sleep(1.0)
-            for selector in ["input[name*=name]", "input[placeholder*=name]", "input[type='text']"]:
-                try:
-                    await page.locator(selector).first.fill(key_name, timeout=1500)
-                    break
-                except Exception:
-                    continue
-            for label in ["Create", "Generate", "Save", "Submit"]:
-                try:
-                    await page.get_by_text(label, exact=False).last.click(timeout=1500)
-                    break
-                except Exception:
-                    continue
-            await asyncio.sleep(1.5)
-        except Exception as e:
-            return {"ok": False, "error": f"OpenRouter-Key-Dialog fehlgeschlagen: {e}", "current_url": page.url}
-
-        candidates: list[str] = []
-        selectors = ["code", "input[readonly]", "input[type='text']", "textarea", "[data-token]"]
-        for selector in selectors:
-            try:
-                loc = page.locator(selector)
-                count = await loc.count()
-                for idx in range(min(count, 5)):
-                    node = loc.nth(idx)
-                    text = ""
-                    try:
-                        text = await node.input_value(timeout=500)
-                    except Exception:
-                        try:
-                            text = await node.inner_text(timeout=500)
-                        except Exception:
-                            text = ""
-                    token = self._extract_candidate_secret(text)
-                    if token:
-                        candidates.append(token)
-            except Exception:
-                continue
-
-        if not candidates:
-            return {"ok": False, "error": "OpenRouter-Token konnte nicht extrahiert werden", "current_url": page.url}
-
-        token = max(candidates, key=len)
-        get_secrets_store().set_secret(secret_ref, token, kind="browser_import")
-        if secret_ref == "OPENROUTER_API_KEY":
-            try:
-                current = self.cfg.providers.get("openrouter")
-                if current:
-                    self.cfg.upsert_provider(
-                        {
-                            "provider_id": "openrouter",
-                            "display_name": current.display_name,
-                            "provider_type": current.provider_type,
-                            "base_url": current.base_url,
-                            "model": current.model,
-                            "enabled": current.enabled,
-                            "is_default": current.is_default,
-                            "timeout": current.timeout,
-                            "rpm": current.rpm,
-                            "tpm": current.tpm,
-                            "api_key": token,
-                        }
-                    )
-            except Exception:
-                self.cfg.providers["openrouter"].api_key = token
-        return {
-            "ok": True,
-            "secret_ref": secret_ref,
-            "current_url": page.url,
-            "token_preview": token[:6] + "..." + token[-4:],
-        }
+        return await self.provision_provider_token(
+            "openrouter",
+            secret_ref=secret_ref,
+            key_name=key_name,
+        )
 
     # ── Broadcast ─────────────────────────────────────────────────────────────
     async def broadcast(self, prompt: str,

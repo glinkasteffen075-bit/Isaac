@@ -40,6 +40,8 @@ CATEGORY_HINTS = {
 
 
 MCP_BRIDGE_URL = os.getenv("MCP_BRIDGE_URL", "http://127.0.0.1:8766")
+MCP_SOURCE = "mcp"
+_LEGACY_MCP_SOURCES = frozenset({MCP_SOURCE, "mcp_remote", "mcp_local"})
 
 
 def infer_category(prompt: str) -> str:
@@ -86,6 +88,93 @@ def _append_query(url: str, query_param: str, prompt: str) -> str:
     return f"{url}{joiner}{urlencode({query_param or 'q': prompt})}"
 
 
+def _normalize_mcp_url(url: str | None = None) -> str:
+    raw = (url or MCP_BRIDGE_URL).strip().rstrip("/")
+    if raw.endswith("/api/mcp"):
+        return raw[: -len("/api/mcp")]
+    return raw
+
+
+def resolve_mcp_tool_name(
+    prompt: str,
+    tools: list[dict],
+    *,
+    preferred_name: str = "",
+) -> str:
+    preferred = (preferred_name or "").strip()
+    if preferred:
+        return preferred
+    names = [str(tool.get("name", "")).strip() for tool in tools if tool.get("name")]
+    if not names:
+        return ""
+    prompt_l = (prompt or "").lower()
+    for marker, tool_name in (
+        ("wetter", "isaac.search_web"),
+        ("weather", "isaac.search_web"),
+        ("suche", "isaac.search_web"),
+        ("search", "isaac.search_web"),
+        ("browser", "isaac.run_browser_action"),
+        ("status", "isaac.task_status"),
+        ("audit", "isaac.audit_recent"),
+    ):
+        if marker in prompt_l and tool_name in names:
+            return tool_name
+    for name in names:
+        if name == "isaac.query_memory":
+            return name
+    return names[0]
+
+
+def _mcp_prompt_arguments(prompt: str, extra: dict | None = None) -> dict:
+    args = {"prompt": prompt, "query": prompt}
+    if extra:
+        args.update(extra)
+    return args
+
+
+async def invoke_mcp_tool(
+    name: str,
+    arguments: dict | None = None,
+    *,
+    mcp_url: str | None = None,
+    bridge: dict | None = None,
+) -> dict:
+    """Einheitlicher MCP-Tool-Pfad: Remote-Bridge zuerst, lokale Registry als Fallback."""
+    tool_name = (name or "").strip()
+    if not tool_name:
+        return error_result("MCP-Tool-Name fehlt", metadata={"source": MCP_SOURCE})
+
+    args = dict(arguments or {})
+    base_url = _normalize_mcp_url(mcp_url)
+    client: MCPClient | None = None
+    try:
+        if bridge is None:
+            client = MCPClient(base_url)
+            bridge = await discover_mcp_bridge(client)
+
+        if bridge.get("source") == "remote":
+            client = client or MCPClient(bridge.get("url") or base_url)
+            result = await client.invoke_tool(tool_name, args)
+            if result.get("ok"):
+                contracted = ensure_result_contract(result, source=MCP_SOURCE)
+                contracted["via"] = MCP_SOURCE
+                contracted["transport"] = result.get("transport", "jsonrpc")
+                contracted["url"] = getattr(client, "api_base", base_url)
+                return contracted
+
+        local = get_mcp_registry().invoke_tool(tool_name, args)
+        contracted = ensure_result_contract(local, source=MCP_SOURCE)
+        contracted["via"] = MCP_SOURCE
+        contracted["transport"] = "local"
+        contracted["url"] = base_url
+        return contracted
+    except Exception as exc:
+        return error_result(str(exc), metadata={"source": MCP_SOURCE, "tool": tool_name})
+    finally:
+        if client is not None:
+            await client.close()
+
+
 def _response_to_text(content_type: str, text: str) -> str:
     if 'application/json' in (content_type or '').lower():
         try:
@@ -123,21 +212,23 @@ async def _run_registry_tool(tool, prompt: str) -> dict:
         timeout = aiohttp.ClientTimeout(total=20)
         if tool.kind in ("api", "mcp"):
             if tool.kind == "mcp":
-                client = MCPClient(tool.base_url or MCP_BRIDGE_URL)
-                features = await discover_mcp_bridge(client)
-                tools = features.get("tools") or []
-                if tools:
-                    best = tools[0]
-                    result = await client.invoke_tool(best.get("name", ""), {"prompt": prompt, "query": prompt})
-                    ok = bool(result.get("ok"))
-                    reg.record(tool.tool_id, ok, f"mcp-run:{result.get('status_code', 200)}")
-                    return {
-                        "ok": ok,
-                        "content": _response_to_text("application/json", json.dumps(result, ensure_ascii=False)),
-                        "status_code": result.get("status_code", 200),
-                        "via": "mcp",
-                        "url": client.api_base,
-                    }
+                bridge = await discover_mcp_bridge(MCPClient(_normalize_mcp_url(tool.base_url)))
+                mcp_name = resolve_mcp_tool_name(
+                    prompt,
+                    bridge.get("tools") or [],
+                    preferred_name=str((tool.metadata or {}).get("mcp_tool_name", "")),
+                )
+                if not mcp_name:
+                    return {"ok": False, "error": "Kein MCP-Tool verfügbar", "via": MCP_SOURCE}
+                result = await invoke_mcp_tool(
+                    mcp_name,
+                    _mcp_prompt_arguments(prompt),
+                    mcp_url=bridge.get("url") or tool.base_url or MCP_BRIDGE_URL,
+                    bridge=bridge,
+                )
+                ok = bool(result.get("ok"))
+                reg.record(tool.tool_id, ok, f"mcp-run:{result.get('status_code', 200)}")
+                return result
             url = (tool.base_url.rstrip("/") + "/" + tool.endpoint.lstrip("/")) if tool.endpoint else tool.base_url
             url = _url_with_query_auth(url, row)
             method = (tool.method or "GET").upper()
@@ -248,6 +339,27 @@ async def list_live_tool_interfaces() -> dict:
     }
 
 
+def _procedure_hints_for_prompt(prompt: str) -> dict[str, float]:
+    try:
+        from memory import get_memory
+
+        hints: dict[str, float] = {}
+        for proc in get_memory().search_procedures(prompt, limit=4):
+            if proc.get("degraded"):
+                continue
+            rel = float(proc.get("reliability") or 0.0)
+            if rel < 0.45:
+                continue
+            boost = min(18.0, rel * 12.0)
+            for tool_name in proc.get("tools_used") or []:
+                name = str(tool_name).strip().lower()
+                if name:
+                    hints[name] = max(hints.get(name, 0.0), boost)
+        return hints
+    except Exception:
+        return {}
+
+
 async def select_live_tool_for_task(task, prompt: str, iteration: int, policy: ToolPolicy | None = None) -> ToolSelectionDecision:
     del policy
     store = get_task_tool_state_store()
@@ -255,6 +367,7 @@ async def select_live_tool_for_task(task, prompt: str, iteration: int, policy: T
     reg = get_tool_registry()
     category_pref = state.preferred_categories or [infer_category(prompt)]
     kind_pref = state.preferred_kinds or ["mcp", "api", "search"]
+    procedure_hints = _procedure_hints_for_prompt(prompt)
 
     candidates: list[tuple[float, dict]] = []
     for row in reg.list_tools(active_only=True):
@@ -268,6 +381,8 @@ async def select_live_tool_for_task(task, prompt: str, iteration: int, policy: T
             score += 15
         if iteration == 0 and row.get("kind") == "mcp":
             score += 10
+        hint_key = str(row.get("name", identifier)).lower()
+        score += procedure_hints.get(hint_key, 0.0)
         candidates.append((score, {
             "source": "registry",
             "identifier": identifier,
@@ -287,8 +402,12 @@ async def select_live_tool_for_task(task, prompt: str, iteration: int, policy: T
         if any(cat in desc for cat in category_pref):
             score += 10
         score += 12 if mcp.get("source") == "remote" else 6
+        mcp_name = str(tool.get("name", "")).lower()
+        score += procedure_hints.get(mcp_name, 0.0)
+        if mcp_name.startswith("isaac."):
+            score += procedure_hints.get(mcp_name.split(".", 1)[-1], 0.0)
         candidates.append((score, {
-            "source": "mcp_remote" if mcp.get("source") == "remote" else "mcp_local",
+            "source": MCP_SOURCE,
             "identifier": identifier,
             "name": tool.get("name", identifier),
             "kind": "mcp",
@@ -296,6 +415,7 @@ async def select_live_tool_for_task(task, prompt: str, iteration: int, policy: T
             "mcp_feature": "tool",
             "mcp_name": tool.get("name", ""),
             "mcp_url": mcp.get("url", MCP_BRIDGE_URL),
+            "mcp_transport": "remote" if mcp.get("source") == "remote" else "local",
         }))
 
     if not candidates:
@@ -322,6 +442,7 @@ async def select_live_tool_for_task(task, prompt: str, iteration: int, policy: T
             "category_pref": list(category_pref),
             "kind_pref": list(kind_pref),
             "iteration": iteration,
+            "procedure_hints": len(procedure_hints),
         },
     )
 
@@ -376,13 +497,13 @@ async def run_selected_tool(selection: dict, prompt: str, override_ctx=None) -> 
     source = selection.get("source")
     if source == "registry":
         return ensure_result_contract(await _run_registry_tool(selection.get("tool"), prompt), source="registry")
-    if source in ("mcp_remote", "mcp_local"):
-        if source == "mcp_local":
-            result = get_mcp_registry().invoke_tool(selection.get("mcp_name", ""), {"prompt": prompt, "query": prompt})
-            return ensure_result_contract(result, source="mcp_local")
-        client = MCPClient(selection.get("mcp_url") or MCP_BRIDGE_URL)
-        result = await client.invoke_tool(selection.get("mcp_name", ""), {"prompt": prompt, "query": prompt})
-        return ensure_result_contract(result, source="mcp_remote")
+    if source in _LEGACY_MCP_SOURCES:
+        extra_args = dict(selection.get("mcp_arguments") or {})
+        return await invoke_mcp_tool(
+            selection.get("mcp_name", ""),
+            _mcp_prompt_arguments(prompt, extra_args),
+            mcp_url=selection.get("mcp_url"),
+        )
     return error_result(f"Unbekannte Tool-Quelle: {source}", metadata={"source": source or "unknown"})
 
 

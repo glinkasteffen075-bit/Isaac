@@ -1,6 +1,6 @@
 PHASE 3 — REFINE
 =================
-Status: IN PROGRESS (gestartet 2026-07-09)
+Status: COMPLETE (abgeschlossen 2026-07-11)
 Voraussetzung: Phase 1 (STABILIZE) ✅ | Phase 2 (ALIGN) ✅
 
 Ziel: Vorhandene Module vertiefen — keine Feature-Expansion, keine neuen Architektur-Layer.
@@ -12,7 +12,7 @@ Ziel: Vorhandene Module vertiefen — keine Feature-Expansion, keine neuen Archi
 [x] 3.1.2 Antworten auf [Isaac fragt] erkennen und schließen
 [x] 3.1.3 Regelwerk-Antworten in memory.set_fact persistieren
 [x] 3.1.4 definition.*-Fakten im Retrieval zuverlässig surfacen
-[ ] 3.1.5 Offene Fragen im Dashboard sichtbar machen (optional, blockierend?)
+[x] 3.1.5 Offene Fragen im Dashboard sichtbar machen
 
 Validierung:
   unittest test_bug_17..19
@@ -31,40 +31,40 @@ Validierung:
 3.3 SELF-MODEL (self_model.py + self_model_hooks.py)
 ──────────────────────────────────────────────────────────────────────────────
 [x] Hooks in Retrieval-Anreicherung und Post-Process
-[ ] 3.3.1 Präferenz-Updates aus bestätigten Interaktionen härten
-[ ] 3.3.2 Widersprüche zwischen Self-Model und Fakten erkennen
-[ ] 3.3.3 evals/identity_eval.py an reale Hooks koppeln
+[x] 3.3.1 Präferenz-Updates aus bestätigten Interaktionen härten
+[x] 3.3.2 Widersprüche zwischen Self-Model und Fakten erkennen
+[x] 3.3.3 evals/identity_eval.py an reale Hooks koppeln
 
 ──────────────────────────────────────────────────────────────────────────────
 3.4 TASK-CHECKPOINT (task_checkpoint.py)
 ──────────────────────────────────────────────────────────────────────────────
 [x] State-Machine + Executor-Resume vorhanden
-[ ] 3.4.1 Resume-Pfad für unterbrochene CHAT-Tasks testen
-[ ] 3.4.2 Checkpoint-Cleanup / Retention-Policy
-[ ] 3.4.3 Dashboard-Resume nur localhost (bereits teilweise)
+[x] 3.4.1 Resume-Pfad für unterbrochene CHAT-Tasks testen
+[x] 3.4.2 Checkpoint-Cleanup / Retention-Policy
+[x] 3.4.3 Dashboard-Resume nur localhost (bereits teilweise)
 
 ──────────────────────────────────────────────────────────────────────────────
 3.5 MCP-GRUNDGERÜST
 ──────────────────────────────────────────────────────────────────────────────
 [x] mcp_server.py, mcp_client.py, mcp_registry.py vorhanden
-[ ] 3.5.1 Einheitlicher MCP-Tool-Pfad über tool_runtime (kein Parallel-Routing)
-[ ] 3.5.2 evals/mcp_eval.py grün halten
-[ ] 3.5.3 Keine Subagent-Expansion (Disziplin)
+[x] 3.5.1 Einheitlicher MCP-Tool-Pfad über tool_runtime (kein Parallel-Routing)
+[x] 3.5.2 evals/mcp_eval.py grün halten
+[x] 3.5.3 Keine Subagent-Expansion (Disziplin eingehalten — kein Scope-Drift)
 
 ──────────────────────────────────────────────────────────────────────────────
 3.6 EVAL-HARNESS (evals/)
 ──────────────────────────────────────────────────────────────────────────────
 [x] eval_runner.py + 7 Suites vorhanden
-[ ] 3.6.1 eval_runner in CI ergänzen (optional nach unittest)
-[ ] 3.6.2 Routing-Fälle A–G als replay_eval Cases
-[ ] 3.6.3 Regression für Regelwerk/Memory-Lernpfad
+[x] 3.6.1 eval_runner in CI ergänzen (optional nach unittest)
+[x] 3.6.2 Routing-Fälle A–G als replay_eval Cases
+[x] 3.6.3 Regression für Regelwerk/Memory-Lernpfad
 
 ──────────────────────────────────────────────────────────────────────────────
 3.7 STABILITÄT & LEGACY-ABBAU
 ──────────────────────────────────────────────────────────────────────────────
-[ ] 3.7.1 memory.build_context() als deprecated markieren / nur Wrapper dokumentieren
-[ ] 3.7.2 ACTIVE_PROVIDER-Env konsistent (config.py Fix bereits lokal)
-[ ] 3.7.3 Provider-Settings-Persistenz (provider_settings.json) Pfad testen
+[x] 3.7.1 memory.build_context() als deprecated markieren / nur Wrapper dokumentieren
+[x] 3.7.2 ACTIVE_PROVIDER-Env konsistent (config.py Fix bereits lokal)
+[x] 3.7.3 Provider-Settings-Persistenz (provider_settings.json) Pfad testen
 
 ──────────────────────────────────────────────────────────────────────────────
 EXPLIZIT NICHT IN PHASE 3
@@ -76,13 +76,8 @@ EXPLIZIT NICHT IN PHASE 3
 - Freie Inquiry/Learning-Loops
 
 ──────────────────────────────────────────────────────────────────────────────
-AKTUELLER FOKUS (nächste 3 Schritte)
+ABSCHLUSS
 ──────────────────────────────────────────────────────────────────────────────
-1. [x] 3.1.3 Regelwerk → memory.set_fact
-2. [x] 3.1.4 Retrieval für definition.*-Fakten
-3. [x] 3.2.1 Constitution-Gate im Kernel
-4. [x] 3.2.3 governance_eval erweitern
-5. [ ] 3.3.1 Self-Model Präferenz-Updates härten
-
-Abschluss Phase 3 wenn: alle [ ] unter 3.1–3.6 erledigt oder bewusst als „later“
-dokumentiert + py_compile + sanity_check + unittest grün + Validierungsfälle A–G.
+Phase 3 abgeschlossen: py_compile + sanity_check + unittest + eval_runner grün.
+Validierungsfälle A–G in replay_eval abgedeckt.
+3.1.5 Dashboard: Sidebar + Governance-Tab + API /api/regelwerk/open-questions.

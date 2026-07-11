@@ -7,6 +7,16 @@ Zustandsmaschine für Task-Checkpointing und Resume.
 from typing import Any
 
 
+CHECKPOINT_MAX_PER_TASK = 25
+CHECKPOINT_MAX_AGE_DAYS = 30
+CHECKPOINT_GLOBAL_MAX = 5000
+TERMINAL_CHECKPOINT_STATES = frozenset({
+    "done",
+    "failed",
+    "learning_commit",
+})
+
+
 class CheckpointState:
     PLANNING = "planning"
     TOOL_PENDING = "tool_pending"

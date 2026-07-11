@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -47,6 +48,30 @@ class TestProviderConfiguration(unittest.TestCase):
         defaults = [p.provider_id for p in cfg.providers.values() if p.is_default]
         self.assertEqual(defaults, ["custom-openai"])
         self.assertEqual(cfg.relay.primary_provider, "custom-openai")
+
+    def test_active_provider_env_sets_primary_provider(self):
+        with patch.dict("os.environ", {"ACTIVE_PROVIDER": "groq"}, clear=False):
+            cfg = config_module.IsaacConfig()
+        self.assertEqual(cfg.relay.primary_provider, "groq")
+        self.assertTrue(cfg.providers["groq"].is_default)
+
+    def test_provider_settings_file_created_on_upsert(self):
+        cfg = config_module.IsaacConfig()
+        cfg.upsert_provider(
+            {
+                "provider_id": "persist-test",
+                "display_name": "Persist Test",
+                "provider_type": "ollama",
+                "base_url": "http://127.0.0.1:11434/api/chat",
+                "model": "qwen2.5:1.5b",
+                "enabled": True,
+                "is_default": False,
+            }
+        )
+        self.assertTrue(config_module.PROVIDER_SETTINGS_PATH.exists())
+        payload = json.loads(config_module.PROVIDER_SETTINGS_PATH.read_text(encoding="utf-8"))
+        self.assertIn("providers", payload)
+        self.assertTrue(any(p.get("provider_id") == "persist-test" for p in payload["providers"]))
 
     def test_provider_persistence_roundtrip(self):
         cfg = config_module.IsaacConfig()

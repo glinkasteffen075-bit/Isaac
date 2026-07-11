@@ -38,8 +38,35 @@ _CLARIFY_MARKERS = {
     "ist nur eine begrüßung", "war nur ein test", "nur kurz hallo", "ich wollte nur testen ob du antwortest"
 }
 _STATUS_MARKERS = {"status", "info", "hilfe"}
-_TOOL_PREFIXES = ("suche:", "suche ", "search:", "search ", "recherchiere:", "recherchiere ", "finde:")
-_TOOL_MARKERS = ("internet", "web", "browser", "wetter", "github", "api", "tool", "mcp", "suche", "search")
+_TOOL_PREFIXES = (
+    "suche:", "suche ", "search:", "search ",
+    "recherche:", "recherche ", "recherchiere:", "recherchiere ",
+    "browser:", "browser ", "agent:", "agent ", "finde:",
+)
+_BROWSER_PREFIXES = (
+    "browser:",
+    "browser auf",
+    "öffne im browser",
+    "navigiere zu",
+)
+_TOOL_MARKERS = ("internet", "web", "browser", "wetter", "github", "api", "tool", "mcp", "suche", "search", "recherche")
+_PROVIDER_SETUP_MARKERS = (
+    "api key erstellen",
+    "api key holen",
+    "api keys einrichten",
+    "provider verbinden",
+    "provider connecten",
+    "groq einrichten",
+    "groq verbinden",
+    "openrouter token",
+    "verbinde groq",
+    "connect groq",
+    "fehlende keys",
+    "alle api keys",
+    "alle provider verbinden",
+    "keys selbst beschaffen",
+    "api keys selbst",
+)
 _TOOL_ACTION_WORDS = {"suche", "search", "recherchiere"}
 _EXPLANATORY_PREFIXES = (
     "erkläre ",
@@ -113,6 +140,20 @@ def classify_interaction_result(text: str) -> ClassificationResult:
         )
 
     if normalized.startswith(_TOOL_PREFIXES):
+        return ClassificationResult(
+            interaction_class=InteractionClass.TOOL_REQUEST,
+            normalized_text=normalized,
+            has_question=has_question,
+            word_count=word_count,
+        )
+    if any(normalized.startswith(prefix) for prefix in _BROWSER_PREFIXES):
+        return ClassificationResult(
+            interaction_class=InteractionClass.TOOL_REQUEST,
+            normalized_text=normalized,
+            has_question=has_question,
+            word_count=word_count,
+        )
+    if any(marker in normalized for marker in _PROVIDER_SETUP_MARKERS):
         return ClassificationResult(
             interaction_class=InteractionClass.TOOL_REQUEST,
             normalized_text=normalized,

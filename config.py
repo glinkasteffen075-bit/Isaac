@@ -294,9 +294,13 @@ class MemoryConfig:
     fact_similarity_threshold: float = 0.85
 
 
+def _active_provider_from_env() -> str:
+    return _normalize_provider_id(os.getenv("ACTIVE_PROVIDER", "ollama")) or "ollama"
+
+
 @dataclass
 class RelayConfig:
-    primary_provider: str = os.getenv("ACTIVE_PROVIDER", "ollama")
+    primary_provider: str = field(default_factory=_active_provider_from_env)
     min_interval: float = float(os.getenv("MIN_REQUEST_INTERVAL", "0.15"))
     max_retries: int = int(os.getenv("MAX_RETRIES", "3"))
     cache_ttl: int = 30
@@ -332,8 +336,13 @@ class IsaacConfig:
     relay: RelayConfig = field(default_factory=RelayConfig)
     ideen: IdeenConfig = field(default_factory=IdeenConfig)
     filesystem_full_access: bool = True
+    filesystem_access_tier: str = "full"  # workspace | project | full
     browser_automation: bool = True
     browser_external_sites: bool = True
+    auto_provision_providers: bool = True
+    auto_provision_all_providers: bool = True
+    computer_use_enabled: bool = False
+    computer_use_live: bool = True
     free_only_providers: bool = False
     multi_tool_mode: bool = True
     style_mode: str = os.getenv("ISAAC_STYLE_MODE", "light_sarcastic")
@@ -371,8 +380,13 @@ class IsaacConfig:
     def runtime_settings(self) -> dict[str, Any]:
         return {
             "filesystem_full_access": bool(self.filesystem_full_access),
+            "filesystem_access_tier": str(self.filesystem_access_tier or "full"),
             "browser_automation": bool(self.browser_automation),
             "browser_external_sites": bool(self.browser_external_sites),
+            "auto_provision_providers": bool(self.auto_provision_providers),
+            "auto_provision_all_providers": bool(self.auto_provision_all_providers),
+            "computer_use_enabled": bool(self.computer_use_enabled),
+            "computer_use_live": bool(self.computer_use_live),
             "free_only_providers": bool(self.free_only_providers),
             "multi_tool_mode": bool(self.multi_tool_mode),
             "style_mode": self.style_mode,
@@ -396,6 +410,14 @@ class IsaacConfig:
                 normalized = bool(value)
                 if current != normalized:
                     setattr(self, key, normalized)
+                    changed.append(key)
+                continue
+            if key == "filesystem_access_tier":
+                tier = str(value or "").strip().lower()
+                if tier not in {"workspace", "project", "full"}:
+                    continue
+                if current != tier:
+                    setattr(self, key, tier)
                     changed.append(key)
         if changed:
             self._save_runtime_settings()

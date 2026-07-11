@@ -142,7 +142,8 @@ Keine versteckte Tool-Autonomie.
 |-------|--------|--------|
 | **1 — STABILIZE** | ✅ | Executor ohne autonome Tool-Entscheidung; `ClassificationResult`; explizites `Strategy`; `_should_try_tool` nur `task.strategy.allow_tools` |
 | **2 — ALIGN** | ✅ | Ein Retrieval-Pfad (`build_retrieval_context`); Kernel besitzt Kontext-Komposition; kein paralleles `build_context()` |
-| **3 — REFINE** | 🔄 | Kern vorhanden: `constitution.py`, `self_model.py`, `task_checkpoint.py` (+ Executor-Resume), MCP-Grundgerüst (`mcp_server.py` …), `evals/` — vertiefen, nicht expandieren |
+| **3 — REFINE** | ✅ | `constitution.py`, `self_model.py`, `task_checkpoint.py`, MCP-Grundgerüst, `evals/`, Dashboard offene Fragen |
+| **4 — CONNECT** | 🔄 | Vernetzung: Constitution-Grenzen, DecisionTrace, Regelwerk→Retrieval, Procedure→Selection, MCP-Härtung |
 | **Evolution 2.0** | später | Policy-Enforcement vertiefen, vollständiges MCP, Eval-Suite |
 
 ### Do NOT start or expand (aktuelle Disziplin)

@@ -1,8 +1,86 @@
 from __future__ import annotations
 
+import asyncio
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 from values import get_values
 from memory import get_memory, _conn
 from forgetting_decay import decay_weak_preference_facts
+
+
+def _regelwerk_memory_cases() -> list[dict]:
+    from regelwerk import Frage
+    from isaac_core import IsaacKernel
+
+    kernel = object.__new__(IsaacKernel)
+    frage = Frage(
+        id="F-eval-learning",
+        text="Was meinst du genau mit 'Status'? Für zukünftige Anfragen wichtig.",
+        kontext="eval",
+        prioritaet=0.5,
+    )
+    saved_facts: list[tuple[str, str]] = []
+
+    kernel.regelwerk = SimpleNamespace(
+        beantworte_frage=lambda fid, text: setattr(frage, "beantwortet", True),
+        build_answer_ack=lambda fid, text: f"Verstanden: {text}",
+        analysiere=lambda *args, **kwargs: [],
+        get_pending_frage=lambda: None,
+        get_top_pending_frage=lambda: None,
+        get_frage=lambda fid: frage if fid == "F-eval-learning" else None,
+        _extract_term_from_frage=lambda f: "Status",
+    )
+    kernel.memory = SimpleNamespace(
+        set_fact=lambda key, value, **kwargs: saved_facts.append((key, value)) or True
+    )
+    kernel._background = None
+    kernel._awaiting_frage_id = "F-eval-learning"
+    kernel.empathie = SimpleNamespace(
+        analysiere=lambda text: SimpleNamespace(
+            node=SimpleNamespace(zustand="neutral"),
+            interface_fehler="",
+        )
+    )
+
+    answer = "Status meint bei mir den Systemzustand aller Module."
+    result = asyncio.run(kernel.process(answer))
+    persist_ok = ("definition.status", answer) in saved_facts
+
+    mem = get_memory()
+    unique = f"eval_learning_def_{id(saved_facts)}"
+    mem.set_fact(f"definition.{unique}", answer, source="owner", confidence=0.95)
+    retrieval = mem.build_retrieval_context(
+        user_input=f"Was bedeutet {unique}?",
+        intent="chat",
+        interaction_class="NORMAL_CHAT",
+        n_history=3,
+    ).as_dict()
+    surfaced = any(
+        f.get("key") == f"definition.{unique}"
+        for f in retrieval.get("relevant_facts", [])
+    )
+
+    return [
+        {
+            "name": "regelwerk_answer_persists_definition_fact",
+            "ok": persist_ok and "Verstanden" in result,
+            "detail": {"saved": saved_facts, "result": result[:80]},
+        },
+        {
+            "name": "definition_fact_surfaces_in_retrieval",
+            "ok": surfaced,
+            "detail": {
+                "key": f"definition.{unique}",
+                "facts": [f.get("key") for f in retrieval.get("relevant_facts", [])[:5]],
+            },
+        },
+    ]
 
 
 def run() -> dict:
@@ -59,6 +137,7 @@ def run() -> dict:
         {"name": "contradicted_fact_degrades", "ok": contradict_ok, "detail": {"confidence": contradict_conf}},
         {"name": "development_events_archived", "ok": archive_ok, "detail": {"archived": archived_count}},
     ]
+    cases.extend(_regelwerk_memory_cases())
     passed = sum(1 for c in cases if c["ok"])
     return {"suite": "learning", "passed": passed, "total": len(cases), "cases": cases}
 

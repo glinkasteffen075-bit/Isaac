@@ -59,6 +59,10 @@ textarea,input{font-size:16px;}
 .side-notes{font-size:.84rem;color:var(--muted);line-height:1.55;}
 #sidebar-directives{display:grid;gap:8px;}
 .dir-side-item{padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:rgba(10,15,26,.66);font-size:.82rem;}
+.question-row{padding:12px 14px;border-radius:14px;border:1px solid var(--line);background:rgba(10,15,26,.78);margin-bottom:10px;}
+.question-prio{font-family:'JetBrains Mono',monospace;color:var(--orange);font-size:.72rem;}
+.question-text{color:var(--text);line-height:1.45;margin:.35rem 0;}
+.question-meta{color:var(--dim);font-size:.74rem;}
 .main{display:grid;grid-template-rows:auto auto minmax(0,1fr);gap:14px;min-height:0;}
 .hero{padding:20px;display:grid;grid-template-columns:1.4fr 1fr;gap:14px;align-items:stretch;}
 .hero-card{padding:18px;border-radius:18px;border:1px solid var(--line);background:linear-gradient(180deg,rgba(14,21,37,.92),rgba(9,14,25,.88));}
@@ -301,6 +305,10 @@ textarea,input{font-size:16px;}
         <div class="section-title"><h2 style="margin:0">Aktive Direktiven</h2><span class="tab-badge">Live</span></div>
         <div id="sidebar-directives"><div class="dir-side-item" style="color:var(--muted)">Keine aktiven Direktiven</div></div>
       </div>
+      <div class="stat-card">
+        <div class="section-title"><h2 style="margin:0">Offene Fragen</h2><span class="tab-badge" id="sidebar-open-q-count">0</span></div>
+        <div id="sidebar-open-questions"><div class="dir-side-item" style="color:var(--muted)">Keine offenen Fragen</div></div>
+      </div>
       <div class="stat-card side-notes">
         <strong style="display:block;color:var(--text);margin-bottom:8px;">Unified Control</strong>
         WebSocket-gestützte Telemetrie, API-Status und Chat laufen im bestehenden Isaac-Stack — ohne zweiten Server.
@@ -489,6 +497,11 @@ textarea,input{font-size:16px;}
             <button class="hbtn" onclick="refreshGovernance()">Neu laden</button>
           </div>
           <div class="tool-grid">
+            <div class="tool-card">
+              <h3>Offene Regelwerk-Fragen</h3>
+              <div class="helper">Unbeantwortete Rückfragen von Isaac — antworte im Chat oder mit einer direkten Definition.</div>
+              <div id="open-questions-view" class="tool-list" style="margin-top:1rem"></div>
+            </div>
             <div class="tool-card">
               <h3>Constitution Inspector</h3>
               <div class="helper">Verfassungsprinzipien, Version und harte Constraints.</div>
@@ -977,6 +990,9 @@ function updateState(s) {
   if (s.directives) {
     renderDirectives(s.directives);
     updateBadge('tab-dir', s.directives.length);
+  }
+  if (s.open_questions) {
+    renderOpenQuestions(s.open_questions);
   }
 
   if (s.paused !== undefined) {
@@ -1522,6 +1538,34 @@ async function testProviderConfig(providerId) {
 // ═══════════════════════════════════════════════════════════════
 // DIREKTIVEN
 // ═══════════════════════════════════════════════════════════════
+function renderOpenQuestions(questions) {
+  const items = Array.isArray(questions) ? questions : [];
+  const sidebar = document.getElementById('sidebar-open-questions');
+  const view = document.getElementById('open-questions-view');
+  updateBadge('sidebar-open-q-count', items.length);
+
+  const empty = '<div class="helper">Keine offenen Fragen.</div>';
+  if (!items.length) {
+    if (sidebar) sidebar.innerHTML = '<em style="color:var(--muted)">Keine</em>';
+    if (view) view.innerHTML = empty;
+    return;
+  }
+
+  const rowHtml = items.map(q => `
+    <div class="question-row">
+      <div class="question-prio">prio ${Number(q.prioritaet || 0).toFixed(2)} · ${escHtml(q.erstellt || '')}</div>
+      <div class="question-text">${escHtml(q.text || '')}</div>
+      <div class="question-meta">${escHtml(q.kontext || '')}</div>
+    </div>`).join('');
+
+  if (view) view.innerHTML = rowHtml;
+  if (sidebar) {
+    sidebar.innerHTML = items.slice(0, 3).map(q =>
+      `<div class="dir-side-item"><strong>${escHtml((q.text || '').slice(0, 72))}${(q.text || '').length > 72 ? '…' : ''}</strong></div>`
+    ).join('');
+  }
+}
+
 function renderDirectives(directives) {
   const rows = document.getElementById('dir-rows');
   const sidebar = document.getElementById('sidebar-directives');
@@ -2167,7 +2211,8 @@ function renderMemoryBlocksView(payload) {
 
 async function refreshGovernance() {
   try {
-    const [constitution, selfModel, development, blocks, procedures, decay] = await Promise.all([
+    const [openQuestions, constitution, selfModel, development, blocks, procedures, decay] = await Promise.all([
+      fetchJson('/api/regelwerk/open-questions'),
       fetchJson('/api/governance/constitution'),
       fetchJson('/api/governance/self-model'),
       fetchJson('/api/governance/development?limit=40'),
@@ -2175,6 +2220,7 @@ async function refreshGovernance() {
       fetchJson('/api/governance/procedures?limit=40'),
       fetchJson('/api/governance/decay'),
     ]);
+    renderOpenQuestions(openQuestions?.questions || []);
     state.governance.prevBlocks = state.governance.currentBlocks;
     state.governance.constitution = constitution;
     state.governance.selfModel = selfModel;

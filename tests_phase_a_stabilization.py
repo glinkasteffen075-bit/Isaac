@@ -160,6 +160,7 @@ class TestCriticalBugs(unittest.TestCase):
                     provider_used="test-provider",
                     iteration=0,
                     id="task1",
+                    decision_trace=DecisionTrace(),
                 )
 
             async def submit_and_wait(self, task, timeout=180.0):
@@ -210,6 +211,63 @@ class TestCriticalBugs(unittest.TestCase):
             )
         )
 
+    def test_bug_23_kernel_detects_groq_provider_provision_request(self):
+        self.assertTrue(
+            self.kernel._is_provider_provision_request("verbinde groq und erstelle api key")
+        )
+        self.assertTrue(
+            self.kernel._is_browser_request("provider: groq api key holen")
+        )
+        self.assertEqual(
+            self.kernel._resolve_provider_provision_target("verbinde groq"),
+            "groq",
+        )
+
+    def test_bug_24_low_complexity_provider_setup_is_tool_request(self):
+        result = classify_interaction_result("bitte groq verbinden")
+        self.assertEqual(result.interaction_class, InteractionClass.TOOL_REQUEST)
+
+    def test_bug_26_kernel_detects_provision_all_providers_request(self):
+        self.assertTrue(
+            self.kernel._wants_provision_all_providers("hole alle api keys und verbinde alle provider")
+        )
+        self.assertEqual(
+            self.kernel._resolve_provider_provision_target("alle provider keys holen"),
+            "all",
+        )
+
+    def test_bug_27_provision_specs_cover_major_providers(self):
+        from browser import provisionable_provider_ids
+
+        ids = set(provisionable_provider_ids())
+        self.assertTrue({"groq", "openrouter", "mistral", "together", "huggingface"}.issubset(ids))
+
+    def test_bug_25_browser_providers_needing_provision_detects_missing_groq(self):
+        from browser import BrowserManager, PROVIDER_PROVISION_SPECS
+
+        browser = object.__new__(BrowserManager)
+        browser.cfg = SimpleNamespace(
+            relay=SimpleNamespace(primary_provider="groq"),
+            providers={
+                "groq": SimpleNamespace(
+                    enabled=True,
+                    api_key="",
+                    provider_type="openai_compat",
+                ),
+                "ollama": SimpleNamespace(
+                    enabled=True,
+                    api_key="",
+                    provider_type="ollama",
+                ),
+            },
+            free_only_providers=True,
+            is_provider_allowed=lambda _pid: False,
+        )
+        missing = browser.providers_needing_provision()
+        self.assertIn("groq", missing)
+        self.assertNotIn("ollama", missing)
+        self.assertIn("groq", PROVIDER_PROVISION_SPECS)
+
     def test_bug_10_kernel_parses_structured_browser_flow(self):
         parsed = self.kernel._parse_browser_request(
             "browser: openrouter | https://openrouter.ai/settings/keys | click Settings; wait 1; extract #token -> token"
@@ -219,6 +277,63 @@ class TestCriticalBugs(unittest.TestCase):
         self.assertEqual(parsed["actions"][0]["action"], "click")
         self.assertEqual(parsed["actions"][1]["action"], "wait")
         self.assertEqual(parsed["actions"][2]["action"], "extract_text")
+
+    def test_capability_browser_auf_maps_to_browser_intent(self):
+        intent = self.kernel._resolve_intent_from_classification(
+            "Browser auf GitHub",
+            Intent.CHAT,
+            InteractionClass.TOOL_REQUEST,
+        )
+        self.assertEqual(intent, Intent.BROWSER)
+        parsed = self.kernel._parse_simple_browser_request("Browser auf GitHub")
+        self.assertEqual(parsed["url"], "https://github.com")
+
+    def test_capability_recherche_maps_to_research_intent(self):
+        intent = self.kernel._resolve_intent_from_classification(
+            "recherche: aktuelle KI Sicherheitsstandards",
+            Intent.RESEARCH,
+            InteractionClass.TOOL_REQUEST,
+        )
+        self.assertEqual(intent, Intent.RESEARCH)
+
+    def test_capability_agent_observe_parses_and_routes(self):
+        from computer_use import parse_agent_body, parse_agent_flow
+
+        intent = self.kernel._resolve_intent_from_classification(
+            "agent: observe",
+            Intent.AGENT,
+            InteractionClass.TOOL_REQUEST,
+        )
+        self.assertEqual(intent, Intent.AGENT)
+        action = parse_agent_body("observe")
+        self.assertEqual(action.action, "observe")
+        flow = parse_agent_flow("flow shell pwd; screenshot")
+        self.assertEqual(len(flow), 2)
+        self.assertEqual(flow[0].action, "shell")
+        self.assertEqual(flow[1].action, "screenshot")
+
+    def test_capability_file_access_list_and_read(self):
+        from file_access import parse_file_command, execute_file_command
+        from unittest.mock import patch
+        import tempfile
+        from pathlib import Path
+
+        with patch("file_access.access_tier", return_value="full"), tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sample = root / "probe.txt"
+            sample.write_text("hello isaac", encoding="utf-8")
+            list_cmd = parse_file_command(f"datei: list {root}")
+            self.assertIsNotNone(list_cmd)
+            self.assertEqual(list_cmd.operation, "list")
+            list_out, list_ok = execute_file_command(list_cmd)
+            self.assertTrue(list_ok)
+            self.assertIn("probe.txt", list_out)
+
+            read_cmd = parse_file_command(f"lese: {sample}")
+            self.assertIsNotNone(read_cmd)
+            read_out, read_ok = execute_file_command(read_cmd)
+            self.assertTrue(read_ok)
+            self.assertIn("hello isaac", read_out)
 
 
     def test_bug_11_process_short_circuits_greeting_without_runtime_dependencies(self):
@@ -254,6 +369,17 @@ class TestCriticalBugs(unittest.TestCase):
         self.assertIsNone(again)
         self.assertTrue(rw._term_already_asked("Status"))
         self.assertEqual(rw._erkenne_unbekannte_begriffe("Wie ist der System Status?"), "")
+
+    def test_bug_22_regelwerk_ignores_kennst_du_owner_question(self):
+        from regelwerk import Regelwerk
+
+        rw = object.__new__(Regelwerk)
+        rw._regeln = {}
+        rw._fragen = []
+        rw._history = []
+        self.assertEqual(rw._erkenne_unbekannte_begriffe("Kennst du steffen"), "")
+        fragen = rw._generiere_fragen("Kennst du steffen", "Ja, ich kenne dich.", 7.0)
+        self.assertEqual(fragen, [])
 
     def test_bug_18_kernel_resolves_pending_regelwerk_answer(self):
         from regelwerk import Frage
@@ -939,6 +1065,13 @@ class TestHermesCompatibilityLayer(unittest.TestCase):
         result = cu.validate(ComputerAction(action="shell_command", params={"command": "echo ok"}, permission=PermissionMetadata(timeout=5, allowed_scope="workspace")))
         self.assertTrue(result.ok)
 
+    def test_computer_use_shell_blocks_unsafe_commands_in_runtime(self):
+        from computer_use import ComputerUseRuntime, AgentAction
+
+        runtime = ComputerUseRuntime()
+        result = asyncio.run(runtime.execute(AgentAction("shell", {"command": "sudo rm -rf /"})))
+        self.assertFalse(result.get("ok"))
+
 
     def test_computer_use_action_blocks_unsafe_shell(self):
         cu = HermesComputerUseAdapter()
@@ -1071,16 +1204,27 @@ class TestSelfModelHooks(unittest.TestCase):
         self.assertTrue(any(p.get("key") in ("prefer", "response_style") for p in prefs))
 
     def test_correction_records_high_confidence_preference(self):
+        import self_model as self_model_module
+        import tempfile
+        from pathlib import Path
         from self_model_hooks import process_interaction
-        from self_model import get_self_model
+        from self_model import SelfModel
+        from low_complexity import InteractionClass
 
         key = f"answer_style_{id(self)}"
-        process_interaction(
-            user_input=f"korrektur: {key} = kurz und direkt",
-            interaction_class="NORMAL_CHAT",
-            score=7.0,
-        )
-        owner_prefers = get_self_model().data.get("preference_state", {}).get("owner_prefers", [])
+        with tempfile.TemporaryDirectory() as tmp:
+            isolated = SelfModel(path=Path(tmp) / "self_model.json")
+            previous = self_model_module._model
+            self_model_module._model = isolated
+            try:
+                process_interaction(
+                    user_input=f"korrektur: {key} = kurz und direkt",
+                    interaction_class=InteractionClass.NORMAL_CHAT,
+                    score=7.0,
+                )
+            finally:
+                self_model_module._model = previous
+            owner_prefers = isolated.data.get("preference_state", {}).get("owner_prefers", [])
         self.assertTrue(
             any(
                 p.get("key") == key and p.get("confidence", 0) >= 0.9
@@ -1136,6 +1280,182 @@ class TestSelfModelHooks(unittest.TestCase):
         enriched = enrich_retrieval_with_self_model({"preferences_context": []})
         self.assertTrue(enriched.get("self_model_preferences"))
         self.assertTrue(enriched.get("preferences_context"))
+
+    def test_greeting_does_not_record_preference(self):
+        import self_model as self_model_module
+        import tempfile
+        from pathlib import Path
+        from self_model import SelfModel
+        from self_model_hooks import process_interaction
+        from low_complexity import InteractionClass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            isolated = SelfModel(path=Path(tmp) / "self_model.json")
+            previous = self_model_module._model
+            self_model_module._model = isolated
+            try:
+                updates = process_interaction(
+                    user_input="Hallo Isaac, antworte bitte kürzer",
+                    interaction_class=InteractionClass.SOCIAL_GREETING,
+                    score=7.0,
+                )
+            finally:
+                self_model_module._model = previous
+
+        self.assertEqual(updates.get("preferences"), [])
+        owner_prefers = isolated.data.get("preference_state", {}).get("owner_prefers", [])
+        self.assertEqual(owner_prefers, [])
+
+    def test_casual_style_mention_not_recorded_as_preference(self):
+        import self_model as self_model_module
+        import tempfile
+        from pathlib import Path
+        from self_model import SelfModel
+        from self_model_hooks import process_interaction
+        from low_complexity import InteractionClass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            isolated = SelfModel(path=Path(tmp) / "self_model.json")
+            previous = self_model_module._model
+            self_model_module._model = isolated
+            try:
+                updates = process_interaction(
+                    user_input="Kannst du das Wetter als Motiv kürzer erklären?",
+                    interaction_class=InteractionClass.NORMAL_CHAT,
+                    score=7.0,
+                )
+            finally:
+                self_model_module._model = previous
+
+        self.assertEqual(updates.get("preferences"), [])
+        owner_prefers = isolated.data.get("preference_state", {}).get("owner_prefers", [])
+        self.assertEqual(owner_prefers, [])
+
+    def test_positive_confirmation_boosts_pending_preference(self):
+        import self_model as self_model_module
+        import tempfile
+        from pathlib import Path
+        from self_model import SelfModel
+        from self_model_hooks import process_interaction
+        from low_complexity import InteractionClass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            isolated = SelfModel(path=Path(tmp) / "self_model.json")
+            previous = self_model_module._model
+            self_model_module._model = isolated
+            try:
+                first = process_interaction(
+                    user_input="Ich bevorzuge kurze nüchterne Antworten",
+                    interaction_class=InteractionClass.NORMAL_CHAT,
+                    score=7.0,
+                )
+                second = process_interaction(
+                    user_input="Danke, genau so",
+                    interaction_class=InteractionClass.SOCIAL_ACKNOWLEDGMENT,
+                    score=6.5,
+                )
+            finally:
+                self_model_module._model = previous
+
+        self.assertTrue(first.get("preferences"))
+        self.assertGreaterEqual(second.get("confirmations", 0), 1)
+        owner_prefers = isolated.data.get("preference_state", {}).get("owner_prefers", [])
+        confirmed = next(
+            (
+                p for p in owner_prefers
+                if isinstance(p, dict) and p.get("key") == "prefer"
+            ),
+            None,
+        )
+        self.assertIsNotNone(confirmed)
+        self.assertGreaterEqual(float(confirmed.get("confidence", 0)), 0.74)
+        self.assertEqual(confirmed.get("source"), "owner_confirmation")
+
+    def test_confirmed_preference_synced_to_memory(self):
+        import self_model as self_model_module
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from self_model import SelfModel
+        from self_model_hooks import process_interaction
+        from low_complexity import InteractionClass
+
+        stored_facts: dict[str, str] = {}
+
+        class FakeMemory:
+            def set_fact(self, key, value, source="", confidence=1.0):
+                stored_facts[key] = value
+                return True
+
+            def log_development_event(self, **kwargs):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sm_path = Path(tmp) / "self_model.json"
+            isolated = SelfModel(path=sm_path)
+            previous_sm = self_model_module._model
+            self_model_module._model = isolated
+            key = f"answer_style_{id(self)}"
+            try:
+                with patch("memory.get_memory", return_value=FakeMemory()):
+                    process_interaction(
+                        user_input=f"korrektur: {key} = kurz und direkt",
+                        interaction_class=InteractionClass.NORMAL_CHAT,
+                        score=7.0,
+                    )
+            finally:
+                self_model_module._model = previous_sm
+
+        fact_key = f"pref.{key}.kurz_und_direkt"
+        self.assertEqual(stored_facts.get(fact_key), "kurz und direkt")
+
+    def test_self_model_detects_memory_contradiction(self):
+        import self_model as self_model_module
+        import tempfile
+        from pathlib import Path
+        from self_model import SelfModel
+        from self_model_hooks import detect_self_model_fact_contradictions, enrich_retrieval_with_self_model
+
+        class FakeMemory:
+            def __init__(self, facts):
+                self._facts = dict(facts)
+
+            def get_fact_record(self, key):
+                value = self._facts.get(key)
+                if value is None:
+                    return None
+                return {"key": key, "value": value, "confidence": 1.0, "source": "Steffen"}
+
+            def all_facts(self):
+                return dict(self._facts)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            isolated = SelfModel(path=Path(tmp) / "self_model.json")
+            previous = self_model_module._model
+            self_model_module._model = isolated
+            try:
+                isolated.record_owner_preference(
+                    key="response_style",
+                    value="kurz und knapp",
+                    confidence=0.9,
+                    source="owner_correction",
+                )
+                fact_key = isolated._preference_fact_key({
+                    "key": "response_style",
+                    "value": "kurz und knapp",
+                })
+                fake_memory = FakeMemory({fact_key: "ausführlich und detailliert"})
+                contradictions = detect_self_model_fact_contradictions(memory=fake_memory)
+                enriched = enrich_retrieval_with_self_model(
+                    {"preferences_context": [], "risk_flags": []},
+                    memory=fake_memory,
+                )
+            finally:
+                self_model_module._model = previous
+
+        self.assertTrue(contradictions)
+        self.assertTrue(enriched.get("self_model_contradictions"))
+        self.assertIn("self_model_fact_contradiction", enriched.get("risk_flags", []))
 
 
 class TestConstitutionOwnerOverride(unittest.TestCase):
@@ -1284,6 +1604,138 @@ class TestMcpJsonRpc(unittest.TestCase):
         data = json.loads(line)
         self.assertEqual(data.get("id"), 9)
         self.assertEqual(data.get("result"), {})
+
+
+class TestEvalSuites(unittest.TestCase):
+    def _assert_eval_suite(self, result: dict):
+        self.assertGreater(int(result.get("total", 0)), 0)
+        failed = [c for c in result.get("cases", []) if not c.get("ok")]
+        self.assertEqual(result.get("passed"), result.get("total"), msg=failed)
+
+    def test_mcp_eval_suite_passes(self):
+        from evals.mcp_eval import run
+
+        result = run()
+        self.assertEqual(result.get("suite"), "mcp")
+        self._assert_eval_suite(result)
+
+    def test_replay_eval_suite_passes(self):
+        from evals.replay_eval import run
+
+        result = run()
+        self.assertEqual(result.get("suite"), "replay")
+        self._assert_eval_suite(result)
+
+    def test_learning_eval_regelwerk_memory_cases(self):
+        from evals.learning_eval import run
+
+        result = run()
+        self.assertEqual(result.get("suite"), "learning")
+        names = {c["name"] for c in result.get("cases", [])}
+        self.assertIn("regelwerk_answer_persists_definition_fact", names)
+        self.assertIn("definition_fact_surfaces_in_retrieval", names)
+        for case in result.get("cases", []):
+            if case["name"] in {
+                "regelwerk_answer_persists_definition_fact",
+                "definition_fact_surfaces_in_retrieval",
+            }:
+                self.assertTrue(case.get("ok"), msg=case)
+
+
+class TestMcpToolRuntime(unittest.TestCase):
+    def test_invoke_mcp_tool_uses_local_registry_fallback(self):
+        from tool_runtime import invoke_mcp_tool
+
+        async def fake_discover(*args, **kwargs):
+            return {
+                "ok": False,
+                "source": "local-fallback",
+                "tools": [{"name": "isaac.query_memory"}],
+                "url": "http://127.0.0.1:8766",
+            }
+
+        with patch("tool_runtime.discover_mcp_bridge", fake_discover):
+            result = asyncio.run(
+                invoke_mcp_tool("isaac.query_memory", {"query": "status", "limit": 2})
+            )
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(result.get("via"), "mcp")
+        self.assertEqual(result.get("transport"), "local")
+
+    def test_run_selected_tool_unified_mcp_source(self):
+        from tool_runtime import run_selected_tool
+
+        async def fake_invoke(name, arguments, **kwargs):
+            self.assertEqual(name, "isaac.query_memory")
+            return {
+                "ok": True,
+                "output": {"blocks": []},
+                "error": "",
+                "metadata": {"tool": name},
+                "via": "mcp",
+                "transport": "local",
+            }
+
+        selection = {
+            "source": "mcp",
+            "mcp_name": "isaac.query_memory",
+            "kind": "mcp",
+            "identifier": "mcp:isaac.query_memory",
+        }
+        with patch("tool_runtime.invoke_mcp_tool", fake_invoke):
+            result = asyncio.run(run_selected_tool(selection, "status"))
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(result.get("via"), "mcp")
+
+    def test_select_live_tool_marks_unified_mcp_source(self):
+        from tool_runtime import select_live_tool_for_task
+
+        task = Task(
+            id=f"t-mcp-unified-{id(self)}",
+            typ=TaskType.SEARCH,
+            prompt="Suche Wetter Berlin",
+            beschreibung="search",
+            strategy=Strategy(allow_tools=True),
+            interaction_class=InteractionClass.TOOL_REQUEST,
+        )
+
+        class FakeRegistry:
+            def list_tools(self, active_only=True):
+                return []
+
+        async def fake_discover(*args, **kwargs):
+            return {
+                "ok": True,
+                "source": "local-fallback",
+                "tools": [{"name": "isaac.search_web", "description": "search"}],
+                "url": "http://127.0.0.1:8766",
+            }
+
+        with patch("tool_runtime.get_tool_registry", return_value=FakeRegistry()), patch(
+            "tool_runtime.discover_mcp_bridge", fake_discover
+        ):
+            decision = asyncio.run(select_live_tool_for_task(task, task.prompt, 0, task.tool_policy))
+        self.assertIsNotNone(decision.selected)
+        self.assertEqual(decision.selected.get("source"), "mcp")
+        self.assertEqual(decision.selected.get("mcp_name"), "isaac.search_web")
+
+    def test_legacy_mcp_remote_source_still_routes_through_invoke(self):
+        from tool_runtime import run_selected_tool
+
+        calls = {"count": 0}
+
+        async def fake_invoke(name, arguments, **kwargs):
+            calls["count"] += 1
+            return {"ok": True, "output": "ok", "error": "", "metadata": {}, "via": "mcp"}
+
+        selection = {
+            "source": "mcp_remote",
+            "mcp_name": "isaac.query_memory",
+            "kind": "mcp",
+        }
+        with patch("tool_runtime.invoke_mcp_tool", fake_invoke):
+            asyncio.run(run_selected_tool(selection, "status"))
+        self.assertEqual(calls["count"], 1)
 
 
 class TestForgettingDecay(unittest.TestCase):
@@ -1650,6 +2102,159 @@ class TestTaskCheckpointing(unittest.TestCase):
         self.assertEqual(wd._restarts.get(tid), 1)
         self.assertEqual(task.status, TaskStatus.QUEUED)
 
+    def test_interrupted_chat_task_full_resume_execute_cycle(self):
+        import asyncio
+        from executor import get_executor, Task, TaskType, TaskStatus, Strategy
+        from logic import QualityScore
+
+        async def _run():
+            exe = get_executor()
+            tid = f"cp_chat_full_{id(self)}"
+            task = Task(
+                id=tid,
+                typ=TaskType.CHAT,
+                prompt="Was ist Isaac?",
+                beschreibung="unterbrochener CHAT",
+                strategy=Strategy(allow_followup=True),
+            )
+            task.status = TaskStatus.QUEUED
+            exe._tasks[tid] = task
+            calls = {"ai": 0}
+
+            async def _flaky_ai(current_task):
+                calls["ai"] += 1
+                if calls["ai"] == 1:
+                    raise ConnectionError("relay timeout")
+                current_task.antwort = "Isaac ist ein lokaler kognitiver Kernel."
+                current_task.provider_used = "mock-provider"
+                current_task.score = QualityScore(total=8.5)
+                current_task.status = TaskStatus.DONE
+
+            with patch.object(exe, "_execute_ai", side_effect=_flaky_ai):
+                await exe._execute(task)
+
+            self.assertEqual(task.status, TaskStatus.RESUMABLE)
+            self.assertTrue(exe.resume_task(tid))
+            resumed = exe.get_task(tid)
+            self.assertEqual(resumed.status, TaskStatus.QUEUED)
+            self.assertEqual(resumed.resume_strategy, "from_checkpoint")
+
+            with patch.object(exe, "_execute_ai", side_effect=_flaky_ai):
+                await exe._execute(resumed)
+
+            self.assertEqual(resumed.status, TaskStatus.DONE)
+            self.assertEqual(calls["ai"], 2)
+            self.assertIn("Kernel", resumed.antwort)
+            return resumed
+
+        asyncio.run(_run())
+
+    def test_regelwerk_open_questions_payload_for_dashboard(self):
+        from regelwerk import Frage, get_regelwerk
+        from monitor_server import MonitorServer
+
+        rw = get_regelwerk()
+        qid = f"F_dash_{id(self)}"
+        rw._fragen.append(
+            Frage(
+                id=qid,
+                text="Was meinst du mit Dashboard?",
+                kontext="dashboard regression",
+                prioritaet=0.66,
+            )
+        )
+        payload = rw.open_questions_dict()
+        self.assertTrue(any(item.get("id") == qid for item in payload))
+
+        state = MonitorServer()._build_state()
+        self.assertIn("open_questions", state)
+        self.assertTrue(any(item.get("id") == qid for item in state["open_questions"]))
+        self.assertIn("regelwerk", state)
+        self.assertGreaterEqual(int(state["regelwerk"].get("offene_fragen", 0)), 1)
+
+    def test_dashboard_task_resume_localhost_only(self):
+        from monitor_server import is_localhost_request
+
+        self.assertTrue(is_localhost_request("127.0.0.1"))
+        self.assertTrue(is_localhost_request("::1"))
+        self.assertTrue(is_localhost_request("localhost"))
+        self.assertFalse(is_localhost_request("172.20.10.7"))
+        self.assertFalse(is_localhost_request("10.0.0.5"))
+
+    def test_checkpoint_retention_trims_per_task(self):
+        from memory import get_memory
+        from task_checkpoint import CHECKPOINT_MAX_PER_TASK
+
+        mem = get_memory()
+        tid = f"cp_retention_{id(self)}"
+        for idx in range(CHECKPOINT_MAX_PER_TASK + 5):
+            mem.save_task_checkpoint(
+                tid,
+                "planning",
+                input_snapshot={"step": idx},
+            )
+        rows = mem.list_checkpoints(tid, limit=100)
+        self.assertLessEqual(len(rows), CHECKPOINT_MAX_PER_TASK)
+        self.assertEqual(int(rows[0]["checkpoint_id"]), max(int(r["checkpoint_id"]) for r in rows))
+        latest = mem.get_latest_checkpoint(tid)
+        self.assertIsNotNone(latest)
+        self.assertEqual(latest["checkpoint_id"], rows[0]["checkpoint_id"])
+
+    def test_checkpoint_age_cleanup_removes_old_terminal_states(self):
+        from memory import get_memory, _conn
+        from task_checkpoint import CheckpointState
+
+        mem = get_memory()
+        tid = f"cp_age_{id(self)}"
+        with _conn() as con:
+            con.execute(
+                "INSERT INTO task_checkpoints "
+                "(task_id, ts, state_name, input_snapshot, tool_snapshot, "
+                "result_snapshot, memory_refs, side_effect_refs) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    tid,
+                    "2020-01-01 00:00:00",
+                    CheckpointState.DONE,
+                    "{}",
+                    "{}",
+                    "{}",
+                    "[]",
+                    "[]",
+                ),
+            )
+            con.execute(
+                "INSERT INTO task_checkpoints "
+                "(task_id, ts, state_name, input_snapshot, tool_snapshot, "
+                "result_snapshot, memory_refs, side_effect_refs) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    tid,
+                    "2026-07-11 00:00:00",
+                    CheckpointState.PLANNING,
+                    '{"keep": true}',
+                    "{}",
+                    "{}",
+                    "[]",
+                    "[]",
+                ),
+            )
+        summary = mem.cleanup_task_checkpoints(task_id=tid, max_age_days=30)
+        after = mem.list_checkpoints(tid, limit=20)
+        self.assertGreaterEqual(summary.get("removed", 0), 1)
+        self.assertEqual(len(after), 1)
+        self.assertEqual(after[0].get("state_name"), CheckpointState.PLANNING)
+
+    def test_checkpoint_cleanup_stats(self):
+        from memory import get_memory
+
+        mem = get_memory()
+        tid = f"cp_stats_{id(self)}"
+        mem.save_task_checkpoint(tid, "planning")
+        stats = mem.checkpoint_stats()
+        self.assertGreaterEqual(int(stats.get("total", 0)), 1)
+        self.assertGreaterEqual(int(stats.get("tasks", 0)), 1)
+
 
 class TestProcedureMemory(unittest.TestCase):
     def test_procedure_capture_success_and_failure_downgrade(self):
@@ -1699,6 +2304,115 @@ class TestProcedureMemory(unittest.TestCase):
         formatted = mem.format_retrieval_context(ctx)
         if data["relevant_procedures"]:
             self.assertIn("[relevant_procedures]", formatted)
+
+
+class TestPhase4Connect(unittest.TestCase):
+    def test_regelwerk_open_question_surfaces_in_retrieval(self):
+        from regelwerk import Frage, get_regelwerk
+        from memory import get_memory
+
+        rw = get_regelwerk()
+        qid = f"F_ret_{id(self)}"
+        rw._fragen.append(
+            Frage(
+                id=qid,
+                text="Was meinst du genau mit 'Status'? Für zukünftige Anfragen wichtig.",
+                kontext="retrieval test",
+                prioritaet=0.8,
+            )
+        )
+        ctx = get_memory().build_retrieval_context(
+            user_input="Wie ist der System Status?",
+            intent="chat",
+            interaction_class="NORMAL_CHAT",
+        )
+        questions = ctx.as_dict().get("open_questions") or []
+        self.assertTrue(any("Status" in q for q in questions))
+
+    def test_kernel_standard_task_records_routing_trace(self):
+        class FakeRetrievalContext:
+            def as_dict(self):
+                return {
+                    "relevant_facts": [],
+                    "relevant_procedures": [],
+                    "open_questions": [],
+                }
+
+        class FakeMemory:
+            def build_retrieval_context(self, *args, **kwargs):
+                return FakeRetrievalContext()
+
+            def format_retrieval_context(self, retrieval_ctx):
+                return ""
+
+            def add_conversation(self, *args, **kwargs):
+                return None
+
+            def save_task_result(self, *args, **kwargs):
+                return None
+
+        captured: dict = {}
+
+        class FakeExecutor:
+            def create_task(self, **kwargs):
+                task_obj = SimpleNamespace(
+                    typ=kwargs["typ"],
+                    prompt=kwargs["prompt"],
+                    antwort="ok",
+                    fehler="",
+                    score=SimpleNamespace(total=8.0),
+                    provider_used="test",
+                    iteration=0,
+                    id="trace-task",
+                    decision_trace=DecisionTrace(),
+                )
+                captured["task"] = task_obj
+                return task_obj
+
+            async def submit_and_wait(self, task, timeout=180.0):
+                return task
+
+        from neural_core import get_neural_cortex
+        from learning_engine import get_learning_engine
+
+        kernel = object.__new__(IsaacKernel)
+        kernel.memory = FakeMemory()
+        kernel.executor = FakeExecutor()
+        kernel.meaning = SimpleNamespace(record_impact=lambda *args, **kwargs: None)
+        kernel.values = SimpleNamespace(update=lambda *args, **kwargs: None)
+        kernel.neural = get_neural_cortex()
+        kernel.learning = get_learning_engine()
+        kernel._build_system = lambda *args, **kwargs: "system"
+        kernel._provider_hint = lambda user_input: None
+        kernel._retrieve_relevant_context = lambda **kwargs: FakeRetrievalContext().as_dict()
+        classification = ClassificationResult(
+            interaction_class=InteractionClass.NORMAL_CHAT,
+            normalized_text="was ist 2 2",
+            has_question=True,
+            word_count=3,
+        )
+
+        asyncio.run(
+            kernel._standard_task(
+                user_input="Was ist 2+2?",
+                intent=Intent.CHAT,
+                sudo_aktiv=False,
+                emp=SimpleNamespace(),
+                wissen_kontext="",
+                interaction_class=InteractionClass.NORMAL_CHAT,
+                classification=classification,
+            )
+        )
+        events = [e.event for e in captured["task"].decision_trace.entries]
+        self.assertIn("classified", events)
+        self.assertIn("retrieved", events)
+        self.assertIn("strategy_selected", events)
+
+    def test_procedure_hints_boost_matching_tool(self):
+        from tool_runtime import _procedure_hints_for_prompt
+
+        hints = _procedure_hints_for_prompt("Suche Wetter Berlin eindeutig")
+        self.assertIsInstance(hints, dict)
 
 
 if __name__ == '__main__':

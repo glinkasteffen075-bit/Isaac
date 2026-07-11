@@ -72,6 +72,9 @@ DECOMPOSE_THEMEN_SCHWELLE = 2  # Ab 2 erkennbaren Themen → Decomposer
 class Intent:
     CHAT        = "chat"
     SEARCH      = "search"
+    RESEARCH    = "research"
+    BROWSER     = "browser"
+    AGENT       = "agent"
     CODE        = "code"
     FILE        = "file"
     TRANSLATE   = "translate"
@@ -103,7 +106,14 @@ EXPLICIT_COMMAND_PATTERNS = [
     (Intent.PIPELINE,   [r"^pipeline:", r"^verbessere iterativ"]),
     (Intent.DECOMPOSE,  [r"^atomisiere:", r"^verteile:"]),
     (Intent.CODE,       [r"^code:", r"^programmiere:", r"^schreibe.*python"]),
-    (Intent.FILE,       [r"^datei:", r"^lese:", r"^schreibe.*datei"]),
+    (Intent.FILE,       [
+        r"^datei:",
+        r"^lese:",
+        r"^schreibe.*datei",
+        r"^datei\s+(?:read|write|append|list|ls|info)\b",
+    ]),
+    (Intent.RESEARCH,   [r"^recherche:", r"^recherchiere:"]),
+    (Intent.AGENT,      [r"^agent:", r"^oberfläche:", r"^oberflaeche:"]),
     (Intent.TRANSLATE,  [r"^übersetze", r"^translate", r"^schrift:"]),
     (Intent.LOGIN_ADD,  [r"^login:", r"^credential:", r"^zugangsdaten:"]),
     (Intent.URL_ADD,    [r"^url:", r"^instanz:", r"^füge.*url"]),
@@ -125,7 +135,7 @@ def detect_intent(text: str) -> str:
 
 def braucht_decomposer(text: str, intent: str) -> bool:
     """Entscheidet ob ein Prompt atomisiert werden soll."""
-    if intent in (Intent.CODE, Intent.FILE, Intent.SEARCH,
+    if intent in (Intent.CODE, Intent.FILE, Intent.SEARCH, Intent.RESEARCH,
                   Intent.BROADCAST, Intent.SPLIT, Intent.PIPELINE,
                   Intent.DECOMPOSE):
         return False   # Eigene Handler
@@ -262,7 +272,11 @@ class IsaacKernel:
         if self.gate.is_paused and not sudo_aktiv:
             return "[Isaac] Pausiert. 'weiter' oder SUDO zum Fortfahren."
 
-        if self._is_browser_request(user_input):
+        if intent == Intent.AGENT or self._is_agent_request(user_input):
+            result = await self._handle_agent_request(user_input)
+            return self._post_process(user_input, result, emp, 0.0, t0)
+
+        if intent == Intent.BROWSER or self._is_browser_request(user_input):
             result = await self._handle_browser_request(user_input)
             return self._post_process(user_input, result, emp, 0.0, t0)
 
@@ -415,6 +429,7 @@ class IsaacKernel:
             )
         typ_map = {
             Intent.SEARCH:    TaskType.SEARCH,
+            Intent.RESEARCH:  TaskType.RESEARCH,
             Intent.CODE:      TaskType.CODE,
             Intent.FILE:      TaskType.FILE,
             Intent.TRANSLATE: TaskType.TRANSLATE,
@@ -444,9 +459,69 @@ class IsaacKernel:
             classification=classification,
             retrieved_context = retrieval_ctx,
         )
+        from decision_trace import TracePhase
+
+        task.decision_trace.add(
+            TracePhase.CONTEXT_INTEGRATION,
+            "classified",
+            {
+                "interaction_class": interaction_class,
+                "intent": intent,
+                "word_count": classification.word_count,
+            },
+        )
+        task.decision_trace.add(
+            TracePhase.CONTEXT_INTEGRATION,
+            "retrieved",
+            {
+                "facts": len(retrieval_ctx.get("relevant_facts", [])),
+                "procedures": len(retrieval_ctx.get("relevant_procedures", [])),
+                "open_questions": len(retrieval_ctx.get("open_questions", [])),
+            },
+        )
+        task.decision_trace.add(
+            TracePhase.CONTEXT_INTEGRATION,
+            "strategy_selected",
+            {
+                "allow_tools": strategy.allow_tools,
+                "allow_followup": strategy.allow_followup,
+                "allow_provider_switch": strategy.allow_provider_switch,
+            },
+        )
         task = await self.executor.submit_and_wait(task, timeout=180.0)
         antwort = task.antwort or task.fehler or "[Keine Antwort]"
         score   = task.score.total if task.score else 0.0
+
+        cfg = getattr(self, "cfg", None) or get_config()
+        if (
+            getattr(cfg, "auto_provision_providers", True)
+            and cfg.browser_automation
+            and self._relay_failure_needs_provision(antwort)
+        ):
+            failed_provider = self._extract_failed_provider(antwort) or provider or cfg.relay.primary_provider
+            target_ids = None if getattr(cfg, "auto_provision_all_providers", True) else (
+                [failed_provider] if failed_provider else None
+            )
+            provision = await self._auto_provision_providers(target_ids)
+            if provision.get("ok"):
+                retry = self.executor.create_task(
+                    typ=task_typ,
+                    prompt=prompt,
+                    beschreibung=f"retry:{user_input[:72]}",
+                    prioritaet=task.prioritaet,
+                    provider=failed_provider or provider,
+                    system_prompt=system,
+                    sudo_aktiv=sudo_aktiv,
+                    strategy=strategy,
+                    interaction_class=interaction_class,
+                    classification=classification,
+                    retrieved_context=retrieval_ctx,
+                )
+                retry = await self.executor.submit_and_wait(retry, timeout=180.0)
+                if retry.antwort and not self._relay_failure_needs_provision(retry.antwort):
+                    task = retry
+                    antwort = retry.antwort
+                    score = retry.score.total if retry.score else score
 
         # Stabiles lokales Fallback für triviale Inputs, falls Provider ausfallen.
         if task.typ == TaskType.CHAT and is_low_complexity_local_input(user_input):
@@ -557,12 +632,14 @@ class IsaacKernel:
         ):
             antwort += "\n\n---\n*[Regelwerk] " + _erkenntnis_text(erkenntnisse[0]) + "*"
 
-        # Frage anhängen
+        # Frage anhängen (nicht bei jeder Antwort wiederholen)
         if frage:
             top = self.regelwerk.get_top_pending_frage()
-            if top:
+            main = (antwort or "").strip()
+            substantive_answer = len(main) >= 30 and not main.startswith("[RELAY]")
+            if top and substantive_answer and self._awaiting_frage_id != top.id:
                 self._awaiting_frage_id = top.id
-            antwort += f"\n\n---\n{frage}"
+                antwort += f"\n\n---\n{frage}"
         else:
             self._awaiting_frage_id = None
 
@@ -573,6 +650,8 @@ class IsaacKernel:
         Intent.SUDO_OPEN,
         Intent.CODE,
         Intent.FILE,
+        Intent.BROWSER,
+        Intent.AGENT,
         Intent.LOGIN_ADD,
         Intent.DIRECTIVE,
         Intent.FACT_SET,
@@ -610,6 +689,8 @@ class IsaacKernel:
             ):
                 meta["self_modify_constitution"] = True
             return ("file_delete" if is_write else "system_command"), meta
+        if intent == Intent.BROWSER:
+            return "tool_invoke", {**metadata, "risk": "normal"}
         if intent == Intent.LOGIN_ADD:
             return "modify_config", {
                 **metadata,
@@ -624,6 +705,16 @@ class IsaacKernel:
                 **metadata,
                 "uncertain_claim_as_fact": False,
                 "risk": "low",
+            }
+        if intent == Intent.AGENT:
+            read_only = any(
+                token in text
+                for token in ("observe", "screenshot", "clipboard get", "status")
+            ) and "shell" not in text and "tap" not in text and "type" not in text
+            return "system_command", {
+                **metadata,
+                "risk": "low" if read_only else "high",
+                "owner_approved": True,
             }
         return "", {}
 
@@ -795,15 +886,269 @@ class IsaacKernel:
         AuditLog.action("Kernel", "url_added", f"{iid}={url}", Level.STEFFEN)
         return f"[URL] ✓ '{name}' ({iid}) → {url}"
 
+    def _is_agent_request(self, text: str) -> bool:
+        tl = (text or "").lower().strip()
+        return tl.startswith(("agent:", "agent ", "oberfläche:", "oberflaeche:"))
+
+    async def _handle_agent_request(self, text: str) -> str:
+        from computer_use import (
+            get_computer_use,
+            parse_agent_flow,
+            format_agent_result,
+            computer_use_enabled,
+        )
+
+        if not computer_use_enabled():
+            return (
+                "[Agent] Computer-Use ist deaktiviert.\n"
+                "Aktiviere computer_use_enabled in data/runtime_settings.json "
+                "oder setze ISAAC_RUNTIME_ENV=termux."
+            )
+
+        body = (text or "").split(":", 1)[-1].strip()
+        if text.lower().startswith("oberfläche:") or text.lower().startswith("oberflaeche:"):
+            body = text.split(":", 1)[-1].strip()
+        try:
+            actions = parse_agent_flow(body)
+        except Exception as exc:
+            return (
+                "[Agent] Ungültiger Befehl.\n"
+                "Beispiele:\n"
+                "  agent: diagnose\n"
+                "  agent: observe\n"
+                "  agent: screenshot\n"
+                "  agent: shell ls -la workspace\n"
+                "  agent: clipboard get\n"
+                "  agent: open https://github.com\n"
+                "  agent: flow shell pwd; screenshot; shell ls workspace\n"
+                f"Fehler: {exc}"
+            )
+
+        runtime = get_computer_use()
+        if len(actions) == 1:
+            result = await runtime.execute(actions[0])
+        else:
+            result = await runtime.execute_flow(actions)
+        return format_agent_result(result)
+
+    def _provisionable_provider_ids(self) -> tuple[str, ...]:
+        try:
+            from browser import provisionable_provider_ids
+            return provisionable_provider_ids()
+        except Exception:
+            return ("groq", "openrouter", "mistral", "together", "perplexity")
+
+    _PROVIDER_ALL_MARKERS = (
+        "alle api", "alle provider", "alle keys", "all providers", "all api",
+        "jeden provider", "sämtliche", "saemtliche", "restliche keys",
+    )
+    _PROVIDER_KEY_TOKENS = ("token", "api key", "apikey", "api-key", "schlüssel", "key", "schluessel")
+    _PROVIDER_ACTION_TOKENS = (
+        "generier", "erstell", "create", "new", "neu", "hol", "beschaff",
+        "einricht", "verbind", "connect", "setup", "aktivier", "provision",
+    )
+
+    def _is_provider_provision_request(self, text: str) -> bool:
+        tl = (text or "").lower().strip()
+        if tl.startswith(("provider:", "verbinde:", "connect:", "provision:")):
+            return True
+        if any(phrase in tl for phrase in (
+            "api keys einrichten",
+            "provider verbinden",
+            "fehlende keys",
+            "keys holen",
+            "provider connecten",
+            "selbst verbinden",
+            "keys selbst beschaffen",
+            "api keys selbst",
+            "alle keys verbinden",
+            "alle provider verbinden",
+        )):
+            return True
+        if any(marker in tl for marker in self._PROVIDER_ALL_MARKERS):
+            return True
+        pids = self._provisionable_provider_ids()
+        has_provider = any(pid in tl for pid in pids)
+        has_key = any(token in tl for token in self._PROVIDER_KEY_TOKENS)
+        has_action = any(token in tl for token in self._PROVIDER_ACTION_TOKENS)
+        if has_provider and has_key and has_action:
+            return True
+        if has_provider and any(token in tl for token in ("einrichten", "verbinden", "connecten", "connect")):
+            return True
+        return False
+
+    def _wants_provision_all_providers(self, text: str) -> bool:
+        tl = (text or "").lower().strip()
+        if any(marker in tl for marker in self._PROVIDER_ALL_MARKERS):
+            return True
+        if tl.startswith(("provider:", "verbinde:", "connect:", "provision:")):
+            payload = tl.split(":", 1)[-1].strip()
+            if payload in {"alle", "all", "auto", "*"}:
+                return True
+        return any(phrase in tl for phrase in (
+            "alle keys", "alle api", "alle provider", "restliche keys", "keys selbst beschaffen",
+        ))
+
+    def _resolve_provider_provision_target(self, text: str) -> Optional[str]:
+        tl = (text or "").lower().strip()
+        if self._wants_provision_all_providers(text):
+            return "all"
+        pids = self._provisionable_provider_ids()
+        if tl.startswith(("provider:", "verbinde:", "connect:", "provision:")):
+            payload = tl.split(":", 1)[-1].strip()
+            for pid in pids:
+                if pid in payload:
+                    return pid
+        for pid in pids:
+            if pid in tl:
+                return pid
+        missing = []
+        try:
+            from browser import get_browser
+            missing = get_browser().providers_needing_provision()
+        except Exception:
+            missing = []
+        if missing:
+            return missing[0]
+        return (self.cfg.relay.primary_provider or "groq").strip().lower() or None
+
     def _is_browser_request(self, text: str) -> bool:
         tl = (text or "").lower().strip()
         if tl.startswith("browser:"):
             return True
-        return (
-            "openrouter" in tl
-            and any(token in tl for token in ("token", "api key", "apikey", "schlüssel", "key"))
-            and any(token in tl for token in ("generier", "erstell", "create", "new", "neu"))
+        if any(tl.startswith(prefix) for prefix in (
+            "browser auf",
+            "öffne im browser",
+            "navigiere zu",
+        )):
+            return True
+        return self._is_provider_provision_request(text)
+
+    def _relay_failure_needs_provision(self, antwort: str) -> bool:
+        tl = (antwort or "").lower()
+        return "api-key fehlt" in tl or "api key fehlt" in tl
+
+    def _extract_failed_provider(self, antwort: str) -> Optional[str]:
+        match = re.search(r"\[relay-fehler:([^\]]+)\]", (antwort or "").lower())
+        if match:
+            return match.group(1).strip()
+        for pid in self._provisionable_provider_ids():
+            if pid in (antwort or "").lower():
+                return pid
+        return None
+
+    def _ensure_provider_connect_directive(self):
+        try:
+            active = {d.get("id") for d in self.memory.get_directives()}
+            if "provider_auto_connect_all" in active:
+                return
+            self.memory.save_directive(
+                "provider_auto_connect_all",
+                (
+                    "Beschaffe und verbinde fehlende Provider-API-Keys selbstständig "
+                    "über den Browser (alle unterstützten Provider), wenn Browser-Automation "
+                    "aktiv ist und ein Login vorhanden ist."
+                ),
+                priority=9,
+            )
+            log.info("Owner-Direktive gesetzt: provider_auto_connect_all")
+        except Exception as e:
+            log.warning("Provider-Direktive konnte nicht gesetzt werden: %s", e)
+
+    async def bootstrap_providers(self):
+        if not getattr(self.cfg, "auto_provision_providers", True):
+            return
+        if not self.cfg.browser_automation:
+            return
+        self._ensure_provider_connect_directive()
+        try:
+            from browser import get_browser
+            result = await get_browser().auto_provision_providers(
+                provision_all=getattr(self.cfg, "auto_provision_all_providers", True),
+            )
+            if result.get("results"):
+                if result.get("ok"):
+                    log.info(
+                        "Provider-Bootstrap: %s/%s verbunden | versucht=%s",
+                        result.get("provisioned", 0),
+                        len(result.get("attempted") or []),
+                        result.get("attempted"),
+                    )
+                else:
+                    log.warning("Provider-Bootstrap ohne Erfolg: %s", result)
+            elif result.get("message"):
+                log.info("Provider-Bootstrap: %s", result.get("message"))
+        except Exception as e:
+            log.warning("Provider-Bootstrap fehlgeschlagen: %s", e)
+
+    async def maintain_provider_keys(self):
+        if not getattr(self.cfg, "auto_provision_providers", True):
+            return
+        if not self.cfg.browser_automation:
+            return
+        try:
+            from browser import get_browser
+            missing = get_browser().providers_needing_provision()
+            if not missing:
+                return
+            await get_browser().auto_provision_providers(
+                missing,
+                provision_all=getattr(self.cfg, "auto_provision_all_providers", True),
+            )
+        except Exception as e:
+            log.debug("Provider-Wartung übersprungen: %s", e)
+
+    async def _auto_provision_providers(self, provider_ids: Optional[list[str]] = None) -> dict:
+        from browser import get_browser
+        cfg = getattr(self, "cfg", None) or get_config()
+        return await get_browser().auto_provision_providers(
+            provider_ids,
+            provision_all=getattr(cfg, "auto_provision_all_providers", True),
         )
+
+    def _normalize_browser_target(self, target: str) -> str:
+        raw = (target or "").strip().strip("\"'")
+        if not raw:
+            raise ValueError("Leeres Browser-Ziel")
+        if raw.startswith(("http://", "https://")):
+            return raw
+        known = {
+            "github": "https://github.com",
+            "google": "https://www.google.com",
+            "openrouter": "https://openrouter.ai",
+            "groq": "https://console.groq.com",
+            "wikipedia": "https://de.wikipedia.org",
+        }
+        key = raw.lower().split("/")[0].split()[0]
+        if key in known:
+            return known[key]
+        if "." in key or key == "localhost":
+            return f"https://{raw}"
+        return f"https://{raw}.com"
+
+    def _parse_simple_browser_request(self, text: str) -> Optional[dict[str, Any]]:
+        raw = (text or "").strip()
+        lower = raw.lower()
+        if lower.startswith("browser:"):
+            body = raw.split(":", 1)[1].strip()
+            if body.startswith("{") or "|" in body:
+                return None
+            return {
+                "instance_id": "quick-browse",
+                "url": self._normalize_browser_target(body),
+                "name": "Quick Browse",
+                "extract": True,
+            }
+        for prefix in ("browser auf ", "öffne im browser ", "navigiere zu "):
+            if lower.startswith(prefix):
+                target = raw[len(prefix):].strip()
+                return {
+                    "instance_id": "quick-browse",
+                    "url": self._normalize_browser_target(target),
+                    "name": "Quick Browse",
+                    "extract": True,
+                }
+        return None
 
     def _parse_browser_action(self, raw: str) -> dict[str, Any]:
         chunk = (raw or "").strip()
@@ -866,21 +1211,60 @@ class IsaacKernel:
         if not self.cfg.browser_automation:
             return "[Browser] Browser-Automation ist im Runtime-Setting deaktiviert."
 
-        tl = (text or "").lower()
-        if (
-            "openrouter" in tl
-            and any(token in tl for token in ("token", "api key", "apikey", "schlüssel", "key"))
-            and any(token in tl for token in ("generier", "erstell", "create", "new", "neu"))
-        ):
-            result = await get_browser().provision_openrouter_token()
+        simple = self._parse_simple_browser_request(text)
+        if simple:
+            actions = [{"action": "goto", "url": simple["url"]}]
+            if simple.get("extract"):
+                actions.append({
+                    "action": "extract_text",
+                    "selector": "body",
+                    "save_as": "page_text",
+                })
+            result = await get_browser().run_flow(
+                simple["instance_id"],
+                simple["url"],
+                actions,
+                name=simple.get("name") or "Quick Browse",
+            )
+            if result.get("ok"):
+                excerpt = (result.get("memory") or {}).get("page_text", "")[:3500]
+                return (
+                    f"[Browser] {simple['url']}\n"
+                    f"Aktuelle URL: {result.get('current_url', simple['url'])}\n\n"
+                    f"{excerpt or '(kein Seiteninhalt extrahiert)'}"
+                )
+            return (
+                f"[Browser] Navigation fehlgeschlagen: {result.get('error', 'unbekannt')}\n"
+                f"URL: {result.get('current_url', simple['url'])}"
+            )
+
+        if self._is_provider_provision_request(text):
+            provider_id = self._resolve_provider_provision_target(text) or "all"
+            if provider_id in {"", "auto", "alle", "all"}:
+                result = await get_browser().auto_provision_providers(
+                    provision_all=True,
+                )
+            else:
+                result = await get_browser().provision_provider_token(provider_id)
+            if result.get("results"):
+                lines = [
+                    f"- {item.get('provider_id')}: "
+                    f"{'verbunden (' + str(item.get('token_preview', 'ok')) + ')' if item.get('ok') else item.get('error', 'fehlgeschlagen')}"
+                    for item in result.get("results", [])
+                ]
+                summary = (
+                    f"[Browser] Provider-Provisioning: {result.get('provisioned', 0)} verbunden, "
+                    f"{result.get('failed', 0)} fehlgeschlagen.\n"
+                )
+                return summary + "\n".join(lines)
             if result.get("ok"):
                 return (
-                    "[Browser] OpenRouter-Token erzeugt und in Isaac hinterlegt.\n"
+                    f"[Browser] {result.get('provider_id', provider_id)}-Token erzeugt und verbunden.\n"
                     f"Ref: {result.get('secret_ref')}\n"
                     f"Preview: {result.get('token_preview')}\n"
                     f"URL: {result.get('current_url')}"
                 )
-            return f"[Browser] OpenRouter-Token fehlgeschlagen: {result.get('error', 'unbekannt')}"
+            return f"[Browser] Provider-Provisioning fehlgeschlagen: {result.get('error', 'unbekannt')}"
 
         try:
             spec = self._parse_browser_request(text)
@@ -1013,6 +1397,17 @@ class IsaacKernel:
             return text.startswith("url:") or text.startswith("instanz:") or (text.startswith("füge") and "url" in text)
         return any(text.startswith(prefix) for prefix in prefixes)
 
+    def _tool_request_intent(self, user_input: str) -> str:
+        tl = (user_input or "").lower().strip()
+        if tl.startswith(("recherche:", "recherchiere:")):
+            return Intent.RESEARCH
+        if (
+            tl.startswith(("browser:", "browser auf", "öffne im browser", "navigiere zu"))
+            or self._is_browser_request(user_input)
+        ):
+            return Intent.BROWSER
+        return Intent.SEARCH
+
     def _resolve_intent_from_classification(
         self, user_input: str, detected_intent: str, interaction_class: str
     ) -> str:
@@ -1020,7 +1415,12 @@ class IsaacKernel:
         if interaction_class == InteractionClass.STATUS_QUERY:
             return Intent.STATUS
         if interaction_class == InteractionClass.TOOL_REQUEST:
-            return Intent.SEARCH
+            tl = (user_input or "").lower().strip()
+            if tl.startswith(("agent:", "agent ", "oberfläche:", "oberflaeche:")):
+                return Intent.AGENT
+            if detected_intent == Intent.AGENT:
+                return Intent.AGENT
+            return self._tool_request_intent(user_input)
 
         # Regex-Intent bleibt nur für explizite Kommandos als Fallback aktiv.
         if detected_intent != Intent.CHAT and self._looks_like_explicit_command(user_input, detected_intent):
@@ -1045,7 +1445,7 @@ class IsaacKernel:
         self, user_input: str, intent: str, interaction_class: str, retrieval_ctx: dict[str, Any]
     ) -> Strategy:
         cfg = getattr(self, "cfg", None) or get_config()
-        allow_tools = intent == Intent.SEARCH
+        allow_tools = intent in (Intent.SEARCH, Intent.RESEARCH)
         allow_followup = interaction_class not in ("SHORT_CLARIFICATION",)
         allow_provider_switch = True
         style_note = ""
@@ -1196,6 +1596,7 @@ async def main():
     bg = get_background()
     kernel.set_background(bg)
     await bg.start()
+    asyncio.create_task(kernel.bootstrap_providers())
 
     http = DashboardHTTPServer(port=kernel.cfg.monitor.http_port)
     await http.start()

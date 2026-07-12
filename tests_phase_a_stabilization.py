@@ -1542,6 +1542,37 @@ class TestConstitutionOwnerOverride(unittest.TestCase):
             self.assertTrue(kernel._is_agent_request("shell ls -la /"))
             self.assertEqual(detect_intent("shell pwd"), Intent.AGENT)
 
+    def test_owner_action_detects_google_photos_search(self):
+        from owner_action import detect_owner_action
+
+        action = detect_owner_action(
+            "Isaac suche mir bei Google Fotos raus über gelbe Blumen"
+        )
+        self.assertIsNotNone(action)
+        self.assertEqual(action.kind, "photos_search")
+        self.assertEqual(action.params.get("query"), "gelbe Blumen")
+
+    def test_owner_action_detects_filesystem_cleanup(self):
+        from owner_action import detect_owner_action
+
+        action = detect_owner_action("räume mein dateisystem auf")
+        self.assertIsNotNone(action)
+        self.assertEqual(action.kind, "filesystem_cleanup")
+
+    def test_owner_action_detects_wlan_status(self):
+        from owner_action import detect_owner_action
+
+        action = detect_owner_action("zeig mir den wlan status vom router")
+        self.assertIsNotNone(action)
+        self.assertEqual(action.kind, "wlan_status")
+
+    def test_owner_action_ignores_explanatory_chat(self):
+        from owner_action import detect_owner_action
+
+        self.assertIsNone(
+            detect_owner_action("erkläre mir das Wetter als sprachliches Motiv in Literatur")
+        )
+
     def test_override_prefix_with_sudo_allows_and_audits(self):
         from constitution_override import apply_constitution_gate, build_override_context
         from config import Level

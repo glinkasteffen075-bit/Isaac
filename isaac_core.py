@@ -220,6 +220,24 @@ class IsaacKernel:
 
         t0 = time.monotonic()
 
+        if is_owner_equivalent_mode():
+            from owner_action import detect_owner_action, execute_owner_action
+
+            owner_action = detect_owner_action(user_input)
+            if owner_action:
+                AuditLog.steffen_input(user_input)
+                emp = self.empathie.analysiere(user_input)
+                result, ok = await execute_owner_action(owner_action)
+                timing["owner_action_ms"] = round((time.perf_counter() - t_start) * 1000, 2)
+                log.info(
+                    "OwnerAction | kind=%s ok=%s ms=%s input='%s'",
+                    owner_action.kind,
+                    ok,
+                    timing["owner_action_ms"],
+                    user_input[:60],
+                )
+                return self._post_process(user_input, result, emp, 8.0 if ok else 4.0, t0)
+
         if interaction_class in {
             InteractionClass.STATUS_QUERY,
             InteractionClass.TOOL_REQUEST,

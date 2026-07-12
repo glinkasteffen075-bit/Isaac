@@ -209,7 +209,28 @@ ISAAC_WIFI_PASSWORD=geheim
 
 ---
 
-## S8+ Live-Test (Termux)
+## S8+ — dieses Gerät (Linux-Root auf USERDATA)
+
+Dieses Samsung S8 läuft **nicht** in Termux, sondern mit **nativem Linux-Root**
+auf der USERDATA-Partition (`/dev/block/.../USERDATA`). Erkennbar an:
+
+- `wlan0` + `rmnet*` Netzinterfaces
+- Repo unter `/root/isaacnew`
+- Kein `/data/data/com.termux`
+
+`.env` auf dem Gerät:
+
+```env
+ISAAC_PRIVILEGE_MODE=admin
+ISAAC_RUNTIME_ENV=s8
+ISAAC_OWNER=Steffen
+```
+
+WLAN-Status nutzt `iwgetid` / `ip` statt Termux-API oder NetworkManager.
+
+---
+
+## S8+ Live-Test (Termux-Variante)
 
 ### 1. Repo aktualisieren
 

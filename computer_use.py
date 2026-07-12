@@ -49,12 +49,26 @@ class AgentAction:
     params: dict[str, Any] = field(default_factory=dict)
 
 
+def _is_s8_linux_root() -> bool:
+    """Samsung S8+ mit nativem Linux-Root auf USERDATA (NetHunter/Linux Deploy)."""
+    try:
+        mounts = Path("/proc/mounts").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return "by-name/USERDATA" in mounts and Path("/sys/class/net/wlan0").exists()
+
+
 def detect_runtime() -> str:
     env = (os.getenv("ISAAC_RUNTIME_ENV") or "").strip().lower()
-    if env == "termux":
-        return "termux"
+    if env in {"termux", "s8", "android"}:
+        if Path("/data/data/com.termux").exists() or env == "termux":
+            return "termux"
+        if _is_s8_linux_root() or env == "s8":
+            return "s8"
     if Path("/data/data/com.termux").exists():
         return "termux"
+    if _is_s8_linux_root():
+        return "s8"
     if os.getenv("DISPLAY") or _command_exists("xdotool"):
         return "linux_desktop"
     return "generic"

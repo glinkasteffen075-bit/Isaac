@@ -1270,6 +1270,16 @@ async def _wlan_status(action: OwnerAction) -> tuple[str, bool]:
                 lines.append(result["stdout"][:2500])
             elif result.get("error"):
                 lines.append(f"--- {label} --- ({result['error']})")
+    elif runtime.runtime == "s8":
+        for cmd in (
+            "iwgetid -r 2>/dev/null",
+            "iw dev wlan0 link 2>/dev/null",
+            "ip -4 addr show wlan0",
+            "ip -4 route show default",
+        ):
+            result = await _shell(cmd)
+            if result.get("stdout"):
+                lines.append(result["stdout"][:2500])
     else:
         for cmd in (
             "nmcli -t -f ACTIVE,SSID,SIGNAL,SECURITY dev wifi",
@@ -2262,6 +2272,13 @@ async def _current_wifi_ssid() -> str:
         for key in ("ssid", "SSID"):
             if data.get(key):
                 return str(data[key])
+    runtime = await _runtime()
+    if runtime.runtime == "s8":
+        for cmd in ("iwgetid -r 2>/dev/null", "iw dev wlan0 link 2>/dev/null | awk '/SSID/ {print $2}'"):
+            result = await _shell(cmd)
+            ssid = (result.get("stdout") or "").strip()
+            if ssid:
+                return ssid
     result = await _shell("nmcli -t -f ACTIVE,SSID dev wifi 2>/dev/null | awk -F: '$1==\"yes\" {print $2; exit}'")
     return (result.get("stdout") or "").strip()
 

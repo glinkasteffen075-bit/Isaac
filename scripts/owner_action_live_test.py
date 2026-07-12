@@ -56,11 +56,21 @@ EXEC_CASES: list[tuple[str, bool]] = [
 LIVE_CASES: list[tuple[str, bool]] = [
     ("isaac status", True),
     ("zeige wlan status", True),
+    ("ping 127.0.0.1", True),
+    ("wie voll ist mein speicher", True),
 ]
 
 
 def _is_termux() -> bool:
     return Path("/data/data/com.termux").exists() or os.environ.get("ISAAC_RUNTIME_ENV") == "termux"
+
+
+def _is_s8_device() -> bool:
+    try:
+        mounts = Path("/proc/mounts").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return "by-name/USERDATA" in mounts or os.environ.get("ISAAC_RUNTIME_ENV") == "s8"
 
 
 async def run_detect() -> tuple[int, int]:
@@ -153,6 +163,7 @@ async def main() -> int:
     print("Owner-Action Live-Test")
     print(f"  ROOT:     {ROOT}")
     print(f"  Termux:   {_is_termux()}")
+    print(f"  S8/Linux: {_is_s8_device()}")
     print(f"  Admin:    {os.environ.get('ISAAC_PRIVILEGE_MODE', 'user')}")
 
     d_ok, d_fail = await run_detect()

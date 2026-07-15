@@ -3360,6 +3360,67 @@ class TestPhase4Connect(unittest.TestCase):
         mock_run.assert_awaited_once()
         self.assertEqual(bg.state.goal_autonomy_ticks, 1)
 
+    def test_goal_inquiry_mode_and_learning_provenance(self):
+        import tempfile
+        from goal_store import reset_goal_store_for_tests
+        from goal_inquiry import (
+            choose_work_mode,
+            extract_inquiry_questions,
+            record_goal_learning_from_task,
+            reset_inquiry_store_for_tests,
+            build_goal_prompt,
+        )
+        from executor import Task, TaskType, TaskStatus
+        from logic import QualityScore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = reset_goal_store_for_tests(Path(tmp) / "g.json")
+            inq = reset_inquiry_store_for_tests(Path(tmp) / "i.json")
+            goal = store.add_owner_goal("Kernel Stabilität verbessern", priority=0.9)
+            sg = store.add_subgoal(goal.id, "Infos sammeln", origin="planner")
+            # first attempt → plan
+            self.assertEqual(choose_work_mode(goal, sg)[2], "plan")
+            sg.attempts = 1
+            mode = choose_work_mode(goal, sg)
+            self.assertEqual(mode[2], "research")
+            self.assertTrue(mode[1])  # allow_tools
+            # Research-Marker im Titel erzwingt research auch bei attempts=0
+            g2 = store.add_owner_goal("Recherchiere Markt für Isaac-Device", priority=0.8)
+            s2 = store.add_subgoal(g2.id, "Start", origin="planner")
+            self.assertEqual(choose_work_mode(g2, s2)[2], "research")
+            prompt = build_goal_prompt(goal, sg, mode="research")
+            self.assertIn(goal.id, prompt)
+            self.assertIn("Owner-Ziel-ID", prompt)
+
+            qs = extract_inquiry_questions("FRAGE: Welches Budget?\nFRAGE: Welcher Zeitrahmen?")
+            self.assertEqual(len(qs), 2)
+
+            task = Task(
+                id="tgoal1",
+                typ=TaskType.RESEARCH,
+                prompt=prompt,
+                beschreibung=f"goal:{goal.id}|test",
+                retrieved_context={"goal_id": goal.id, "subgoal_id": sg.id},
+            )
+            task.status = TaskStatus.DONE
+            task.antwort = (
+                "Markt wächst.\n"
+                "FRAGE: Soll Isaac primär Mobile oder Desktop priorisieren?\n"
+            )
+            task.score = QualityScore(total=7.5)
+            out = record_goal_learning_from_task(task)
+            self.assertTrue(out.get("ok"))
+            self.assertEqual(out.get("goal_id"), goal.id)
+            self.assertGreaterEqual(out.get("inquiries", 0), 1)
+            self.assertGreaterEqual(out.get("facts", 0), 1)
+            open_inq = inq.list_open(goal.id)
+            self.assertTrue(open_inq)
+            # fact provenance
+            from memory import get_memory
+            latest = get_memory().get_fact_record(f"goal_latest.{goal.id}")
+            self.assertIsNotNone(latest)
+            self.assertIn("goal:", str(latest.get("source") or ""))
+
     def test_e2_trace_phases_include_evaluation_and_learning(self):
         """Evolution 2.0: DecisionTrace deckt Evaluation und Learning ab."""
         self.assertEqual(TracePhase.EVALUATION.value, "evaluation")

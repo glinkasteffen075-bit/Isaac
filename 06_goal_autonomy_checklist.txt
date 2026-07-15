@@ -30,8 +30,11 @@ S2 MOTIVATION + TICK
 [ ] Research-Tools default nur bei Research-Zielen (partial: title heuristic)
 
 ──────────────────────────────────────────────────────────────────────────────
-S3+ RESEARCH / LEARN (später)
+S3 INQUIRY / RESEARCH / LEARN (an goal_id)
 ──────────────────────────────────────────────────────────────────────────────
-[ ] Inquiry/Research an goal_id
-[ ] Learning/Procedure an goal_id
-[ ] Digest an Owner
+[x] choose_work_mode: plan|research|inquiry|work
+[x] goal_inquiry store (offene Fragen an Steffen)
+[x] Research/Inquiry-Prompts mit Owner-Ziel-ID
+[x] record_goal_learning_from_task → facts source=goal:{id}
+[x] Failure → recovery subgoal
+[ ] Digest-Kanal gebündelt (Slice 4)

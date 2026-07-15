@@ -1268,6 +1268,24 @@ class Executor:
                     )
                 except Exception:
                     pass
+            # Goal-bound learning (Slice 3): Facts/Inquiries mit source=goal:{id}
+            try:
+                from goal_inquiry import record_goal_learning_from_task
+
+                goal_learn = record_goal_learning_from_task(task)
+                if goal_learn.get("ok") and goal_learn.get("goal_id"):
+                    task.decision_trace.add(
+                        TracePhase.LEARNING,
+                        "goal_learning_recorded",
+                        {
+                            "goal_id": goal_learn.get("goal_id"),
+                            "subgoal_id": goal_learn.get("subgoal_id"),
+                            "facts": goal_learn.get("facts"),
+                            "inquiries": goal_learn.get("inquiries"),
+                        },
+                    )
+            except Exception as exc:
+                log.debug("Goal-learning skip: %s", exc)
         except Exception as e:
             log.warning(f"Task-Persistenz: {e}")
 

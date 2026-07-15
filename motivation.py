@@ -113,26 +113,19 @@ def rank_motivation_decisions(
     gs = store or get_goal_store()
     ensure_subgoals_for_active_goals(gs)
     decisions: list[MotivationDecision] = []
+    from goal_inquiry import build_goal_prompt, choose_work_mode
+
     for goal in gs.list_goals(status="active"):
         for sg in gs.list_subgoals(goal.id, status="active"):
             score, reason = _score_pair(goal, sg)
-            allow_tools = bool((goal.metadata or {}).get("allow_tools", False))
-            task_type = str((goal.metadata or {}).get("task_type") or "chat")
-            if "recherch" in goal.title.lower() or "research" in goal.title.lower():
-                task_type = "research"
-                allow_tools = True
-            hint = (sg.next_action_hint or "").strip() or (
-                f"Arbeite am Owner-Ziel „{goal.title}“. "
-                f"Subgoal: {sg.title}. Formuliere den nächsten konkreten Schritt und führe ihn mental aus."
-            )
-            prompt = (
-                f"[Goal-Autonomie]\n"
-                f"Owner-Ziel ({goal.id}): {goal.title}\n"
-                f"Subgoal ({sg.id}): {sg.title}\n"
-                f"Auftrag: {hint}\n"
-                f"Arbeite zielgerichtet. Keine künstliche Selbstbeschränkung der Ambition. "
-                f"Systemschutz (Sicherheit/Constitution) bleibt unberührt."
-            )
+            task_type, allow_tools, mode = choose_work_mode(goal, sg)
+            # metadata overrides (Owner darf Tools/Mode erzwingen)
+            meta = goal.metadata or {}
+            if "allow_tools" in meta:
+                allow_tools = bool(meta.get("allow_tools"))
+            if meta.get("task_type"):
+                task_type = str(meta.get("task_type"))
+            prompt = build_goal_prompt(goal, sg, mode=mode)
             decisions.append(
                 MotivationDecision(
                     goal_id=goal.id,
@@ -140,11 +133,15 @@ def rank_motivation_decisions(
                     goal_title=goal.title,
                     subgoal_title=sg.title,
                     score=round(score, 3),
-                    reason=reason,
+                    reason=f"{reason},mode={mode}",
                     suggested_task_type=task_type,
                     allow_tools=allow_tools,
                     prompt=prompt,
-                    metadata={"origin": sg.origin, "attempts": sg.attempts},
+                    metadata={
+                        "origin": sg.origin,
+                        "attempts": sg.attempts,
+                        "mode": mode,
+                    },
                 )
             )
     decisions.sort(key=lambda d: d.score, reverse=True)
@@ -215,10 +212,17 @@ async def run_goal_motivation_cycle(
         task = exe.create_task(
             typ=typ,
             prompt=dec.prompt,
-            beschreibung=f"goal:{dec.goal_id[:12]}|{dec.subgoal_title[:40]}",
+            beschreibung=f"goal:{dec.goal_id}|{dec.subgoal_title[:40]}",
             prioritaet=min(10.0, max(1.0, dec.score)),
             strategy=strategy,
             interaction_class="NORMAL_CHAT",
+            retrieved_context={
+                "goal_id": dec.goal_id,
+                "subgoal_id": dec.subgoal_id,
+                "goal_title": dec.goal_title,
+                "mode": (dec.metadata or {}).get("mode", ""),
+                "source": "goal_autonomy",
+            },
         )
         task.decision_trace.add(
             TracePhase.MOTIVATION,
@@ -230,6 +234,7 @@ async def run_goal_motivation_cycle(
                 "reason": dec.reason,
                 "allow_tools": dec.allow_tools,
                 "task_type": dec.suggested_task_type,
+                "mode": (dec.metadata or {}).get("mode", ""),
             },
         )
         task.decision_trace.add(

@@ -1551,11 +1551,19 @@ class IsaacKernel:
             if goal_autonomy_enabled():
                 dec = pick_motivation_decision()
                 if dec:
+                    mode = (dec.metadata or {}).get("mode", "")
                     lines.append(
                         f"Nächste Motivation: {dec.goal_title[:40]} → {dec.subgoal_title[:40]} "
-                        f"(score={dec.score})"
+                        f"(score={dec.score}, mode={mode or '-'})"
                     )
                     lines.append("")
+        except Exception:
+            pass
+        try:
+            from goal_inquiry import get_inquiry_store
+
+            lines.append(get_inquiry_store().format_open_block())
+            lines.append("")
         except Exception:
             pass
         for p in sorted(bl, key=lambda x: x["score"], reverse=True):

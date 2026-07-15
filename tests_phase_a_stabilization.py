@@ -3360,6 +3360,99 @@ class TestPhase4Connect(unittest.TestCase):
         mock_run.assert_awaited_once()
         self.assertEqual(bg.state.goal_autonomy_ticks, 1)
 
+    def test_ensemble_intent_and_model_panel(self):
+        from isaac_core import detect_intent, Intent
+        from openrouter_ensemble import get_ensemble_models, ensemble_free_only
+
+        self.assertEqual(detect_intent("ensemble: Was ist Photosynthese?"), Intent.ENSEMBLE)
+        self.assertEqual(detect_intent("vergleiche: 2+2"), Intent.ENSEMBLE)
+        self.assertEqual(detect_intent("Was ist 2+2?"), Intent.CHAT)
+        models = get_ensemble_models(free_only=True, limit=3)
+        self.assertTrue(models)
+        self.assertTrue(all(":free" in m for m in models))
+        self.assertTrue(ensemble_free_only())
+
+    def test_ensemble_openrouter_picks_winner_or_judge(self):
+        from openrouter_ensemble import ensemble_openrouter, ModelAnswer
+        from types import SimpleNamespace
+
+        answers = {
+            "model-a:free": "Antwort A mit guten Details zur Frage.",
+            "model-b:free": "Antwort B ist kürzer.",
+            "model-c:free": "Antwort C mittel.",
+        }
+
+        class FakeRelay:
+            async def ask(self, prompt, system="", provider=None, task_id="", model_override=None, use_cache=True):
+                if "Synthesizer" in prompt or "Kandidat" in prompt:
+                    return "Kombinierte beste Antwort aus A und B."
+                return answers.get(model_override, f"fallback {model_override}")
+
+        async def _run():
+            with patch("relay.get_relay", return_value=FakeRelay()):
+                with patch(
+                    "openrouter_ensemble.get_logic",
+                    return_value=SimpleNamespace(
+                        evaluate=lambda antwort, prompt: SimpleNamespace(
+                            total=9.0 if "A mit guten" in antwort else 6.0
+                        )
+                    ),
+                ):
+                    with patch.dict(
+                        os.environ,
+                        {
+                            "ISAAC_ENSEMBLE_JUDGE": "0",
+                            "ISAAC_ENSEMBLE_STAGGER_MS": "0",
+                        },
+                        clear=False,
+                    ):
+                        return await ensemble_openrouter(
+                            "Testfrage",
+                            system="sys",
+                            models=list(answers.keys()),
+                            task_id="t-ens",
+                        )
+
+        result = asyncio.run(_run())
+        self.assertEqual(result.mode, "winner")
+        self.assertIn("A mit guten", result.final)
+        self.assertEqual(result.winner_model, "model-a:free")
+        self.assertEqual(len(result.ergebnisse), 3)
+
+    def test_ensemble_kernel_route_uses_module(self):
+        from isaac_core import IsaacKernel
+
+        kernel = object.__new__(IsaacKernel)
+        kernel.relay = SimpleNamespace()
+        kernel._build_system = lambda *a, **k: "system"
+
+        async def fake_ensemble(prompt, system="", task_id="ensemble"):
+            from openrouter_ensemble import EnsembleResult, ModelAnswer
+            return EnsembleResult(
+                final="Synthese XY",
+                mode="judge",
+                winner_model="judge-model",
+                ergebnisse=[
+                    ModelAnswer(model="a:free", antwort="A", score=7.0),
+                    ModelAnswer(model="b:free", antwort="B", score=6.5),
+                ],
+                dauer_s=1.2,
+            )
+
+        async def _run():
+            with patch("openrouter_ensemble.ensemble_enabled", return_value=True):
+                with patch("openrouter_ensemble.ensemble_openrouter", side_effect=fake_ensemble):
+                    return await kernel._ensemble_route(
+                        "ensemble: Was ist Isaac?",
+                        sudo_aktiv=False,
+                        emp=SimpleNamespace(),
+                    )
+
+        text, score = asyncio.run(_run())
+        self.assertIn("Synthese XY", text)
+        self.assertIn("Ensemble:", text)
+        self.assertGreaterEqual(score, 6.5)
+
     def test_goal_inquiry_mode_and_learning_provenance(self):
         import tempfile
         from goal_store import reset_goal_store_for_tests

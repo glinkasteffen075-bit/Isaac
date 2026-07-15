@@ -81,6 +81,7 @@ class Intent:
     BROADCAST   = "broadcast"
     SPLIT       = "split"
     PIPELINE    = "pipeline"
+    ENSEMBLE    = "ensemble"
     DECOMPOSE   = "decompose"   # Explizite Atomisierung
     FACT_SET    = "fact_set"
     GOAL_SET    = "goal_set"
@@ -125,6 +126,12 @@ EXPLICIT_COMMAND_PATTERNS = [
     (Intent.BROADCAST,  [r"^broadcast:", r"^alle instanzen:", r"^frage alle"]),
     (Intent.SPLIT,      [r"^split:", r"^aufteilen:"]),
     (Intent.PIPELINE,   [r"^pipeline:", r"^verbessere iterativ"]),
+    (Intent.ENSEMBLE,   [
+        r"^ensemble\s*:",
+        r"^vergleiche\s*:",
+        r"^vergleiche modelle\s*:",
+        r"^multi[- ]?model\s*:",
+    ]),
     (Intent.DECOMPOSE,  [r"^atomisiere:", r"^verteile:"]),
     (Intent.CODE,       [r"^code:", r"^programmiere:", r"^schreibe.*python"]),
     (Intent.FILE,       [
@@ -168,7 +175,7 @@ def braucht_decomposer(text: str, intent: str) -> bool:
     """Entscheidet ob ein Prompt atomisiert werden soll."""
     if intent in (Intent.CODE, Intent.FILE, Intent.SEARCH, Intent.RESEARCH,
                   Intent.BROADCAST, Intent.SPLIT, Intent.PIPELINE,
-                  Intent.DECOMPOSE):
+                  Intent.DECOMPOSE, Intent.ENSEMBLE):
         return False   # Eigene Handler
     wortanzahl = len(text.split())
     und_count  = len(re.findall(r'\s+(?:und|sowie|außerdem|auch)\s+',
@@ -442,6 +449,9 @@ class IsaacKernel:
         aktive_instanzen = get_browser().get_active_ids()
 
         # B) Multi-KI explizit
+        if intent == Intent.ENSEMBLE:
+            return await self._ensemble_route(user_input, sudo_aktiv, emp)
+
         if intent in (Intent.BROADCAST, Intent.SPLIT, Intent.PIPELINE,
                       Intent.DECOMPOSE):
             return await self._multi_ki_route(
@@ -488,6 +498,57 @@ class IsaacKernel:
             r = await dispatcher.broadcast(user_input, instanzen, system=system)
 
         return r.final, r.ergebnisse[0].score if r.ergebnisse else 6.0
+
+    async def _ensemble_route(self, user_input: str, sudo_aktiv: bool, emp) -> tuple[str, float]:
+        """OpenRouter Multi-Model: vergleichen + bestes/Kombination."""
+        from openrouter_ensemble import (
+            ensemble_enabled,
+            ensemble_openrouter,
+            format_ensemble_footer,
+        )
+
+        body = user_input
+        for prefix in (
+            "ensemble:", "vergleiche:", "vergleiche modelle:", "multi-model:", "multimodel:",
+        ):
+            if body.lower().startswith(prefix):
+                body = body[len(prefix):].strip()
+                break
+        if not body:
+            return (
+                "[Ensemble] Format: ensemble: <deine Frage>\n"
+                "Nutzt mehrere OpenRouter-Modelle (Default: free), scored und kombiniert."
+            ), 5.0
+
+        if not ensemble_enabled():
+            # Fallback single openrouter
+            system = self._build_system(sudo_aktiv, emp)
+            text, prov = await self.relay.ask_with_fallback(
+                body, system=system, preferred="openrouter", task_id="ensemble-off"
+            )
+            return f"{text}\n\n_[Ensemble deaktiviert → single {prov}]_", 6.0
+
+        system = self._build_system(sudo_aktiv, emp)
+        result = await ensemble_openrouter(
+            body,
+            system=system,
+            task_id="ensemble",
+        )
+        footer = format_ensemble_footer(result)
+        final = f"{result.final}\n\n---\n_{footer}_"
+        best_score = 0.0
+        ok = [e for e in result.ergebnisse if not e.fehler]
+        if ok:
+            best_score = max(e.score for e in ok)
+        elif result.mode in {"winner", "judge", "single"}:
+            best_score = 6.5
+        AuditLog.action(
+            "Kernel",
+            "ensemble",
+            f"mode={result.mode} winner={result.winner_model} n={len(result.ergebnisse)}",
+            erfolg=bool(result.final),
+        )
+        return final, best_score
 
     async def _standard_task(self, user_input: str, intent: str,
                               sudo_aktiv: bool, emp, wissen_kontext: str,
@@ -1604,6 +1665,7 @@ class IsaacKernel:
             Intent.BROADCAST: ("broadcast:", "alle instanzen:", "frage alle"),
             Intent.SPLIT: ("split:", "aufteilen:"),
             Intent.PIPELINE: ("pipeline:", "verbessere iterativ"),
+            Intent.ENSEMBLE: ("ensemble:", "vergleiche:", "vergleiche modelle:", "multi-model:"),
             Intent.DECOMPOSE: ("atomisiere:", "verteile:"),
             Intent.CODE: ("code:", "programmiere:", "schreibe python", "schreibe bitte python"),
             Intent.FILE: ("datei:", "lese:", "schreibe datei:", "schreibe eine datei"),

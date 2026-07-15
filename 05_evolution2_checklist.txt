@@ -1,0 +1,70 @@
+EVOLUTION 2.0 — CONSOLIDATE & DEEPEN
+====================================
+Status: IN PROGRESS (gestartet 2026-07-15)
+Voraussetzung: Phase 1–4 ✅
+
+Ziel: Bestehende Vernetzung vertiefen — keine Feature-Expansion.
+Open-Source-Muster nur als *bounded patterns* übernehmen (kein wholesale Framework-Import).
+
+──────────────────────────────────────────────────────────────────────────────
+E2.0 GATE 0 — SYNC & BASELINE
+──────────────────────────────────────────────────────────────────────────────
+[x] 0.1 origin/main (glinkasteffen075-bit/Isaac) = kanonisch
+[x] 0.2 sco0rp/IsaacNew main mit origin/main synchronisiert
+[x] 0.3 Lokale Secrets aus Code entfernt (owner_login_probe Defaults)
+[x] 0.4 Baseline: py_compile + sanity_check + unittest grün
+
+──────────────────────────────────────────────────────────────────────────────
+E2.0.1 DECISIONTRACE VOLLSTÄNDIGKEIT (OpenParallax / Langfuse-inspiriert)
+──────────────────────────────────────────────────────────────────────────────
+Idee: Think ≠ Act (OpenParallax); Observability-Phasen explizit (Langfuse-ähnlich).
+Isaac-Umsetzung: nur TracePhase erweitern, kein neues Observability-Produkt.
+
+[x] 1.1 TracePhase.EVALUATION nach Quality-Score im Executor
+[x] 1.2 TracePhase.LEARNING bei Procedure-Record
+[x] 1.3 FOLLOWUP-Entscheidung im AI-Pfad tracen
+[ ] 1.4 Evaluation-Phasen in evals/replay_eval sichtbar machen (optional)
+
+──────────────────────────────────────────────────────────────────────────────
+E2.0.2 PROCEDURE → SELECTION (Letta/Mem0-inspiriert, bounded)
+──────────────────────────────────────────────────────────────────────────────
+Idee: Memory-Hits boosten Tool-Auswahl; kein Graph-DB, kein Mem0-Dependency.
+
+[x] 2.1 Keyword-Overlap-Boost auf bestehende procedure_hints
+[x] 2.2 Owner-Procedure-Hints unverändert
+[ ] 2.3 Procedure-Degrade-Pfad in mehr Evals absichern
+
+──────────────────────────────────────────────────────────────────────────────
+E2.0.3 SECURITY / OWNER-TOOLS
+──────────────────────────────────────────────────────────────────────────────
+[x] 3.1 owner_login_probe ohne Klartext-Credentials im Repo
+[x] 3.2 Termux-Bridge Setup aus Chroot dokumentiert/verbessert
+[x] 3.3 Credential-Defaults leer; Config nur data/ (gitignored)
+
+──────────────────────────────────────────────────────────────────────────────
+E2.0.4 POLICY & CONSTITUTION (Roadmap #1)
+──────────────────────────────────────────────────────────────────────────────
+[x] 4.1 Constitution-Gates an Tool/Browser/File (Phase 4)
+[x] 4.2 Governance/Regression-Evals hermetisch ohne ADMIN_MODE
+[ ] 4.3 Weitere kritische Pfade inventarisieren (shell, package)
+
+──────────────────────────────────────────────────────────────────────────────
+E2.0.5 RELEASE-DISZIPLIN
+──────────────────────────────────────────────────────────────────────────────
+[x] 5.1 Validierung A–G (replay_eval) grün
+[x] 5.2 unittest (205) + eval_runner (52/52) + sanity_check grün
+[ ] 5.3 PR gegen main (nicht main direkt)
+
+──────────────────────────────────────────────────────────────────────────────
+EXPLIZIT NICHT IN EVOLUTION 2.0 (vorerst)
+──────────────────────────────────────────────────────────────────────────────
+Human Layer, Personality, Trust-Modeling, Dashboard-Redesign,
+Vector-Memory-Neudesign, Cloud-Deploy, freie Inquiry-Loops,
+MCP-Subagenten, Mem0/Letta/LangGraph als Dependencies,
+wholesale Agent-OS-Frameworks (OpenHands, SemaClaw, …)
+
+OPEN-SOURCE REFERENZEN (nur Muster, nicht Import):
+- OpenParallax: Think-Process ≠ Act-Process → Classification/Strategy vor Executor
+- Letta / Mem0 OpenMemory: typed/local memory → Isaac Memory Blocks + Procedure
+- Langfuse-style traces → DecisionTrace Phasen (governance…learning)
+- Hermes Agent: Skill/Tool Schema → hermes_compat.py (bereits vorhanden)

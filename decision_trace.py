@@ -15,6 +15,8 @@ class TracePhase(Enum):
     SELECTION = "selection"
     EXECUTION = "execution"
     CONTEXT_INTEGRATION = "context_integration"
+    EVALUATION = "evaluation"
+    LEARNING = "learning"
     FOLLOWUP = "followup"
 
 

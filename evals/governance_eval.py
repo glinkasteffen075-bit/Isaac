@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from constitution import get_constitution
 from privilege import get_gate, isaac_ctx
-from config import Level
+from config import Level, get_config
 from constitution_override import (
     apply_constitution_gate,
     build_override_context,
@@ -10,7 +12,7 @@ from constitution_override import (
 )
 
 
-def run() -> dict:
+def _run_cases() -> list[dict]:
     gate = get_gate()
     c = get_constitution()
     cases = []
@@ -119,7 +121,23 @@ def run() -> dict:
         "ok": not_gated is None and skipped_gate is None,
         "detail": not_gated,
     })
+    return cases
 
+
+def run() -> dict:
+    """Governance-Evals laufen ohne Admin-Auto-Override (hermetisch)."""
+    cfg = get_config()
+    previous_mode = getattr(cfg, "privilege_mode", "user")
+    try:
+        cfg.privilege_mode = "user"
+        with (
+            patch("privilege.is_owner_equivalent_mode", return_value=False),
+            patch("constitution_override.is_owner_equivalent_mode", return_value=False),
+            patch("config.is_owner_equivalent_mode", return_value=False),
+        ):
+            cases = _run_cases()
+    finally:
+        cfg.privilege_mode = previous_mode
     passed = sum(1 for c in cases if c["ok"])
     return {"suite": "governance", "passed": passed, "total": len(cases), "cases": cases}
 

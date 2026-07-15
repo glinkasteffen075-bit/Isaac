@@ -13,8 +13,32 @@ PUB_PATH="$KEY_PATH.pub"
 echo "=== Isaac Termux-Brücke Setup ==="
 echo "Isaac: $ISAAC_DIR"
 
+TERMUX_BASH="/data/data/com.termux/files/usr/bin/bash"
 if ! command -v pkg >/dev/null 2>&1; then
-  echo "Fehler: pkg nicht gefunden — Skript in Termux ausführen." >&2
+  if [ -x "$TERMUX_BASH" ] && [ -z "${ISAAC_TERMUX_SETUP_REEXEC:-}" ]; then
+    echo "Chroot erkannt — starte Setup in Termux …"
+    export ISAAC_TERMUX_SETUP_REEXEC=1
+    exec "$TERMUX_BASH" "$ISAAC_DIR/scripts/setup_termux_bridge.sh" "$ISAAC_DIR"
+  fi
+  cat >&2 <<'EOF'
+Fehler: pkg nicht gefunden.
+
+Dieses Skript muss in der Termux-App laufen (nicht im Linux-Chroot).
+
+So geht's:
+  1) Termux-App auf dem Handy öffnen
+  2) Falls Isaac dort noch fehlt:
+       pkg install git
+       git clone https://github.com/glinkasteffen075-bit/Isaac.git ~/Isaac
+     Oder nur das Skript kopieren:
+       mkdir -p ~/isaacnew/scripts
+       cp /pfad/zum/setup_termux_bridge.sh ~/isaacnew/scripts/
+  3) In Termux ausführen:
+       cd ~/Isaac    # oder ~/isaacnew
+       bash scripts/setup_termux_bridge.sh
+
+Falls Termux noch nicht installiert ist: zuerst Termux aus F-Droid installieren.
+EOF
   exit 1
 fi
 

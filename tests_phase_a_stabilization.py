@@ -3132,6 +3132,66 @@ class TestPhase4Connect(unittest.TestCase):
         self.assertEqual(nightly.window_start_hour, 1)
         self.assertEqual(nightly.window_end_hour, 4)
 
+    def test_e2_trace_phases_include_evaluation_and_learning(self):
+        """Evolution 2.0: DecisionTrace deckt Evaluation und Learning ab."""
+        self.assertEqual(TracePhase.EVALUATION.value, "evaluation")
+        self.assertEqual(TracePhase.LEARNING.value, "learning")
+        trace = DecisionTrace()
+        trace.add(TracePhase.EVALUATION, "quality_scored", {"score_total": 7.5})
+        trace.add(TracePhase.LEARNING, "procedure_recorded", {"signature": "abc"})
+        phases = [e["phase"] for e in trace.to_list()]
+        self.assertEqual(phases, ["evaluation", "learning"])
+        # Serialisierbar für Audit/Dashboard
+        json.dumps(trace.to_list())
+
+    def test_e2_owner_login_probe_has_no_hardcoded_secrets(self):
+        """Credentials gehören nicht in den Quellcode."""
+        import owner_login_probe as probe
+
+        self.assertEqual(probe.DEFAULT_EMAILS, ())
+        self.assertEqual(probe.DEFAULT_PASSWORDS, ())
+        src = Path(probe.__file__).read_text(encoding="utf-8")
+        for forbidden in (
+            "hh88hh88",
+            "keinemachtdendrogen",
+            "steffenglinka666@",
+            "brandschutz5@",
+        ):
+            self.assertNotIn(forbidden, src)
+
+    def test_e2_procedure_hints_keyword_overlap_boosts(self):
+        """Keyword-Overlap hebt passende Procedures an (bounded Mem0/Letta-Muster)."""
+        from memory import get_memory
+        from tool_runtime import _procedure_hints_for_prompt
+
+        mem = get_memory()
+        sig = "e2testoverlap0001"
+        mem.upsert_procedure(
+            signature=sig,
+            task_type="search",
+            intent_hint="wetter berlin vorhersage",
+            keywords=["wetter", "berlin", "vorhersage", "suche"],
+            tools_used=["isaac.search_web"],
+            reliability=0.8,
+            success_count=3,
+            failure_count=0,
+            last_status="done",
+            degraded=False,
+        )
+        hints = _procedure_hints_for_prompt("Suche Wetter Berlin Vorhersage heute")
+        self.assertIn("isaac.search_web", hints)
+        self.assertGreater(hints["isaac.search_web"], 9.0)
+
+    def test_e2_executor_does_not_reclassify_input(self):
+        """OpenParallax-Muster: Executor denkt nicht neu (kein classify)."""
+        import executor as executor_mod
+        import inspect
+
+        source = inspect.getsource(executor_mod)
+        # Executor darf klassifizieren weder importieren noch aufrufen.
+        self.assertNotIn("classify_interaction_result", source)
+        self.assertNotIn("from low_complexity import classify", source)
+
 
 if __name__ == '__main__':
     unittest.main()

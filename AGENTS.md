@@ -143,8 +143,8 @@ Keine versteckte Tool-Autonomie.
 | **1 — STABILIZE** | ✅ | Executor ohne autonome Tool-Entscheidung; `ClassificationResult`; explizites `Strategy`; `_should_try_tool` nur `task.strategy.allow_tools` |
 | **2 — ALIGN** | ✅ | Ein Retrieval-Pfad (`build_retrieval_context`); Kernel besitzt Kontext-Komposition; kein paralleles `build_context()` |
 | **3 — REFINE** | ✅ | `constitution.py`, `self_model.py`, `task_checkpoint.py`, MCP-Grundgerüst, `evals/`, Dashboard offene Fragen |
-| **4 — CONNECT** | 🔄 | Vernetzung: Constitution-Grenzen, DecisionTrace, Regelwerk→Retrieval, Procedure→Selection, MCP-Härtung |
-| **Evolution 2.0** | später | Policy-Enforcement vertiefen, vollständiges MCP, Eval-Suite |
+| **4 — CONNECT** | ✅ | Vernetzung: Constitution-Grenzen, DecisionTrace, Regelwerk→Retrieval, Procedure→Selection, MCP-Härtung |
+| **Evolution 2.0** | 🔄 | Policy-Enforcement vertiefen, DecisionTrace Evaluation/Learning, Procedure-Selection, Eval-Suite, bounded open-source patterns |
 
 ### Do NOT start or expand (aktuelle Disziplin)
 
@@ -375,7 +375,7 @@ Read AGENTS.md first — it is the canonical instruction set.
 
 MISSION: Improve Isaac incrementally, safely, architecture-aware. Local stateful cognitive kernel — NOT a chatbot wrapper.
 
-CURRENT PHASE: Consolidate core (Phase 1+2 done; Phase 3 refine in progress).
+CURRENT PHASE: Evolution 2.0 (Phase 1–4 done). Consolidate & deepen policy/trace/procedure.
 Do NOT expand: Human Layer, instincts, personality, dashboard redesign, cloud deploy, MCP/subagent expansion, broad redesign.
 
 PIPELINE: classify → retrieve → strategy → task → execute → evaluate → memory update.

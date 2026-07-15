@@ -830,6 +830,18 @@ class Executor:
             score = self.logic.evaluate(antwort, task.prompt, task.id)
             eval_ms = round((time.perf_counter() - eval_t0) * 1000, 2)
             task.score = score
+            task.decision_trace.add(
+                TracePhase.EVALUATION,
+                "quality_scored",
+                {
+                    "score_total": round(float(score.total), 3),
+                    "acceptable": bool(getattr(score, "acceptable", False)),
+                    "iteration": iteration,
+                    "provider": prov or "",
+                    "eval_ms": eval_ms,
+                    "summary": (score.summary() if hasattr(score, "summary") else "")[:120],
+                },
+            )
             self._checkpoint(
                 task,
                 CheckpointState.EVALUATING,
@@ -865,11 +877,27 @@ class Executor:
             task.log(f"Nachfrage: {decision.mode} – {decision.reason}")
             self._notify(task)
 
+            task.decision_trace.add(
+                TracePhase.FOLLOWUP,
+                "followup_decided",
+                {
+                    "needed": bool(decision.needed),
+                    "mode": getattr(decision, "mode", "") or "",
+                    "reason": (getattr(decision, "reason", "") or "")[:120],
+                    "iteration": iteration,
+                    "stale_rounds": stale_rounds,
+                },
+            )
             if not decision.needed:
                 break
 
             if stale_rounds >= 2:
                 task.log("Loop-Schutz: Qualität verbessert sich nicht weiter")
+                task.decision_trace.add(
+                    TracePhase.FOLLOWUP,
+                    "followup_aborted_stale",
+                    {"stale_rounds": stale_rounds, "last_score": last_score_total},
+                )
                 break
 
             if decision.mode == "decompose" and decision.sub_tasks:
@@ -947,6 +975,17 @@ class Executor:
         task.provider_used = prov
         task.status        = TaskStatus.DONE
         task.score         = self.logic.evaluate(antwort, task.prompt, task.id)
+        task.decision_trace.add(
+            TracePhase.EVALUATION,
+            "quality_scored",
+            {
+                "score_total": round(float(task.score.total), 3) if task.score else 0.0,
+                "acceptable": bool(getattr(task.score, "acceptable", False)),
+                "provider": prov or "",
+                "via": "search",
+                "hits": len(getattr(result, "hits", []) or []),
+            },
+        )
         task.log(f"Suche: {len(result.hits)} Hits aus {result.quellen}")
 
     async def _execute_research(self, task: Task):
@@ -1192,7 +1231,33 @@ class Executor:
                 provider    = task.provider_used,
             )
             from procedure_memory import record_task_outcome
-            record_task_outcome(task)
+            proc = record_task_outcome(task)
+            if proc:
+                task.decision_trace.add(
+                    TracePhase.LEARNING,
+                    "procedure_recorded",
+                    {
+                        "signature": str(proc.get("signature") or "")[:16],
+                        "reliability": proc.get("reliability"),
+                        "degraded": bool(proc.get("degraded")),
+                        "success_count": proc.get("success_count"),
+                        "failure_count": proc.get("failure_count"),
+                    },
+                )
+                try:
+                    self._checkpoint(
+                        task,
+                        CheckpointState.LEARNING_COMMIT,
+                        current_prompt=task.prompt,
+                        result_snapshot=build_result_snapshot(
+                            antwort=task.antwort or "",
+                            provider=task.provider_used or "",
+                            score_total=task.score.total if task.score else None,
+                            via="procedure_record",
+                        ),
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             log.warning(f"Task-Persistenz: {e}")
 

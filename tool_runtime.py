@@ -340,18 +340,33 @@ async def list_live_tool_interfaces() -> dict:
 
 
 def _procedure_hints_for_prompt(prompt: str) -> dict[str, float]:
+    """Bounded Procedure→Selection: Reliability + leichte Keyword-Überlappung.
+
+    Inspiriert von lokalen Memory-Systemen (z. B. Letta-Blocks / Mem0-Retrieval),
+    aber ohne neuen Layer: nutzt nur vorhandene Procedure-Memory-Signaturen.
+    """
     try:
         from memory import get_memory
-        from procedure_memory import owner_procedure_hints_for_prompt
+        from procedure_memory import owner_procedure_hints_for_prompt, _extract_keywords
 
         hints: dict[str, float] = {}
-        for proc in get_memory().search_procedures(prompt, limit=4):
+        prompt_terms = set(_extract_keywords(prompt, limit=8))
+        for proc in get_memory().search_procedures(prompt, limit=6):
             if proc.get("degraded"):
                 continue
             rel = float(proc.get("reliability") or 0.0)
             if rel < 0.45:
                 continue
             boost = min(18.0, rel * 12.0)
+            # Keyword-Overlap: etwas höhere Priorität bei thematischer Nähe
+            proc_terms = {
+                str(k).lower()
+                for k in (proc.get("keywords") or [])
+                if k
+            }
+            if prompt_terms and proc_terms:
+                overlap = len(prompt_terms & proc_terms) / max(1, len(prompt_terms))
+                boost += min(6.0, overlap * 8.0)
             for tool_name in proc.get("tools_used") or []:
                 name = str(tool_name).strip().lower()
                 if name.startswith("owner:"):

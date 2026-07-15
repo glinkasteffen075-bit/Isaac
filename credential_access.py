@@ -10,7 +10,7 @@ from typing import Any, Optional
 from urllib.parse import urlparse
 
 from audit import AuditLog
-from config import is_owner_equivalent_mode
+from config import Level, is_owner_equivalent_mode
 from ui_automation import UINode, _fold_label, find_nodes
 
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
@@ -53,10 +53,39 @@ def credential_access_allowed() -> bool:
     return is_owner_equivalent_mode()
 
 
-def require_credential_access() -> Optional[str]:
-    if credential_access_allowed():
+def _constitution_gate_credentials(action: str = "credential_access") -> Optional[str]:
+    """Verfassungs-Gate: Credential-Pfade sind Owner-only und auditpflichtig."""
+    from constitution_override import apply_constitution_gate, build_override_context
+
+    owner = is_owner_equivalent_mode()
+    gate = apply_constitution_gate(
+        action,
+        {
+            "outside_effect": True,
+            "audit_logged": True,
+            "risk": "high",
+            "owner_approved": owner,
+        },
+        build_override_context(
+            source=f"credential_access.{action}",
+            caller_level=Level.STEFFEN if owner else Level.TASK,
+            owner_confirmed=owner,
+            override_reason="owner_equivalent_mode" if owner else "",
+        ),
+    )
+    if gate.get("allowed"):
         return None
-    return "Credential-Zugriff nur im Owner/Admin-Modus (ISAAC_PRIVILEGE_MODE=admin)."
+    blocked = ", ".join(gate.get("blocked_by") or [])
+    return f"Verfassung blockiert Credential-Zugriff: {blocked}"
+
+
+def require_credential_access() -> Optional[str]:
+    if not credential_access_allowed():
+        return "Credential-Zugriff nur im Owner/Admin-Modus (ISAAC_PRIVILEGE_MODE=admin)."
+    constitution_block = _constitution_gate_credentials("credential_access")
+    if constitution_block:
+        return constitution_block
+    return None
 
 
 def mask_secret(value: str) -> str:

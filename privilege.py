@@ -155,8 +155,61 @@ class PrivilegeGate:
                 self._log_decision(aktion, ctx, False, verdict.reason)
                 return False, verdict.reason
 
+        # Constitution-Kopplung für kritische Aktionen (nach Level/Confirmation).
+        if aktion in {
+            "execute_code", "system_command", "file_delete", "wipe_memory", "modify_config",
+        }:
+            constitution_block = self._constitution_gate_action(aktion, ctx)
+            if constitution_block:
+                self._log_decision(aktion, ctx, False, constitution_block)
+                return False, constitution_block
+
         self._log_decision(aktion, ctx, True, "OK")
         return True, "OK"
+
+    def _constitution_gate_action(self, aktion: str, ctx: PrivCtx) -> Optional[str]:
+        """Mappt Privilege-Aktionen auf Verfassungs-Urteile (Owner/STEFFEN freigeben)."""
+        try:
+            from constitution_override import apply_constitution_gate, build_override_context
+        except Exception as exc:
+            log.debug("Constitution-Gate Import: %s", exc)
+            return None
+
+        owner = is_owner_equivalent_mode() or ctx.level >= Level.STEFFEN
+        action_map = {
+            "execute_code": "execute_code",
+            "system_command": "system_command",
+            "file_delete": "file_delete",
+            "wipe_memory": "modify_config",
+            "modify_config": "modify_config",
+        }
+        action = action_map.get(aktion, aktion)
+        metadata = {
+            "outside_effect": True,
+            "audit_logged": True,
+            "risk": "high",
+            "owner_approved": owner,
+            "destructive": aktion in {"file_delete", "wipe_memory", "system_command"},
+        }
+        # system_command ohne destruktives Flag nur high_impact warning — destructive
+        # hier nur wenn Aktion selbst destruktiv ist (nicht jeder shell-call über privilege).
+        if aktion == "system_command":
+            metadata["destructive"] = False
+        gate = apply_constitution_gate(
+            action,
+            metadata,
+            build_override_context(
+                source="privilege.authorize",
+                caller_level=int(ctx.level),
+                owner_confirmed=owner,
+                sudo_active=False,
+                override_reason="owner_or_steffen" if owner else "",
+            ),
+        )
+        if gate.get("allowed"):
+            return None
+        blocked = ", ".join(gate.get("blocked_by") or [])
+        return f"Verfassung blockiert '{aktion}': {blocked}"
 
     def require(self, aktion: str, ctx: PrivCtx) -> None:
         """Wie authorize(), wirft aber Exception wenn verweigert."""

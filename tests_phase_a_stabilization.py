@@ -3285,6 +3285,74 @@ class TestPhase4Connect(unittest.TestCase):
         self.assertTrue(verdict["allowed"])
         self.assertIn("high_impact_action", verdict["warnings"])
 
+    def test_e2_credential_access_requires_owner_and_constitution(self):
+        from credential_access import require_credential_access
+
+        with patch("credential_access.is_owner_equivalent_mode", return_value=False):
+            msg = require_credential_access()
+        self.assertIsNotNone(msg)
+        self.assertIn("Admin-Modus", msg)
+
+        with patch("credential_access.is_owner_equivalent_mode", return_value=True):
+            with patch("constitution_override.is_owner_equivalent_mode", return_value=True):
+                self.assertIsNone(require_credential_access())
+
+    def test_e2_browser_login_gate_requires_owner(self):
+        from browser import BrowserManager
+
+        mgr = BrowserManager()
+        with patch("browser.is_owner_equivalent_mode", return_value=False):
+            with patch("constitution_override.is_owner_equivalent_mode", return_value=False):
+                msg = mgr._constitution_gate_browser(
+                    "browser_login",
+                    url="https://example.com/login",
+                    require_owner=True,
+                )
+        self.assertIsNotNone(msg)
+        self.assertIn("Verfassung", msg)
+
+    def test_e2_privilege_constitution_blocks_file_delete_without_owner(self):
+        from privilege import get_gate, isaac_ctx
+        from config import get_config
+
+        cfg = get_config()
+        prev = cfg.privilege_mode
+        cfg.privilege_mode = "user"
+        try:
+            with patch("privilege.is_owner_equivalent_mode", return_value=False):
+                with patch("constitution_override.is_owner_equivalent_mode", return_value=False):
+                    # Bypass confirmation queue: force constitution path via STEFFEN-less ISAAC
+                    # after confirmation would block first; patch confirmation to allow.
+                    with patch("security_policy.get_confirmation_policy") as gcp:
+                        pol = MagicMock()
+                        pol.analyze.return_value = MagicMock(allowed=True, reason="ok")
+                        gcp.return_value = pol
+                        ok, reason = get_gate().authorize(
+                            "file_delete",
+                            isaac_ctx("Test", "Auditierter Datei-Löschversuch mit Außenwirkung"),
+                        )
+            self.assertFalse(ok)
+            self.assertIn("Verfassung", reason)
+        finally:
+            cfg.privilege_mode = prev
+
+    def test_e2_privilege_steffen_modify_config_still_allowed(self):
+        from privilege import get_gate, steffen_ctx
+        from config import get_config
+
+        cfg = get_config()
+        prev = cfg.privilege_mode
+        cfg.privilege_mode = "user"
+        try:
+            with patch("privilege.is_owner_equivalent_mode", return_value=False):
+                ok, reason = get_gate().authorize(
+                    "modify_config",
+                    steffen_ctx("Owner patch apply"),
+                )
+            self.assertTrue(ok, reason)
+        finally:
+            cfg.privilege_mode = prev
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -528,6 +528,21 @@ class BrowserManager:
             log.debug(f"Keine Credentials für {domain}")
             return
 
+        constitution_block = self._constitution_gate_browser(
+            "browser_login",
+            url=inst.url or cred.login_url,
+            require_owner=True,
+        )
+        if constitution_block:
+            log.warning("Auto-Login übersprungen: %s", constitution_block)
+            AuditLog.action(
+                "Browser",
+                "auto_login_blocked",
+                f"{domain}: {constitution_block[:120]}",
+                erfolg=False,
+            )
+            return
+
         log.info(f"Auto-Login: {inst.id} @ {domain}")
         try:
             # Login-Seite aufrufen

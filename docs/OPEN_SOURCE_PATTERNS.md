@@ -49,6 +49,8 @@ Ideen als *kleine, lokale Muster* auf bestehende Module abgebildet.
   - Shell: `computer_use._constitution_gate_shell` + destruktive Marker → `protect_user`
   - Tools: `tool_runtime.constitution_gate_for_tool` mappt Shell-Tools auf `system_command`
   - Packages: `updater.apply_package` / `rollback_last_backup` → `modify_config` braucht Owner
+  - Credentials: `credential_access` + Browser-Auto-Login → Owner-only Constitution
+  - Privilege: kritische `authorize()`-Aktionen laufen durch dasselbe Verfassungs-Gate
 
 ## Auswahlregel für künftige Übernahmen
 

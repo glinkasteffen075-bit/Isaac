@@ -186,6 +186,42 @@ def _run_cases() -> list[dict]:
         and "no_silent_privilege_escalation" in browser_provision.get("blocked_by", []),
         "detail": browser_provision,
     })
+
+    credential_block = c.validate_action(
+        "credential_access",
+        {"outside_effect": True, "audit_logged": True, "risk": "high", "owner_approved": False},
+    )
+    cases.append({
+        "name": "credential_access_blocked_without_owner",
+        "ok": (not credential_block.get("allowed"))
+        and "no_silent_privilege_escalation" in credential_block.get("blocked_by", []),
+        "detail": credential_block,
+    })
+
+    browser_login = c.validate_action(
+        "browser_login",
+        {"outside_effect": True, "audit_logged": True, "risk": "high", "owner_approved": False},
+    )
+    cases.append({
+        "name": "browser_login_blocked_without_owner",
+        "ok": (not browser_login.get("allowed"))
+        and "no_silent_privilege_escalation" in browser_login.get("blocked_by", []),
+        "detail": browser_login,
+    })
+
+    # Privilege ↔ Constitution: STEFFEN freigegeben für modify_config
+    from privilege import get_gate as get_privilege_gate, steffen_ctx
+
+    priv_gate = get_privilege_gate()
+    ok_steffen, reason_steffen = priv_gate.authorize(
+        "modify_config",
+        steffen_ctx("Eval constitution-coupled modify_config"),
+    )
+    cases.append({
+        "name": "privilege_steffen_modify_config_allowed",
+        "ok": bool(ok_steffen),
+        "detail": reason_steffen,
+    })
     return cases
 
 

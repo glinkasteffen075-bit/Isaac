@@ -53,7 +53,7 @@ E2.0.5 RELEASE-DISZIPLIN
 ──────────────────────────────────────────────────────────────────────────────
 [x] 5.1 Validierung A–G (replay_eval) grün
 [x] 5.2 unittest (205) + eval_runner (52/52) + sanity_check grün
-[ ] 5.3 PR gegen main (nicht main direkt)
+[x] 5.3 PR gegen main: https://github.com/glinkasteffen075-bit/Isaac/pull/24
 
 ──────────────────────────────────────────────────────────────────────────────
 EXPLIZIT NICHT IN EVOLUTION 2.0 (vorerst)

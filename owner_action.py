@@ -2206,6 +2206,19 @@ async def _isaac_ops(action: OwnerAction) -> tuple[str, bool]:
             f"geplant={auto.get('scheduled_count')}, "
             f"fällig={','.join(auto.get('due_task_ids') or []) or '-'})"
         )
+        nxt = auto.get("next_run") or {}
+        if nxt.get("task_id") and nxt.get("next_run"):
+            lines.append(
+                f"Nächster Lauf: {nxt.get('task_id')} @ {nxt.get('next_run')} "
+                f"(in {nxt.get('hours_until')}h)"
+            )
+        for row in (auto.get("next_runs") or [])[:3]:
+            if row.get("task_id") == nxt.get("task_id"):
+                continue
+            lines.append(
+                f"  danach: {row.get('task_id')} @ {row.get('next_run')} "
+                f"(in {row.get('hours_until')}h)"
+            )
     except Exception:
         pass
     return "\n".join(lines), True

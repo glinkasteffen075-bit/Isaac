@@ -3220,6 +3220,33 @@ class TestPhase4Connect(unittest.TestCase):
         self.assertIn("scheduled", status)
         self.assertIn("due_task_ids", status)
         self.assertGreaterEqual(status["scheduled_count"], 1)
+        self.assertIn("next_runs", status)
+        self.assertIsNotNone(status.get("next_run"))
+        self.assertIn("next_run", status["next_run"])
+
+    def test_owner_autonomy_next_run_respects_window_and_interval(self):
+        from datetime import datetime
+        from owner_autonomy import next_run_at, next_autonomy_runs, get_scheduled_owner_tasks
+
+        tasks = {t.task_id: t for t in get_scheduled_owner_tasks()}
+        health = tasks["daily_isaac_health"]
+        # Mitten in der Nacht: nächster Health-Lauf am Morgen (window 6-23)
+        night = datetime(2026, 7, 12, 2, 15, 0)
+        nxt = next_run_at(health, last_runs={}, now=night)
+        self.assertIsNotNone(nxt)
+        self.assertEqual(nxt.hour, 6)
+        self.assertEqual(nxt.day, 12)
+
+        # Nach Lauf: Intervall 12h → nächster Lauf frühestens 12h später im Fenster
+        last = {"daily_isaac_health": "2026-07-12T10:00:00"}
+        noon = datetime(2026, 7, 12, 11, 0, 0)
+        nxt2 = next_run_at(health, last_runs=last, now=noon)
+        self.assertIsNotNone(nxt2)
+        self.assertGreaterEqual((nxt2 - datetime.fromisoformat(last["daily_isaac_health"])).total_seconds(), 12 * 3600)
+
+        preview = next_autonomy_runs(last_runs={}, now=night, limit=3)
+        self.assertTrue(preview)
+        self.assertIn("hours_until", preview[0])
 
     def test_e2_trace_phases_include_evaluation_and_learning(self):
         """Evolution 2.0: DecisionTrace deckt Evaluation und Learning ab."""

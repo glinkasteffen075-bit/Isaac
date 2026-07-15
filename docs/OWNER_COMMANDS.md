@@ -37,7 +37,8 @@ Proaktive geplante Tasks nur im Admin-Modus (`owner_autonomy.py`):
 | `ISAAC_OWNER_AUTONOMY_HEALTH_START/END` | Zeitfenster Health-Task |
 | `ISAAC_OWNER_AUTONOMY_NIGHTLY_*` | nächtliches Downloads-Cleanup |
 
-Grenzen: Constitution-Gate vor Ausführung, Failure-Backoff, inspectable Status in `isaac status`.
+Grenzen: Constitution-Gate vor Ausführung, Failure-Backoff, inspectable Status in `isaac status`
+(inkl. **Nächster Lauf** pro Task: Fenster + Intervall, ohne Akku-Hartfilter).
 
 ---
 

@@ -17,7 +17,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -372,7 +372,12 @@ def _in_hour_window(hour: int, start: int, end: int) -> bool:
     return hour >= start or hour < end
 
 
-def _hours_since(task_id: str, last_runs: dict[str, str]) -> float:
+def _hours_since(
+    task_id: str,
+    last_runs: dict[str, str],
+    *,
+    now: Optional[datetime] = None,
+) -> float:
     raw = (last_runs or {}).get(task_id)
     if not raw:
         return float("inf")
@@ -380,8 +385,85 @@ def _hours_since(task_id: str, last_runs: dict[str, str]) -> float:
         last = datetime.fromisoformat(raw)
     except ValueError:
         return float("inf")
-    delta = datetime.now() - last
+    current = now or datetime.now()
+    delta = current - last
     return max(0.0, delta.total_seconds() / 3600.0)
+
+
+def _interval_ready(
+    task: ScheduledOwnerTask,
+    last_runs: dict[str, str],
+    state: dict[str, Any],
+    *,
+    at: datetime,
+) -> bool:
+    needed = _effective_interval_hours(task, state)
+    return _hours_since(task.task_id, last_runs, now=at) >= needed
+
+
+def next_run_at(
+    task: ScheduledOwnerTask,
+    *,
+    last_runs: dict[str, str],
+    autonomy_state: Optional[dict[str, Any]] = None,
+    now: Optional[datetime] = None,
+    horizon_hours: int = 14 * 24,
+) -> Optional[datetime]:
+    """Nächster theoretischer Lauf (Fenster + Intervall + Wochentag).
+
+    Akku/Netzteil werden hier bewusst *nicht* als Hartfilter genutzt — sie
+    entscheiden zur Laufzeit. Rückgabe: datetime im lokalen Systemzeitraum.
+    """
+    current = now or datetime.now()
+    state = autonomy_state if autonomy_state is not None else load_autonomy_state()
+    horizon = max(1, int(horizon_hours))
+
+    for offset in range(0, horizon + 1):
+        candidate = current if offset == 0 else (current + timedelta(hours=offset))
+        if task.weekday is not None and candidate.weekday() != task.weekday:
+            continue
+        if not _in_hour_window(candidate.hour, task.window_start_hour, task.window_end_hour):
+            continue
+        if not _interval_ready(task, last_runs, state, at=candidate):
+            continue
+        if offset == 0:
+            return current
+        return candidate.replace(minute=0, second=0, microsecond=0)
+    return None
+
+
+def next_autonomy_runs(
+    *,
+    last_runs: Optional[dict[str, str]] = None,
+    now: Optional[datetime] = None,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    """Sortierte Vorschau der nächsten Autonomie-Läufe (pro Task eine Zeile)."""
+    current = now or datetime.now()
+    runs = dict(last_runs or {})
+    state = load_autonomy_state()
+    rows: list[dict[str, Any]] = []
+    for task in get_scheduled_owner_tasks():
+        nxt = next_run_at(
+            task,
+            last_runs=runs,
+            autonomy_state=state,
+            now=current,
+        )
+        if nxt is None:
+            continue
+        rows.append(
+            {
+                "task_id": task.task_id,
+                "action_kind": task.action_kind,
+                "next_run": nxt.isoformat(timespec="seconds"),
+                "hours_until": round(max(0.0, (nxt - current).total_seconds() / 3600.0), 2),
+                "window": f"{task.window_start_hour:02d}-{task.window_end_hour:02d}",
+                "effective_interval_hours": _effective_interval_hours(task, state),
+            }
+        )
+    rows.sort(key=lambda r: r["next_run"])
+    return rows[: max(1, int(limit))]
 
 
 def due_owner_tasks(
@@ -413,8 +495,7 @@ def due_owner_tasks(
             continue
         if not _in_hour_window(hour, task.window_start_hour, task.window_end_hour):
             continue
-        needed = _effective_interval_hours(task, state)
-        if _hours_since(task.task_id, last_runs) < needed:
+        if not _interval_ready(task, last_runs, state, at=current):
             continue
         due.append(task)
 
@@ -448,6 +529,20 @@ def autonomy_status(
         limit=-1,
     )
     due_capped = due_uncapped[: max_tasks_per_cycle()]
+    next_runs = next_autonomy_runs(last_runs=runs, now=current, limit=5)
+    next_by_id = {row["task_id"]: row for row in next_runs}
+    # Vollständige next_run-Felder auch für Tasks außerhalb Top-5
+    for t in scheduled:
+        if t.task_id in next_by_id:
+            continue
+        nxt = next_run_at(t, last_runs=runs, autonomy_state=state, now=current)
+        if nxt is not None:
+            next_by_id[t.task_id] = {
+                "task_id": t.task_id,
+                "next_run": nxt.isoformat(timespec="seconds"),
+                "hours_until": round(max(0.0, (nxt - current).total_seconds() / 3600.0), 2),
+            }
+    soonest = next_runs[0] if next_runs else None
     return {
         "enabled": owner_autonomy_enabled(),
         "admin_mode": is_owner_equivalent_mode(),
@@ -466,11 +561,15 @@ def autonomy_status(
                 "weekday": t.weekday,
                 "last_run": runs.get(t.task_id, ""),
                 "consecutive_failures": _task_failure_count(state, t.task_id),
+                "next_run": (next_by_id.get(t.task_id) or {}).get("next_run", ""),
+                "hours_until": (next_by_id.get(t.task_id) or {}).get("hours_until"),
             }
             for t in scheduled
         ],
         "due_task_ids": [t.task_id for t in due_capped],
         "due_uncapped_count": len(due_uncapped),
+        "next_runs": next_runs,
+        "next_run": soonest,
         "state_path": str(AUTONOMY_STATE_PATH),
     }
 

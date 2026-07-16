@@ -41,6 +41,11 @@ def apply_free_cloud_defaults() -> dict[str, str]:
         "OPENROUTER_MODEL": "meta-llama/llama-3.2-3b-instruct:free",
         # Keep ensemble free-only
         "ISAAC_ENSEMBLE_FREE_ONLY": "1",
+        # Free PaaS: no Playwright / no key-hunting — prevents chat hijack by provider directives
+        "ISAAC_BROWSER_AUTOMATION": "0",
+        "ISAAC_AUTO_PROVISION_PROVIDERS": "0",
+        "ISAAC_AUTO_PROVISION_ALL_PROVIDERS": "0",
+        "ISAAC_PRIVILEGE_MODE": "user",
     }
     for key, value in defaults.items():
         if not (os.getenv(key) or "").strip():

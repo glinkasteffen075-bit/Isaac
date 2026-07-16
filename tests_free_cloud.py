@@ -67,6 +67,20 @@ class TestFreeCloudHelpers(unittest.TestCase):
             self.assertTrue(st["has_groq_key"])
             self.assertTrue(st["unified_port"])
 
+    def test_free_cloud_disables_browser_key_hunting(self):
+        import free_cloud as fc
+        import config as config_module
+
+        env = {"ISAAC_FREE_CLOUD": "1", "PORT": "7860"}
+        with patch.dict(os.environ, env, clear=False):
+            fc.apply_free_cloud_defaults()
+            self.assertEqual(os.environ.get("ISAAC_BROWSER_AUTOMATION"), "0")
+            self.assertEqual(os.environ.get("ISAAC_AUTO_PROVISION_PROVIDERS"), "0")
+            # IsaacConfig must honor free-cloud guards
+            cfg = config_module.IsaacConfig()
+            self.assertFalse(cfg.browser_automation)
+            self.assertFalse(cfg.auto_provision_providers)
+
 
 if __name__ == "__main__":
     unittest.main()

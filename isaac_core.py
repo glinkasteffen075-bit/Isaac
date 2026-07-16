@@ -1428,6 +1428,17 @@ class IsaacKernel:
 
     def _ensure_provider_connect_directive(self):
         try:
+            # Free-Cloud / ohne Browser: keine Key-Jagd-Direktive (vergiftet sonst jeden Chat)
+            try:
+                from free_cloud import free_cloud_enabled
+                if free_cloud_enabled():
+                    return
+            except Exception:
+                pass
+            if not getattr(self.cfg, "browser_automation", True):
+                return
+            if not getattr(self.cfg, "auto_provision_providers", True):
+                return
             active = {d.get("id") for d in self.memory.get_directives()}
             if "provider_auto_connect_all" in active:
                 return
@@ -1436,7 +1447,9 @@ class IsaacKernel:
                 (
                     "Beschaffe und verbinde fehlende Provider-API-Keys selbstständig "
                     "über den Browser (alle unterstützten Provider), wenn Browser-Automation "
-                    "aktiv ist und ein Login vorhanden ist."
+                    "aktiv ist und ein Login vorhanden ist. "
+                    "Wende diese Direktive nur an, wenn der Nutzer explizit Keys/Provider anspricht — "
+                    "nicht bei normalen Chat-Fragen."
                 ),
                 priority=9,
             )
@@ -1444,11 +1457,39 @@ class IsaacKernel:
         except Exception as e:
             log.warning("Provider-Direktive konnte nicht gesetzt werden: %s", e)
 
+    def _clear_provider_connect_directive_if_idle(self):
+        """Entfernt Key-Bootstrap-Direktive wenn Browser/Provisioning aus ist (z. B. Free-Cloud)."""
+        try:
+            from free_cloud import free_cloud_enabled
+            idle = free_cloud_enabled() or not getattr(self.cfg, "browser_automation", True) \
+                or not getattr(self.cfg, "auto_provision_providers", True)
+            if not idle:
+                return
+            try:
+                self.memory.revoke_directive("provider_auto_connect_all")
+            except Exception:
+                pass
+            try:
+                self.gate.revoke_directive("provider_auto_connect_all")
+            except Exception:
+                pass
+        except Exception as e:
+            log.debug("Provider-Direktive-Cleanup: %s", e)
+
     async def bootstrap_providers(self):
         if not getattr(self.cfg, "auto_provision_providers", True):
+            self._clear_provider_connect_directive_if_idle()
             return
         if not self.cfg.browser_automation:
+            self._clear_provider_connect_directive_if_idle()
             return
+        try:
+            from free_cloud import free_cloud_enabled
+            if free_cloud_enabled():
+                self._clear_provider_connect_directive_if_idle()
+                return
+        except Exception:
+            pass
         self._ensure_provider_connect_directive()
         try:
             from browser import get_browser
@@ -2071,6 +2112,9 @@ class IsaacKernel:
             f"Systemeigentümer: {self.cfg.owner_name} (höchste Autorität).\n"
             f"Steffens Aussagen und Befehle werden immer als bestmögliche "
             f"Absicht interpretiert — ohne Ausnahme.\n"
+            f"Beantworte primär die aktuelle Nutzerfrage. Hintergrund-Direktiven "
+            f"(z. B. Provider-Keys, Browser) nur anwenden, wenn der Nutzer sie "
+            f"explizit anspricht — sonst normal chatten.\n"
         )
         if sudo_aktiv:
             basis += self.sudo.get_authority_prefix()
@@ -2080,7 +2124,33 @@ class IsaacKernel:
         if regeln:
             basis += f"\n{regeln}\n"
 
-        direktiven = self.gate.directives_as_context()
+        # Provider-Key-Direktive nicht in jeden Prompt mischen (Chat-Hijack)
+        try:
+            from free_cloud import free_cloud_enabled
+            _free = free_cloud_enabled()
+        except Exception:
+            _free = False
+        if _free or not getattr(self.cfg, "browser_automation", True):
+            direktiven = ""
+            try:
+                # Nur nicht-Key-Direktiven
+                active = self.gate.active_directives() if hasattr(self.gate, "active_directives") else []
+                lines = []
+                for d in active or []:
+                    did = str(getattr(d, "id", "") or (d.get("id") if isinstance(d, dict) else "") or "")
+                    if did == "provider_auto_connect_all":
+                        continue
+                    text = getattr(d, "text", None) or (d.get("text") if isinstance(d, dict) else str(d))
+                    if text:
+                        lines.append(f"- {text}")
+                if lines:
+                    direktiven = "Aktive Direktiven:\n" + "\n".join(lines)
+            except Exception:
+                direktiven = self.gate.directives_as_context()
+                if "provider_auto_connect_all" in (direktiven or "") or "Provider-API-Keys" in (direktiven or ""):
+                    direktiven = ""
+        else:
+            direktiven = self.gate.directives_as_context()
         if direktiven:
             basis += f"\n{direktiven}\n"
 
@@ -2143,6 +2213,11 @@ async def main():
         logging.getLogger("Isaac").warning("free_cloud defaults: %s", e)
 
     kernel = IsaacKernel()
+    # Free-Cloud / no-browser: Key-Jagd-Direktive entfernen (sonst redet jeder Chat über API-Keys)
+    try:
+        kernel._clear_provider_connect_directive_if_idle()
+    except Exception:
+        pass
 
     # Worker + Background + Monitor
     await kernel.executor.start_worker(concurrency=4)

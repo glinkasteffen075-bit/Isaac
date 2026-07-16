@@ -161,9 +161,8 @@ class AsyncRelay:
             await self._session.close()
 
     def _is_runtime_available(self, prov_cfg: ProviderConfig) -> bool:
-        if (prov_cfg.provider_type or "").lower() in {"ollama", "local_ollama"}:
-            return prov_cfg.enabled
-        return prov_cfg.available
+        # available deckt ollama + local/loopback openai_compat (ohne Key) ab
+        return bool(prov_cfg.available)
 
     def _mark_success(self, name: str, latency: float):
         h = self._health[name]
@@ -315,7 +314,9 @@ class AsyncRelay:
         return await fn(cfg, prompt, system, model_override=model_override)
 
     async def _openai_compat(self, cfg: ProviderConfig, prompt: str, system: str, model_override: Optional[str] = None) -> tuple[str, int]:
-        if not cfg.api_key:
+        from config import allows_missing_api_key
+
+        if not cfg.api_key and not allows_missing_api_key(cfg):
             raise ProviderErr(f"{cfg.provider_id}: API-Key fehlt")
         session = await self._get_session()
         payload = {
@@ -324,28 +325,40 @@ class AsyncRelay:
             "max_tokens": 1200,
             "temperature": 0.3,
         }
-        headers = {"Authorization": f"Bearer {cfg.api_key}", "Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json"}
+        if (cfg.api_key or "").strip():
+            headers["Authorization"] = f"Bearer {cfg.api_key.strip()}"
         for k, v in (cfg.extra_headers or {}).items():
             if k and isinstance(k, str):
                 headers[k] = str(v)
-        async with session.post(
-            cfg.base_url,
-            headers=headers,
-            json=payload,
-            timeout=aiohttp.ClientTimeout(total=cfg.timeout),
-        ) as r:
-            if r.status == 429:
-                raise RateLimitErr(f"{cfg.provider_id} Rate Limit")
-            if r.status != 200:
-                txt = await r.text()
-                raise ProviderErr(f"{cfg.provider_id} {r.status}: {txt[:160]}")
-            data = await r.json()
-            try:
-                content = data["choices"][0]["message"]["content"]
-            except Exception:
-                raise ProviderErr(f"{cfg.provider_id}: ungültige Antwortstruktur")
-            usage = ((data.get("usage") or {}).get("total_tokens") or RateLimiter.estimate_tokens(content))
-            return content, usage
+        try:
+            async with session.post(
+                cfg.base_url,
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=cfg.timeout),
+            ) as r:
+                if r.status == 429:
+                    raise RateLimitErr(f"{cfg.provider_id} Rate Limit")
+                if r.status != 200:
+                    txt = await r.text()
+                    raise ProviderErr(f"{cfg.provider_id} {r.status}: {txt[:160]}")
+                data = await r.json()
+                try:
+                    content = data["choices"][0]["message"]["content"]
+                except Exception:
+                    raise ProviderErr(f"{cfg.provider_id}: ungültige Antwortstruktur")
+                usage = ((data.get("usage") or {}).get("total_tokens") or RateLimiter.estimate_tokens(content))
+                return content, usage
+        except aiohttp.ClientConnectorError:
+            if allows_missing_api_key(cfg):
+                raise ProviderErr(
+                    f"{cfg.provider_id}: Local LLM nicht erreichbar ({cfg.base_url}). "
+                    "Starte LM Studio / vLLM / llama.cpp server."
+                )
+            raise ProviderErr(f"{cfg.provider_id}: Endpoint nicht erreichbar")
+        except asyncio.TimeoutError:
+            raise ProviderErr(f"{cfg.provider_id}: Timeout")
 
     async def _openrouter(self, cfg: ProviderConfig, prompt: str, system: str, model_override: Optional[str] = None) -> tuple[str, int]:
         if not cfg.api_key:

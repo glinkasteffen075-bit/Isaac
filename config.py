@@ -66,10 +66,39 @@ class ProviderConfig:
 
     @property
     def available(self) -> bool:
-        ptype = (self.provider_type or "").lower().strip()
-        if ptype in {"ollama", "local_ollama"}:
-            return self.enabled
-        return self.enabled and bool(self.api_key)
+        if not self.enabled:
+            return False
+        if allows_missing_api_key(self):
+            return True
+        return bool(self.api_key)
+
+
+def allows_missing_api_key(cfg: "ProviderConfig") -> bool:
+    """Ollama und lokale OpenAI-Compat-Endpunkte brauchen keinen API-Key."""
+    ptype = (cfg.provider_type or "").lower().strip()
+    if ptype in {"ollama", "local_ollama"}:
+        return True
+    pid = (cfg.provider_id or "").lower().strip()
+    if pid in {"local", "local_llm", "local-openai", "local_openai"}:
+        return True
+    if ptype in {"openai_compat", "openai-compatible"}:
+        host = _url_host(cfg.base_url)
+        if host in {"127.0.0.1", "localhost", "::1"}:
+            return True
+    return False
+
+
+def _url_host(url: str) -> str:
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(raw if "://" in raw else f"http://{raw}")
+        return (parsed.hostname or "").lower()
+    except Exception:
+        return ""
 
 
 def _normalize_provider_id(value: str) -> str:
@@ -121,6 +150,23 @@ def _provider_defaults_from_env() -> dict[str, ProviderConfig]:
             timeout=_int(os.getenv("OLLAMA_TIMEOUT", "180"), 180),
             enabled=True,
             is_default=True,
+        ),
+        # OpenAI-kompatibel lokal (LM Studio, vLLM, llama.cpp server, LocalAI, …)
+        "local": ProviderConfig(
+            provider_id="local",
+            display_name="Local OpenAI API",
+            provider_type="openai_compat",
+            api_key=os.getenv("LOCAL_LLM_API_KEY", ""),
+            base_url=os.getenv(
+                "LOCAL_LLM_BASE_URL",
+                "http://127.0.0.1:1234/v1/chat/completions",
+            ).rstrip("/"),
+            model=os.getenv("LOCAL_LLM_MODEL", "local-model"),
+            rpm=999,
+            tpm=999_999,
+            timeout=_int(os.getenv("LOCAL_LLM_TIMEOUT", "180"), 180),
+            enabled=_bool(os.getenv("LOCAL_LLM_ENABLED", "1"), True),
+            is_default=False,
         ),
         "openrouter": ProviderConfig(
             provider_id="openrouter",
@@ -380,7 +426,16 @@ class IsaacConfig:
 
     @property
     def free_providers(self) -> list[str]:
-        free = {"ollama", "groq", "openrouter", "huggingface", "together", "perplexity", "mistral"}
+        free = {
+            "ollama",
+            "local",
+            "groq",
+            "openrouter",
+            "huggingface",
+            "together",
+            "perplexity",
+            "mistral",
+        }
         return [p.provider_id for p in self.providers.values() if p.provider_id in free and p.available]
 
     def is_provider_allowed(self, name: str) -> bool:

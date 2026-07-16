@@ -32,6 +32,47 @@ class TestProviderConfiguration(unittest.TestCase):
         self.assertEqual(defaults["ollama"].model, "qwen2.5:1.5b")
         self.assertEqual(defaults["ollama"].provider_type, "ollama")
 
+    def test_local_openai_compat_provider_default_no_api_key(self):
+        with patch.dict("os.environ", {}, clear=True):
+            defaults = config_module._provider_defaults_from_env()
+        self.assertIn("local", defaults)
+        local = defaults["local"]
+        self.assertEqual(local.provider_type, "openai_compat")
+        self.assertIn("127.0.0.1", local.base_url)
+        self.assertIn("/v1/chat/completions", local.base_url)
+        self.assertEqual(local.api_key, "")
+        self.assertTrue(local.available)
+        self.assertTrue(config_module.allows_missing_api_key(local))
+
+        cloud = config_module.ProviderConfig(
+            provider_id="openai",
+            display_name="OpenAI",
+            provider_type="openai_compat",
+            api_key="",
+            base_url="https://api.openai.com/v1/chat/completions",
+            model="gpt-4o-mini",
+            rpm=60,
+            tpm=60_000,
+            enabled=True,
+        )
+        self.assertFalse(cloud.available)
+        self.assertFalse(config_module.allows_missing_api_key(cloud))
+
+    def test_local_llm_env_overrides(self):
+        env = {
+            "LOCAL_LLM_BASE_URL": "http://localhost:8080/v1/chat/completions",
+            "LOCAL_LLM_MODEL": "my-gguf",
+            "LOCAL_LLM_API_KEY": "sk-local",
+            "LOCAL_LLM_ENABLED": "1",
+        }
+        with patch.dict("os.environ", env, clear=False):
+            defaults = config_module._provider_defaults_from_env()
+        local = defaults["local"]
+        self.assertEqual(local.base_url, "http://localhost:8080/v1/chat/completions")
+        self.assertEqual(local.model, "my-gguf")
+        self.assertEqual(local.api_key, "sk-local")
+        self.assertTrue(local.available)
+
     def test_upsert_default_keeps_single_default(self):
         cfg = config_module.IsaacConfig()
         provider = cfg.upsert_provider(

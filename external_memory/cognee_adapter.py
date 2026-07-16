@@ -284,32 +284,60 @@ class CogneeAdapter:
                     results = results[key]
                     break
             else:
-                # Single completion-style response
-                text = (
-                    results.get("text")
-                    or results.get("content")
-                    or results.get("result")
-                    or results.get("answer")
-                )
-                if text:
-                    return [{"text": str(text).strip()[:400], "source": self.name}]
-                results = [results]
+                nested = results.get("search_result")
+                if isinstance(nested, (list, tuple)):
+                    results = nested
+                else:
+                    # Single completion-style response
+                    text = (
+                        results.get("text")
+                        or results.get("content")
+                        or results.get("result")
+                        or results.get("answer")
+                    )
+                    if text is not None and not isinstance(text, (list, dict)):
+                        cleaned = str(text).strip()
+                        if cleaned:
+                            return [
+                                {"text": cleaned[:400], "source": self.name}
+                            ]
+                    results = [results]
         if not isinstance(results, (list, tuple)):
             results = [results]
+
+        # Flatten cloud envelopes: [{dataset_name, search_result: [chunks...]}, ...]
+        flat: list[Any] = []
+        for item in results:
+            if isinstance(item, dict) and isinstance(
+                item.get("search_result"), (list, tuple)
+            ):
+                flat.extend(item["search_result"])
+            else:
+                flat.append(item)
+
         out: list[dict[str, Any]] = []
-        for item in list(results)[:limit]:
+        for item in flat:
+            if len(out) >= limit:
+                break
             text = ""
-            if hasattr(item, "text"):
-                text = str(getattr(item, "text") or "")
-            elif isinstance(item, dict):
-                text = str(
+            if isinstance(item, dict):
+                raw = (
                     item.get("text")
                     or item.get("content")
-                    or item.get("search_result")
                     or item.get("chunk")
                     or item.get("payload")
-                    or item
+                    or item.get("result")
+                    or item.get("answer")
                 )
+                # Prefer chunk text; never stringify whole nested lists as hit text
+                if isinstance(raw, (list, tuple)):
+                    continue
+                if isinstance(raw, dict):
+                    raw = raw.get("text") or raw.get("content") or ""
+                if raw is not None:
+                    text = str(raw)
+            elif hasattr(item, "text"):
+                text = str(getattr(item, "text") or "")
             else:
                 text = str(item)
             text = text.strip()

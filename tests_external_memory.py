@@ -133,6 +133,24 @@ class TestCogneeAdapterMapping(unittest.TestCase):
         self.assertEqual(hits[0]["source"], "cognee")
         self.assertIn("goals", hits[0]["text"].lower() + "goals")
 
+    def test_normalize_nested_search_result(self):
+        from external_memory.config import ExternalMemoryConfig
+        from external_memory.cognee_adapter import CogneeAdapter
+
+        cfg = ExternalMemoryConfig(cognee_enabled=True)
+        ad = CogneeAdapter(cfg)
+        raw = [{
+            "dataset_name": "isaac",
+            "search_result": [
+                {"text": "privacy first local"},
+                {"text": "cognitive kernel"},
+            ],
+        }]
+        hits = ad._normalize_results(raw, limit=5)
+        self.assertEqual(len(hits), 2)
+        self.assertEqual(hits[0]["source"], "cognee")
+        self.assertIn("privacy", hits[0]["text"])
+
 
 class TestLettaAdapter(unittest.TestCase):
     def test_letta_available_when_bin_present(self):

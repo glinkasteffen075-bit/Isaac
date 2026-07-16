@@ -1,5 +1,8 @@
-# Kanonische Kopie: siehe /render.yaml im Repo-Root (Blueprint findet die dort leichter).
-# Secrets: GROQ_API_KEY im Render Dashboard setzen.
+# Render Blueprint — Isaac free (zero billing)
+# https://dashboard.render.com → New → Blueprint
+# Repo: sco0rp/IsaacNew  |  Branch: feature/google-aistudio-gemini-stack (oder main nach Merge)
+#
+# Nach dem Deploy: Environment → GROQ_API_KEY setzen (Secret)
 
 services:
   - type: web
@@ -25,6 +28,7 @@ services:
         value: llama-3.1-8b-instant
       - key: PYTHONUNBUFFERED
         value: "1"
+      # Secrets — im Dashboard manuell setzen (nicht im Git):
       - key: GROQ_API_KEY
         sync: false
       - key: GOOGLE_API_KEY

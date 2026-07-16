@@ -86,10 +86,17 @@ textarea,input{font-size:16px;}
 #tm-container,#log-container,#directives-list{height:100%;overflow:auto;padding-right:4px;}
 #tab-providers,#tab-governance{height:100%;overflow:auto;padding-right:4px;}
 .trace-step{padding:.45rem .65rem;border-left:2px solid var(--line2);margin:.2rem 0 .35rem .35rem;font-size:.78rem;background:rgba(8,13,23,.55);border-radius:0 10px 10px 0;}
+.trace-step.governance{border-color:var(--red);}
+.trace-step.classification{border-color:var(--cyan);}
+.trace-step.retrieval{border-color:#5b8def;}
+.trace-step.strategy{border-color:var(--purple);}
+.trace-step.motivation{border-color:#c084fc;}
 .trace-step.eligibility{border-color:var(--cyan);}
 .trace-step.selection{border-color:var(--purple);}
 .trace-step.execution{border-color:var(--yellow);}
 .trace-step.context_integration{border-color:var(--green);}
+.trace-step.evaluation{border-color:var(--green);}
+.trace-step.learning{border-color:#34d399;}
 .trace-step.followup{border-color:var(--orange);}
 .trace-meta{color:var(--dim);font-size:.68rem;font-family:'JetBrains Mono',monospace;}
 .memory-diff-added{color:var(--green);}

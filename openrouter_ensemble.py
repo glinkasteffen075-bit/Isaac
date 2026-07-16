@@ -9,6 +9,7 @@ Fokus Free-Modelle (`:free`), konfigurierbar per Env.
 import asyncio
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -57,14 +58,22 @@ class EnsembleResult:
         )
 
 
-def ensemble_enabled() -> bool:
-    raw = str(os.getenv("ISAAC_ENSEMBLE", "1") or "1").strip().lower()
+def _env_bool(name: str, default: str = "1") -> bool:
+    raw = str(os.getenv(name, default) or default).strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def ensemble_enabled() -> bool:
+    return _env_bool("ISAAC_ENSEMBLE", "1")
 
 
 def ensemble_free_only() -> bool:
-    raw = str(os.getenv("ISAAC_ENSEMBLE_FREE_ONLY", "1") or "1").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    return _env_bool("ISAAC_ENSEMBLE_FREE_ONLY", "1")
+
+
+def ensemble_auto_enabled() -> bool:
+    """Always-on Ensemble nur für schwere CHAT-Fragen (nicht Tools/Greeting)."""
+    return ensemble_enabled() and _env_bool("ISAAC_ENSEMBLE_AUTO", "1")
 
 
 def ensemble_n() -> int:
@@ -82,8 +91,7 @@ def ensemble_stagger_ms() -> int:
 
 
 def ensemble_judge_enabled() -> bool:
-    raw = str(os.getenv("ISAAC_ENSEMBLE_JUDGE", "1") or "1").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    return _env_bool("ISAAC_ENSEMBLE_JUDGE", "1")
 
 
 def ensemble_score_delta() -> float:
@@ -91,6 +99,70 @@ def ensemble_score_delta() -> float:
         return max(0.0, float(os.getenv("ISAAC_ENSEMBLE_SCORE_DELTA", "1.0")))
     except (TypeError, ValueError):
         return 1.0
+
+
+def ensemble_auto_min_words() -> int:
+    """Wort-Schwelle für Auto-Ensemble (strenger als Decomposer-Default 15)."""
+    try:
+        return max(8, min(80, int(os.getenv("ISAAC_ENSEMBLE_AUTO_MIN_WORDS", "22"))))
+    except (TypeError, ValueError):
+        return 22
+
+
+def ensemble_auto_min_themes() -> int:
+    try:
+        return max(2, min(6, int(os.getenv("ISAAC_ENSEMBLE_AUTO_MIN_THEMES", "2"))))
+    except (TypeError, ValueError):
+        return 2
+
+
+def should_auto_ensemble(
+    text: str,
+    *,
+    intent: str = "chat",
+    interaction_class: str = "NORMAL_CHAT",
+) -> tuple[bool, str]:
+    """
+    Entscheidet, ob ein normaler Chat ohne Prefix ins Ensemble geht.
+
+    Nur CHAT + NORMAL_CHAT. Keine Tools, keine Short-Paths, keine Status-Queries.
+    Schwer = lange Frage ODER multi-thematisch (und/sowie/…).
+    """
+    if not ensemble_auto_enabled():
+        return False, "auto_disabled"
+    intent_l = (intent or "").strip().lower()
+    if intent_l not in {"chat", ""}:
+        return False, f"intent={intent_l or 'empty'}"
+    ic = (interaction_class or "").strip().upper()
+    if ic and ic != "NORMAL_CHAT":
+        return False, f"class={ic or 'empty'}"
+
+    body = (text or "").strip()
+    if not body:
+        return False, "empty"
+    # Explizite Prefix-Kommandos nie als Auto werten
+    lower = body.lower()
+    for prefix in (
+        "ensemble:", "vergleiche:", "vergleiche modelle:",
+        "multi-model:", "multimodel:", "broadcast:", "split:", "pipeline:",
+        "suche:", "search:", "recherche:", "browser:", "agent:", "code:",
+    ):
+        if lower.startswith(prefix):
+            return False, "explicit_prefix"
+
+    words = body.split()
+    word_count = len(words)
+    theme_count = len(
+        re.findall(r"\s+(?:und|sowie|außerdem|auch|bzw\.?|beziehungsweise)\s+", body, re.I)
+    )
+    min_words = ensemble_auto_min_words()
+    min_themes = ensemble_auto_min_themes()
+
+    if word_count >= min_words:
+        return True, f"heavy_words={word_count}>={min_words}"
+    if theme_count >= min_themes and word_count >= max(12, min_words // 2):
+        return True, f"multi_theme={theme_count} words={word_count}"
+    return False, f"light_words={word_count}<{min_words}"
 
 
 def get_ensemble_models(*, free_only: Optional[bool] = None, limit: Optional[int] = None) -> list[str]:
@@ -305,3 +377,26 @@ def format_ensemble_footer(result: EnsembleResult) -> str:
         else:
             parts.append(f"  · {r.model}: score={r.score:.1f} t={r.latenz_s:.1f}s")
     return "\n".join(parts)
+
+
+def ensemble_trace_payload(result: EnsembleResult, *, trigger: str = "explicit") -> dict[str, Any]:
+    """Kompakte Trace-Daten für DecisionTrace / Dashboard."""
+    scores = {
+        r.model: round(r.score, 2)
+        for r in result.ergebnisse
+        if not r.fehler
+    }
+    fails = [r.model for r in result.ergebnisse if r.fehler]
+    return {
+        "trigger": trigger,
+        "mode": result.mode,
+        "winner_model": result.winner_model,
+        "judge_model": result.judge_model or "",
+        "panel": list(result.metadata.get("panel") or [r.model for r in result.ergebnisse]),
+        "scores": scores,
+        "failed": fails,
+        "dauer_s": result.dauer_s,
+        "n_ok": len(scores),
+        "n_total": len(result.ergebnisse),
+        "free_only": bool(result.metadata.get("free_only", ensemble_free_only())),
+    }

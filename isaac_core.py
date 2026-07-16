@@ -450,7 +450,35 @@ class IsaacKernel:
 
         # B) Multi-KI explizit
         if intent == Intent.ENSEMBLE:
-            return await self._ensemble_route(user_input, sudo_aktiv, emp)
+            return await self._ensemble_route(
+                user_input,
+                sudo_aktiv,
+                emp,
+                trigger="explicit",
+                classification=classification,
+                interaction_class=interaction_class,
+            )
+
+        # B2) Always-on Ensemble nur bei schweren NORMAL_CHAT-Fragen
+        if intent == Intent.CHAT:
+            from openrouter_ensemble import should_auto_ensemble
+
+            auto_ok, auto_reason = should_auto_ensemble(
+                user_input,
+                intent=intent,
+                interaction_class=interaction_class,
+            )
+            if auto_ok:
+                log.info("Auto-Ensemble: %s | '%s'", auto_reason, user_input[:48])
+                return await self._ensemble_route(
+                    user_input,
+                    sudo_aktiv,
+                    emp,
+                    trigger="auto",
+                    trigger_reason=auto_reason,
+                    classification=classification,
+                    interaction_class=interaction_class,
+                )
 
         if intent in (Intent.BROADCAST, Intent.SPLIT, Intent.PIPELINE,
                       Intent.DECOMPOSE):
@@ -499,12 +527,26 @@ class IsaacKernel:
 
         return r.final, r.ergebnisse[0].score if r.ergebnisse else 6.0
 
-    async def _ensemble_route(self, user_input: str, sudo_aktiv: bool, emp) -> tuple[str, float]:
-        """OpenRouter Multi-Model: vergleichen + bestes/Kombination."""
+    async def _ensemble_route(
+        self,
+        user_input: str,
+        sudo_aktiv: bool,
+        emp,
+        *,
+        trigger: str = "explicit",
+        trigger_reason: str = "",
+        classification: Optional[ClassificationResult] = None,
+        interaction_class: str = "",
+    ) -> tuple[str, float]:
+        """OpenRouter Multi-Model: vergleichen + bestes/Kombination + DecisionTrace."""
+        from decision_trace import TracePhase, audit_routing_trace
+        from logic import QualityScore
         from openrouter_ensemble import (
             ensemble_enabled,
             ensemble_openrouter,
+            ensemble_trace_payload,
             format_ensemble_footer,
+            get_ensemble_models,
         )
 
         body = user_input
@@ -517,22 +559,85 @@ class IsaacKernel:
         if not body:
             return (
                 "[Ensemble] Format: ensemble: <deine Frage>\n"
-                "Nutzt mehrere OpenRouter-Modelle (Default: free), scored und kombiniert."
+                "Nutzt mehrere OpenRouter-Modelle (Default: free), scored und kombiniert.\n"
+                "Auto: schwere CHAT-Fragen (ISAAC_ENSEMBLE_AUTO=1)."
             ), 5.0
 
+        ic = interaction_class or (
+            classification.interaction_class if classification else ""
+        )
+        task = self.executor.create_task(
+            typ=TaskType.AGGREGATE,
+            prompt=body,
+            beschreibung=f"ensemble[{trigger}]:{body[:64]}",
+            prioritaet=8.0 if trigger == "explicit" else 6.5,
+            provider="openrouter",
+            system_prompt="",
+            sudo_aktiv=sudo_aktiv,
+            strategy=Strategy(
+                allow_tools=False,
+                allow_followup=False,
+                allow_provider_switch=False,
+                style_note="openrouter_ensemble",
+            ),
+            interaction_class=ic,
+            classification=classification,
+        )
+        task.status = TaskStatus.RUNNING
+        task.gestartet = time.strftime("%Y-%m-%d %H:%M:%S")
+        task.provider_used = "openrouter-ensemble"
+        task.decision_trace.add(
+            TracePhase.CLASSIFICATION,
+            "ensemble_route",
+            {
+                "trigger": trigger,
+                "trigger_reason": trigger_reason or trigger,
+                "interaction_class": ic,
+                "word_count": classification.word_count if classification else len(body.split()),
+            },
+        )
+        task.decision_trace.add(
+            TracePhase.STRATEGY,
+            "ensemble_selected",
+            {
+                "allow_tools": False,
+                "provider": "openrouter",
+                "free_panel_preview": get_ensemble_models()[:4],
+                "trigger": trigger,
+            },
+        )
+        task.log(f"Ensemble start ({trigger})")
+        self.executor._notify(task)
+        t_run = time.monotonic()
+
         if not ensemble_enabled():
-            # Fallback single openrouter
             system = self._build_system(sudo_aktiv, emp)
             text, prov = await self.relay.ask_with_fallback(
                 body, system=system, preferred="openrouter", task_id="ensemble-off"
             )
-            return f"{text}\n\n_[Ensemble deaktiviert → single {prov}]_", 6.0
+            final = f"{text}\n\n_[Ensemble deaktiviert → single {prov}]_"
+            task.decision_trace.add(
+                TracePhase.EXECUTION,
+                "ensemble_disabled_fallback",
+                {"provider": prov},
+            )
+            task.status = TaskStatus.DONE
+            task.antwort = final
+            task.provider_used = prov or "openrouter"
+            task.dauer_sek = round(time.monotonic() - t_run, 2)
+            task.progress = 1.0
+            task.abgeschlossen = time.strftime("%Y-%m-%d %H:%M:%S")
+            task.score = QualityScore(total=6.0)
+            self.executor._notify(task)
+            audit_routing_trace(task.decision_trace, intent="ensemble", outcome="disabled")
+            return final, 6.0
 
         system = self._build_system(sudo_aktiv, emp)
+        task.system_prompt = system
         result = await ensemble_openrouter(
             body,
             system=system,
-            task_id="ensemble",
+            task_id=f"ensemble-{task.id}",
         )
         footer = format_ensemble_footer(result)
         final = f"{result.final}\n\n---\n_{footer}_"
@@ -542,10 +647,55 @@ class IsaacKernel:
             best_score = max(e.score for e in ok)
         elif result.mode in {"winner", "judge", "single"}:
             best_score = 6.5
+
+        payload = ensemble_trace_payload(result, trigger=trigger)
+        task.decision_trace.add(
+            TracePhase.SELECTION,
+            "models_panel",
+            {
+                "panel": payload.get("panel"),
+                "n": payload.get("n_total"),
+            },
+        )
+        task.decision_trace.add(
+            TracePhase.EXECUTION,
+            "models_answered",
+            {
+                "n_ok": payload.get("n_ok"),
+                "failed": payload.get("failed"),
+                "dauer_s": payload.get("dauer_s"),
+            },
+        )
+        task.decision_trace.add(
+            TracePhase.EVALUATION,
+            "ensemble_decision",
+            {
+                "mode": result.mode,
+                "winner_model": result.winner_model,
+                "judge_model": result.judge_model,
+                "scores": payload.get("scores"),
+                "best_score": round(best_score, 2),
+            },
+        )
+        task.status = TaskStatus.DONE
+        task.antwort = final
+        task.provider_used = f"openrouter-ensemble:{result.winner_model or result.mode}"
+        task.dauer_sek = round(time.monotonic() - t_run, 2)
+        task.progress = 1.0
+        task.abgeschlossen = time.strftime("%Y-%m-%d %H:%M:%S")
+        task.score = QualityScore(total=float(best_score or 0.0))
+        task.log(f"Ensemble done mode={result.mode} winner={result.winner_model}")
+        self.executor._notify(task)
+        audit_routing_trace(
+            task.decision_trace,
+            intent="ensemble",
+            outcome=result.mode,
+        )
         AuditLog.action(
             "Kernel",
             "ensemble",
-            f"mode={result.mode} winner={result.winner_model} n={len(result.ergebnisse)}",
+            f"trigger={trigger} mode={result.mode} winner={result.winner_model} "
+            f"n={len(result.ergebnisse)} task={task.id}",
             erfolg=bool(result.final),
         )
         return final, best_score

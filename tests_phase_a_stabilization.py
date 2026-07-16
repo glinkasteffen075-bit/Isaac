@@ -3372,6 +3372,60 @@ class TestPhase4Connect(unittest.TestCase):
         self.assertTrue(all(":free" in m for m in models))
         self.assertTrue(ensemble_free_only())
 
+    def test_ensemble_auto_only_for_heavy_chat(self):
+        from openrouter_ensemble import should_auto_ensemble
+
+        with patch.dict(
+            os.environ,
+            {
+                "ISAAC_ENSEMBLE": "1",
+                "ISAAC_ENSEMBLE_AUTO": "1",
+                "ISAAC_ENSEMBLE_AUTO_MIN_WORDS": "22",
+            },
+            clear=False,
+        ):
+            light = should_auto_ensemble(
+                "Was ist 2+2?", intent="chat", interaction_class="NORMAL_CHAT"
+            )
+            self.assertFalse(light[0])
+
+            heavy = (
+                "Erkläre mir bitte ausführlich wie Photosynthese in Pflanzen funktioniert "
+                "und welche Rolle Licht Wasser und CO2 dabei spielen."
+            )
+            ok, reason = should_auto_ensemble(
+                heavy, intent="chat", interaction_class="NORMAL_CHAT"
+            )
+            self.assertTrue(ok)
+            self.assertTrue(
+                reason.startswith("heavy_words") or reason.startswith("multi_theme"),
+                msg=reason,
+            )
+
+            # Tools/Status nie auto
+            self.assertFalse(
+                should_auto_ensemble(
+                    heavy, intent="search", interaction_class="NORMAL_CHAT"
+                )[0]
+            )
+            self.assertFalse(
+                should_auto_ensemble(
+                    heavy, intent="chat", interaction_class="TOOL_REQUEST"
+                )[0]
+            )
+            self.assertFalse(
+                should_auto_ensemble(
+                    "ensemble: " + heavy, intent="chat", interaction_class="NORMAL_CHAT"
+                )[0]
+            )
+
+            with patch.dict(os.environ, {"ISAAC_ENSEMBLE_AUTO": "0"}, clear=False):
+                self.assertFalse(
+                    should_auto_ensemble(
+                        heavy, intent="chat", interaction_class="NORMAL_CHAT"
+                    )[0]
+                )
+
     def test_ensemble_openrouter_picks_winner_or_judge(self):
         from openrouter_ensemble import ensemble_openrouter, ModelAnswer
         from types import SimpleNamespace
@@ -3421,10 +3475,38 @@ class TestPhase4Connect(unittest.TestCase):
 
     def test_ensemble_kernel_route_uses_module(self):
         from isaac_core import IsaacKernel
+        from executor import Task, TaskType, TaskStatus, Strategy
+        from decision_trace import DecisionTrace, TracePhase
+        from logic import QualityScore
 
         kernel = object.__new__(IsaacKernel)
         kernel.relay = SimpleNamespace()
         kernel._build_system = lambda *a, **k: "system"
+
+        captured = {}
+
+        class FakeExecutor:
+            def create_task(self, **kwargs):
+                task = Task(
+                    id="ens01",
+                    typ=kwargs.get("typ", TaskType.AGGREGATE),
+                    prompt=kwargs.get("prompt", ""),
+                    beschreibung=kwargs.get("beschreibung", ""),
+                    provider=kwargs.get("provider"),
+                    system_prompt=kwargs.get("system_prompt", ""),
+                    sudo_aktiv=kwargs.get("sudo_aktiv", False),
+                    strategy=kwargs.get("strategy") or Strategy(allow_tools=False),
+                    interaction_class=kwargs.get("interaction_class", ""),
+                    classification=kwargs.get("classification"),
+                    decision_trace=DecisionTrace(),
+                )
+                captured["task"] = task
+                return task
+
+            def _notify(self, task):
+                captured["notified"] = True
+
+        kernel.executor = FakeExecutor()
 
         async def fake_ensemble(prompt, system="", task_id="ensemble"):
             from openrouter_ensemble import EnsembleResult, ModelAnswer
@@ -3437,6 +3519,7 @@ class TestPhase4Connect(unittest.TestCase):
                     ModelAnswer(model="b:free", antwort="B", score=6.5),
                 ],
                 dauer_s=1.2,
+                metadata={"panel": ["a:free", "b:free"], "free_only": True},
             )
 
         async def _run():
@@ -3446,12 +3529,72 @@ class TestPhase4Connect(unittest.TestCase):
                         "ensemble: Was ist Isaac?",
                         sudo_aktiv=False,
                         emp=SimpleNamespace(),
+                        trigger="explicit",
                     )
 
         text, score = asyncio.run(_run())
         self.assertIn("Synthese XY", text)
         self.assertIn("Ensemble:", text)
         self.assertGreaterEqual(score, 6.5)
+        task = captured["task"]
+        self.assertEqual(task.status, TaskStatus.DONE)
+        self.assertTrue(captured.get("notified"))
+        events = [e.event for e in task.decision_trace.entries]
+        phases = [e.phase for e in task.decision_trace.entries]
+        self.assertIn("ensemble_route", events)
+        self.assertIn("ensemble_decision", events)
+        self.assertIn(TracePhase.EVALUATION, phases)
+        data = task.to_dict()
+        self.assertTrue(data["decision_trace"])
+        self.assertEqual(data["decision_trace"][-1]["phase"], "evaluation")
+
+    def test_ensemble_auto_route_from_kernel(self):
+        from isaac_core import IsaacKernel, Intent
+        from low_complexity import ClassificationResult, InteractionClass
+
+        kernel = object.__new__(IsaacKernel)
+        heavy = (
+            "Erkläre mir bitte ausführlich wie Photosynthese in Pflanzen funktioniert "
+            "und welche Rolle Licht Wasser und CO2 dabei spielen."
+        )
+        called = {}
+
+        async def fake_ens(user_input, sudo_aktiv, emp, **kwargs):
+            called["input"] = user_input
+            called["trigger"] = kwargs.get("trigger")
+            called["reason"] = kwargs.get("trigger_reason")
+            return "auto-ensemble-ok", 8.0
+
+        async def _run():
+            with patch.dict(
+                os.environ,
+                {"ISAAC_ENSEMBLE": "1", "ISAAC_ENSEMBLE_AUTO": "1", "ISAAC_ENSEMBLE_AUTO_MIN_WORDS": "20"},
+                clear=False,
+            ):
+                with patch.object(kernel, "_ensemble_route", side_effect=fake_ens):
+                    return await kernel._route(
+                        heavy,
+                        Intent.CHAT,
+                        False,
+                        SimpleNamespace(),
+                        "",
+                        InteractionClass.NORMAL_CHAT,
+                        ClassificationResult(
+                            interaction_class=InteractionClass.NORMAL_CHAT,
+                            normalized_text=heavy.lower(),
+                            has_question=True,
+                            word_count=len(heavy.split()),
+                        ),
+                    )
+
+        text, score = asyncio.run(_run())
+        self.assertEqual(text, "auto-ensemble-ok")
+        self.assertEqual(called.get("trigger"), "auto")
+        reason = called.get("reason") or ""
+        self.assertTrue(
+            reason.startswith("heavy_words") or reason.startswith("multi_theme"),
+            msg=reason,
+        )
 
     def test_goal_inquiry_mode_and_learning_provenance(self):
         import tempfile

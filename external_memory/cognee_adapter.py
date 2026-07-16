@@ -260,11 +260,13 @@ class CogneeAdapter:
                 "top_k": max(1, min(limit, 20)),
                 "datasets": [self.DATASET_NAME],
             }
+            # Cloud latency often exceeds local 2.5s default
+            search_to = max(float(self._cfg.search_timeout_s), 10.0)
             results = self._cloud_request(
                 "POST",
                 "/api/v1/search",
                 body=payload,
-                timeout=self._cfg.search_timeout_s,
+                timeout=search_to,
             )
             return self._normalize_results(results, limit=limit)
         except Exception as exc:
@@ -388,7 +390,7 @@ class CogneeAdapter:
                 files=[
                     ("data", "memory.txt", text.encode("utf-8"), "text/plain"),
                 ],
-                timeout=self._cfg.write_timeout_s,
+                timeout=max(float(self._cfg.write_timeout_s), 15.0),
             )
             return True
         except Exception as exc:

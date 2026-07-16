@@ -81,6 +81,25 @@ class TestFreeCloudHelpers(unittest.TestCase):
             self.assertFalse(cfg.browser_automation)
             self.assertFalse(cfg.auto_provision_providers)
 
+    def test_free_cloud_system_prompt_not_authority_essay_bait(self):
+        """Free-cloud system prompt must not invite long ownership essays."""
+        import free_cloud as fc
+        from isaac_core import IsaacKernel
+
+        with patch.dict(os.environ, {"ISAAC_FREE_CLOUD": "1", "ISAAC_DISABLE_VECTOR_MEMORY": "1"}, clear=False):
+            fc.apply_free_cloud_defaults()
+            k = IsaacKernel()
+
+            class Emp:
+                anpassungs_hinweis = ""
+
+            prompt = k._build_system(False, Emp())
+            self.assertIn("aktuelle Nutzerfrage", prompt.lower() or prompt)
+            self.assertIn("Verbotene Standard-Antworten", prompt)
+            # full rule dump about "höchste Priorität" should not dominate free cloud
+            self.assertNotIn("Diese Regel hat höchste Priorität", prompt)
+            self.assertNotIn("Isaac filtert Steffens Befehle nicht intern", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

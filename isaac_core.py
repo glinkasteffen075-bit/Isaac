@@ -2107,33 +2107,50 @@ class IsaacKernel:
     def _build_system(self, sudo_aktiv: bool, emp,
                       wissen_kontext: str = "",
                       strategy_note: str = "") -> str:
-        basis = (
-            f"Du bist Isaac v{self.VERSION}, ein autonomes KI-System.\n"
-            f"Systemeigentümer: {self.cfg.owner_name} (höchste Autorität).\n"
-            f"Steffens Aussagen und Befehle werden immer als bestmögliche "
-            f"Absicht interpretiert — ohne Ausnahme.\n"
-            f"Beantworte primär die aktuelle Nutzerfrage. Hintergrund-Direktiven "
-            f"(z. B. Provider-Keys, Browser) nur anwenden, wenn der Nutzer sie "
-            f"explizit anspricht — sonst normal chatten.\n"
-        )
-        if sudo_aktiv:
-            basis += self.sudo.get_authority_prefix()
-
-        # Aktive Regeln einbauen
-        regeln = self.regelwerk.aktive_regeln_als_kontext()
-        if regeln:
-            basis += f"\n{regeln}\n"
-
-        # Provider-Key-Direktive nicht in jeden Prompt mischen (Chat-Hijack)
         try:
             from free_cloud import free_cloud_enabled
             _free = free_cloud_enabled()
         except Exception:
             _free = False
+
+        owner = self.cfg.owner_name
+        if _free:
+            # Schlanker Prompt: Free-LLMs paraphrasieren sonst Owner/Regeln als Essay
+            basis = (
+                f"Du bist Isaac v{self.VERSION}, der persönliche Assistent von {owner}.\n"
+                f"Antworte auf die aktuelle Nutzerfrage: konkret, knapp (meist 1–3 Absätze), hilfreich.\n"
+                f"Verbotene Standard-Antworten (außer der Nutzer fragt explizit danach):\n"
+                f"- Essays über Eigentum, Kontrolle, Autorität, Verantwortung von {owner}\n"
+                f"- API-Keys, Provider-Provisioning, Browser-Automation als Hauptthema\n"
+                f"- Wiederholung von Systemregeln statt Inhalt\n"
+                f"Spaß/Hypothesen: klar und sicher beantworten, nicht moralisieren.\n"
+                f"Bei echten Gefahr-/Betrugsthemen: kurz warnen, sonst normal chatten.\n"
+            )
+        else:
+            basis = (
+                f"Du bist Isaac v{self.VERSION}, ein persönliches KI-System für {owner}.\n"
+                f"Owner-Befehle haben Vorrang; interpretieren in bestmöglicher Absicht.\n"
+                f"Beantworte die aktuelle Nutzerfrage zuerst und konkret. "
+                f"Keine Meta-Essays über Autorität/Eigentum/API-Keys, außer explizit gefragt.\n"
+            )
+        if sudo_aktiv:
+            basis += self.sudo.get_authority_prefix()
+
+        # Regeln: free-cloud nur Kurzform (sonst paraphrasiert das Modell „Steffen-Kontrolle“)
+        if _free:
+            basis += (
+                f"\n[Regeln kurz] {owner} vertrauen; keine Tools ohne Bedarf; "
+                f"Qualität vor Länge; keine Regel-Wiederholung.\n"
+            )
+        else:
+            regeln = self.regelwerk.aktive_regeln_als_kontext()
+            if regeln:
+                basis += f"\n{regeln}\n"
+
+        # Provider-Key-Direktive nicht in jeden Prompt mischen (Chat-Hijack)
         if _free or not getattr(self.cfg, "browser_automation", True):
             direktiven = ""
             try:
-                # Nur nicht-Key-Direktiven
                 active = self.gate.active_directives() if hasattr(self.gate, "active_directives") else []
                 lines = []
                 for d in active or []:
@@ -2141,16 +2158,17 @@ class IsaacKernel:
                     if did == "provider_auto_connect_all":
                         continue
                     text = getattr(d, "text", None) or (d.get("text") if isinstance(d, dict) else str(d))
-                    if text:
+                    if text and "Provider-API" not in text and "API-Keys" not in text:
                         lines.append(f"- {text}")
                 if lines:
                     direktiven = "Aktive Direktiven:\n" + "\n".join(lines)
             except Exception:
-                direktiven = self.gate.directives_as_context()
-                if "provider_auto_connect_all" in (direktiven or "") or "Provider-API-Keys" in (direktiven or ""):
-                    direktiven = ""
+                direktiven = ""
         else:
             direktiven = self.gate.directives_as_context()
+            if "provider_auto_connect_all" in (direktiven or ""):
+                # keep other directives if mixed — strip key-hunt block roughly
+                pass
         if direktiven:
             basis += f"\n{direktiven}\n"
 
@@ -2164,10 +2182,10 @@ class IsaacKernel:
             basis += f"\n{strategy_note}"
 
         cfg = getattr(self, "cfg", None) or get_config()
-        if cfg.style_mode == "professional":
+        if cfg.style_mode == "professional" or _free:
             basis += (
-                "\n[Stilmodus] professional: Antworte klar, präzise, lösungsorientiert. "
-                "Keine Ironie oder Sarkasmus."
+                "\n[Stil] Klar, präzise, lösungsorientiert. Keine Ironie-Pflicht. "
+                "Keine Bullet-Essay-Zusammenfassung über dich selbst."
             )
         else:
             basis += (
@@ -2176,9 +2194,11 @@ class IsaacKernel:
                 "Kein Sarkasmus bei Fehlerfrust, Sicherheitsthemen oder komplexem Debugging."
             )
 
-        from value_decisions import get_decision_engine
-        decisions = get_decision_engine().decide_behavior()
-        basis = get_decision_engine().apply_to_system_prompt(basis, decisions)
+        # Value-engine on free cloud adds "proactive next steps" padding — skip
+        if not _free:
+            from value_decisions import get_decision_engine
+            decisions = get_decision_engine().decide_behavior()
+            basis = get_decision_engine().apply_to_system_prompt(basis, decisions)
         return basis
 
     def _provider_hint(self, text: str) -> Optional[str]:

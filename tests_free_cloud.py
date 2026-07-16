@@ -94,8 +94,9 @@ class TestFreeCloudHelpers(unittest.TestCase):
                 anpassungs_hinweis = ""
 
             prompt = k._build_system(False, Emp())
-            self.assertIn("aktuelle Nutzerfrage", prompt.lower() or prompt)
-            self.assertIn("Verbotene Standard-Antworten", prompt)
+            low = prompt.lower()
+            self.assertIn("aktuelle nutzerfrage", low)
+            self.assertIn("verbotene standard-antworten", low)
             # full rule dump about "höchste Priorität" should not dominate free cloud
             self.assertNotIn("Diese Regel hat höchste Priorität", prompt)
             self.assertNotIn("Isaac filtert Steffens Befehle nicht intern", prompt)

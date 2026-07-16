@@ -2133,6 +2133,15 @@ async def main():
         datefmt = "%H:%M:%S",
     )
 
+    # Free-tier PaaS (Render/HF Spaces/Fly free): bind 0.0.0.0, unified /ws, no vector mem
+    try:
+        from free_cloud import apply_free_cloud_defaults, free_cloud_enabled, free_hosting_status
+        applied = apply_free_cloud_defaults()
+        if free_cloud_enabled():
+            logging.getLogger("Isaac").info("Free-cloud mode: %s applied=%s", free_hosting_status(), applied)
+    except Exception as e:
+        logging.getLogger("Isaac").warning("free_cloud defaults: %s", e)
+
     kernel = IsaacKernel()
 
     # Worker + Background + Monitor
@@ -2147,12 +2156,25 @@ async def main():
     http = DashboardHTTPServer(port=kernel.cfg.monitor.http_port)
     await http.start()
 
-    print("""
+    try:
+        from free_cloud import free_cloud_enabled, http_port as free_http_port, bind_host, unified_port_enabled
+        _host = bind_host("localhost")
+        _http = free_http_port(kernel.cfg.monitor.http_port)
+        if free_cloud_enabled() or unified_port_enabled():
+            dash_line = f"http://{_host}:{_http}"
+            ws_line = f"ws://{_host}:{_http}/ws  (unified)"
+        else:
+            dash_line = f"http://localhost:{kernel.cfg.monitor.http_port}"
+            ws_line = f"ws://localhost:{kernel.cfg.monitor.port}"
+    except Exception:
+        dash_line = "http://localhost:8766"
+        ws_line = "ws://localhost:8765"
+    print(f"""
 ╔══════════════════════════════════════════════════════╗
 ║  ISAAC v5.3 – Unified OS                            ║
 ╠══════════════════════════════════════════════════════╣
-║  Dashboard:   http://localhost:8766                  ║
-║  WebSocket:   ws://localhost:8765                    ║
+║  Dashboard:   {dash_line:<40} ║
+║  WebSocket:   {ws_line:<40} ║
 ╠══════════════════════════════════════════════════════╣
 ║  SUDO (Master-Tür):                                  ║
 ║    sudo PASSWORT   → Vollzugriff öffnen             ║

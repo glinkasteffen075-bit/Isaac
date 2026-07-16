@@ -1,0 +1,28 @@
+# Render.com free web service blueprint
+# Docs: https://render.com/docs/blueprint-spec
+# Deploy: connect GitHub repo → New Blueprint → this file
+# Secrets: set GROQ_API_KEY (or GOOGLE_API_KEY / OPENROUTER_API_KEY) in Render dashboard
+
+services:
+  - type: web
+    name: isaac-free
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile.free
+    dockerContext: .
+    healthCheckPath: /healthz
+    envVars:
+      - key: ISAAC_FREE_CLOUD
+        value: "1"
+      - key: ISAAC_UNIFIED_PORT
+        value: "1"
+      - key: ISAAC_DISABLE_VECTOR_MEMORY
+        value: "1"
+      - key: ACTIVE_PROVIDER
+        value: groq
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false

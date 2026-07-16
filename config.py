@@ -247,11 +247,13 @@ def _provider_defaults_from_env() -> dict[str, ProviderConfig]:
         ),
         "gemini": ProviderConfig(
             provider_id="gemini",
-            display_name="Gemini",
+            display_name="Gemini (AI Studio)",
             provider_type="gemini",
-            api_key=os.getenv("GOOGLE_API_KEY", ""),
+            # GOOGLE_API_KEY (AI Studio) oder GEMINI_API_KEY — beide akzeptiert
+            api_key=(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or ""),
             base_url=os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/models"),
-            model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+            # Lite-latest: stabil für AI-Studio-Keys; 2.5-flash oft gesperrt, 3-flash braucht hohes Token-Budget
+            model=os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest"),
             rpm=15,
             tpm=32_000,
             timeout=60,

@@ -55,6 +55,43 @@ Die langfristige Architektur soll drei Ebenen reflektieren:
 
 Diese Ebenen sind nicht nur organisatorisch, sondern funktional und mental-model-basiert zu verstehen.
 
+## Optional: External Memory (Mem0 / Cognee / Letta)
+
+Isaac bleibt Source of Truth (`memory.py`). Optional können drei Adapter aktiviert werden:
+
+| System | Rolle | Aktivierung |
+|--------|--------|-------------|
+| [Mem0](https://github.com/mem0ai/mem0) OSS | Präferenz-/Fakten-Hints | `ISAAC_MEM0_ENABLED=1` |
+| [Cognee](https://github.com/topoteretes/cognee) | Graph-Memory (remember/recall) | `ISAAC_COGNEE_ENABLED=1` |
+| [Letta Code](https://github.com/letta-ai/letta-code) | Companion-CLI (`letta: …`) | `ISAAC_LETTA_ENABLED=1` |
+
+```bash
+bash scripts/install_external_memory.sh
+# oder: .venv/bin/python -m pip install -r requirements-memory-extra.txt
+#        npm i -g @letta-ai/letta-code
+```
+
+Default: **aus** (CI-sicher). Writes nur mit `ISAAC_EXTERNAL_MEMORY_WRITE=1`. Details: `docs/OPEN_SOURCE_PATTERNS.md`.
+
+### Cognee Cloud
+
+```bash
+# .env
+ISAAC_COGNEE_ENABLED=1
+ISAAC_COGNEE_ALLOW_CLOUD=1
+COGNEE_BASE_URL=https://your-tenant.aws.cognee.ai
+COGNEE_API_KEY=...
+ISAAC_EXTERNAL_MEMORY_WRITE=1   # score-gated turn writes (min_score default 5.0)
+
+# one-shot graph seed
+.venv/bin/python scripts/seed_cognee_cloud.py
+
+# in chat / CLI
+cognee status
+```
+
+Search injects into retrieval via `memory.build_retrieval_context` as `[external_memory]`. Writes use `POST /api/v1/add` only (cognify is seed/batch, not per-turn).
+
 ## Arbeitsmodell für jede Änderung
 
 Jede Änderung soll in klaren Phasen erfolgen:

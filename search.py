@@ -33,6 +33,7 @@ from urllib.parse import quote_plus, urljoin
 
 from config  import get_config, DATA_DIR
 from audit   import AuditLog
+import os
 
 log = logging.getLogger("Isaac.Search")
 
@@ -52,6 +53,95 @@ HEADERS = {
     "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
     "Accept": "text/html,application/json,*/*",
 }
+
+# WMO weathercode → kurze DE-Beschreibung (Open-Meteo)
+_WMO_DE = {
+    0: "klar",
+    1: "überwiegend klar",
+    2: "teilweise bewölkt",
+    3: "bedeckt",
+    45: "Nebel",
+    48: "Reifnebel",
+    51: "leichter Nieselregen",
+    53: "mäßiger Nieselregen",
+    55: "starker Nieselregen",
+    61: "leichter Regen",
+    63: "mäßiger Regen",
+    65: "starker Regen",
+    66: "gefrierender Regen",
+    67: "starker gefrierender Regen",
+    71: "leichter Schneefall",
+    73: "mäßiger Schneefall",
+    75: "starker Schneefall",
+    77: "Schneegriesel",
+    80: "leichte Regenschauer",
+    81: "mäßige Regenschauer",
+    82: "starke Regenschauer",
+    85: "leichte Schneeschauer",
+    86: "starke Schneeschauer",
+    95: "Gewitter",
+    96: "Gewitter mit Hagel",
+    99: "schweres Gewitter mit Hagel",
+}
+
+_WEATHER_MARKERS = (
+    "wetter", "weather", "temperatur", "regen", "schnee",
+    "vorhersage", "forecast", "unwetter", "gewitter",
+)
+_WEATHER_SKIP_MARKERS = (
+    "literatur", "motiv", "metapher", "als sprach", "konzept", "architektur",
+)
+
+
+def looks_like_weather_query(text: str) -> bool:
+    """True for weather lookups; false for explanatory/metaphor chat."""
+    tl = (text or "").lower()
+    if not any(m in tl for m in _WEATHER_MARKERS):
+        return False
+    if any(m in tl for m in _WEATHER_SKIP_MARKERS):
+        return False
+    if re.search(r"erkl[aä]r", tl) and "motiv" in tl:
+        return False
+    return True
+
+
+def extract_weather_location(text: str, default: str = "") -> str:
+    """Ort aus Wetterfrage; default wenn keiner genannt (z. B. Berlin)."""
+    raw = (text or "").strip()
+    for prefix in (
+        "suche:", "search:", "recherche:", "recherchiere:",
+        "finde:", "web:", "internet:",
+    ):
+        if raw.lower().startswith(prefix):
+            raw = raw.split(":", 1)[1].strip()
+            break
+    patterns = (
+        r"(?:wetter|weather|temperatur|vorhersage)\s+(?:in|für|fuer|bei|near)\s+([A-Za-zÄÖÜäöüß\-\s]{2,40})",
+        r"(?:in|für|fuer|bei)\s+([A-Za-zÄÖÜäöüß\-]{2,40})\s+(?:wetter|weather|morgen|heute)",
+        r"(?:zeige|zeig|hol)\s+(?:das\s+)?wetter\s+(?:in|für|fuer|bei)\s+(.+)$",
+    )
+    for pattern in patterns:
+        m = re.search(pattern, raw, re.I)
+        if m:
+            loc = m.group(1).strip(" .,!?:")
+            # cut trailing time words
+            loc = re.split(
+                r"\b(morgen|heute|übermorgen|uebermorgen|weekend|woche)\b",
+                loc,
+                maxsplit=1,
+                flags=re.I,
+            )[0].strip(" .,!?")
+            if loc and loc.lower() not in _WEATHER_SKIP_MARKERS:
+                return loc
+    return (default or os.getenv("ISAAC_DEFAULT_LOCATION") or "Berlin").strip()
+
+
+def _wmo_label(code: int) -> str:
+    try:
+        c = int(code)
+    except Exception:
+        return "unbekannt"
+    return _WMO_DE.get(c, f"Code {c}")
 
 
 # ── Ergebnis-Typen ────────────────────────────────────────────────────────────
@@ -166,9 +256,28 @@ class MultiSearch:
         t0     = time.monotonic()
         result = MultiSearchResult(query=query)
 
+        weather_mode = looks_like_weather_query(query)
+        # Wetter: zuerst echte Forecast-APIs (Open-Meteo, wttr.in) — nicht Wikipedia-Zufall
+        if weather_mode:
+            try:
+                w_hits, w_abstract = await self._weather_forecast(query)
+                if w_hits:
+                    result.hits.extend(w_hits)
+                    result.quellen.append("weather_api")
+                if w_abstract:
+                    result.abstract = w_abstract
+            except Exception as e:
+                result.fehler.append(f"weather_api: {str(e)[:80]}")
+                log.warning("Wetter-API: %s", e)
+
         # Engine-Auswahl
         aktive = engines or ["ddg", "wikipedia", "searxng", "brave",
                               "reddit", "arxiv"]
+        # Bei Wetter: Wikipedia/arxiv oft irreführend; web engines behalten
+        if weather_mode:
+            aktive = [e for e in aktive if e not in {"wikipedia", "arxiv", "reddit", "github"}]
+            if not aktive:
+                aktive = ["ddg", "searxng", "brave"]
 
         # Alle Engines parallel anfragen
         tasks = {}
@@ -182,7 +291,7 @@ class MultiSearch:
 
         engine_results = await asyncio.gather(
             *tasks.values(), return_exceptions=True
-        )
+        ) if tasks else []
 
         for engine, res in zip(tasks.keys(), engine_results):
             if isinstance(res, Exception):
@@ -207,8 +316,10 @@ class MultiSearch:
             reverse=True
         )[:max_hits]
 
-        # Optional: Volltext laden
-        if load_fulltext and result.hits:
+        # Optional: Volltext laden (bei Wetter-API-Treffern oft unnötig)
+        if load_fulltext and result.hits and not (
+            weather_mode and result.abstract and "Open-Meteo" in (result.abstract or "")
+        ):
             await self._load_volltexte(result.hits[:3])
 
         result.dauer = round(time.monotonic() - t0, 2)
@@ -223,6 +334,126 @@ class MultiSearch:
 
         self.cache.set(query, result)
         return result
+
+    # ── Wetter (kostenlose APIs, kein Key) ─────────────────────────────────────
+    async def _weather_forecast(self, query: str) -> tuple[list[SearchHit], str]:
+        location = extract_weather_location(query)
+        session = await self._sess()
+        hits: list[SearchHit] = []
+        lines: list[str] = []
+
+        # 1) Geocoding + Open-Meteo daily
+        try:
+            geo_url = (
+                "https://geocoding-api.open-meteo.com/v1/search"
+                f"?name={quote_plus(location)}&count=1&language=de&format=json"
+            )
+            async with session.get(geo_url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=12)) as r:
+                if r.status == 200:
+                    geo = await r.json()
+                    results = geo.get("results") or []
+                    if results:
+                        place = results[0]
+                        lat = place.get("latitude")
+                        lon = place.get("longitude")
+                        name = place.get("name") or location
+                        country = place.get("country_code") or ""
+                        tz = place.get("timezone") or "Europe/Berlin"
+                        fc_url = (
+                            "https://api.open-meteo.com/v1/forecast"
+                            f"?latitude={lat}&longitude={lon}"
+                            "&daily=temperature_2m_max,temperature_2m_min,"
+                            "precipitation_sum,weathercode,windspeed_10m_max"
+                            f"&timezone={quote_plus(tz)}&forecast_days=3"
+                        )
+                        async with session.get(
+                            fc_url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=12)
+                        ) as fr:
+                            if fr.status == 200:
+                                data = await fr.json()
+                                daily = data.get("daily") or {}
+                                times = daily.get("time") or []
+                                tmax = daily.get("temperature_2m_max") or []
+                                tmin = daily.get("temperature_2m_min") or []
+                                precip = daily.get("precipitation_sum") or []
+                                codes = daily.get("weathercode") or []
+                                wind = daily.get("windspeed_10m_max") or []
+                                day_lines = []
+                                for i, day in enumerate(times[:3]):
+                                    label = _wmo_label(codes[i] if i < len(codes) else -1)
+                                    t_hi = tmax[i] if i < len(tmax) else "?"
+                                    t_lo = tmin[i] if i < len(tmin) else "?"
+                                    pr = precip[i] if i < len(precip) else "?"
+                                    wi = wind[i] if i < len(wind) else "?"
+                                    day_lines.append(
+                                        f"{day}: {label}, {t_lo}–{t_hi}°C, "
+                                        f"Niederschlag {pr} mm, Wind max {wi} km/h"
+                                    )
+                                if day_lines:
+                                    abstract = (
+                                        f"Wettervorhersage für {name}"
+                                        f"{', ' + country if country else ''} "
+                                        f"(Open-Meteo, live):\n" + "\n".join(day_lines)
+                                    )
+                                    lines.append(abstract)
+                                    hits.append(SearchHit(
+                                        titel=f"Open-Meteo Vorhersage: {name}",
+                                        snippet="\n".join(day_lines),
+                                        url=fc_url,
+                                        quelle="open-meteo",
+                                        score=10.0,
+                                    ))
+        except Exception as e:
+            log.debug("open-meteo: %s", e)
+
+        # 2) wttr.in Kurzformat (aktuell + 2 Tage)
+        try:
+            wttr_url = f"https://wttr.in/{quote_plus(location)}?format=j1&lang=de"
+            async with session.get(
+                wttr_url,
+                headers={**HEADERS, "Accept": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=12),
+            ) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    cur = (data.get("current_condition") or [{}])[0]
+                    area = ((data.get("nearest_area") or [{}])[0].get("areaName") or [{}])
+                    area_name = (area[0].get("value") if area else location) or location
+                    temp = cur.get("temp_C", "?")
+                    desc = ""
+                    if cur.get("lang_de"):
+                        desc = (cur["lang_de"][0] or {}).get("value", "")
+                    if not desc and cur.get("weatherDesc"):
+                        desc = (cur["weatherDesc"][0] or {}).get("value", "")
+                    weather_lines = [f"Aktuell in {area_name}: {temp}°C, {desc}"]
+                    for day in (data.get("weather") or [])[:3]:
+                        date = day.get("date", "?")
+                        avg = day.get("avgtempC", "?")
+                        mx = day.get("maxtempC", "?")
+                        mn = day.get("mintempC", "?")
+                        hourly0 = (day.get("hourly") or [{}])[0]
+                        ddesc = ""
+                        if hourly0.get("lang_de"):
+                            ddesc = (hourly0["lang_de"][0] or {}).get("value", "")
+                        elif hourly0.get("weatherDesc"):
+                            ddesc = (hourly0["weatherDesc"][0] or {}).get("value", "")
+                        weather_lines.append(
+                            f"{date}: {ddesc}, Ø{avg}°C (min {mn} / max {mx})"
+                        )
+                    snippet = "\n".join(weather_lines)
+                    lines.append(snippet)
+                    hits.append(SearchHit(
+                        titel=f"wttr.in: {area_name}",
+                        snippet=snippet,
+                        url=f"https://wttr.in/{quote_plus(location)}",
+                        quelle="wttr.in",
+                        score=9.5,
+                    ))
+        except Exception as e:
+            log.debug("wttr.in: %s", e)
+
+        abstract = "\n\n".join(lines) if lines else ""
+        return hits, abstract
 
     # ── DuckDuckGo ────────────────────────────────────────────────────────────
     async def _ddg(self, query: str) -> tuple[list[SearchHit], str]:

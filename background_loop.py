@@ -256,20 +256,57 @@ class BackgroundLoop:
 
     async def _health_check(self):
         try:
+            from config import get_config
+            cfg = get_config()
+
+            # Free PaaS: kein Ollama-Probe (nicht erreichbar, spammt Audit/Blacklist)
+            try:
+                from free_cloud import free_cloud_enabled
+                if free_cloud_enabled():
+                    primary = cfg.relay.primary_provider
+                    prov = cfg.get_provider(primary) if primary else None
+                    ok = bool(
+                        prov
+                        and prov.enabled
+                        and prov.available
+                        and cfg.is_provider_allowed(primary)
+                    )
+                    if not ok:
+                        log.warning(
+                            "Health-Check free-cloud: kein nutzbarer Primary (%s)",
+                            primary or "—",
+                        )
+                    else:
+                        log.debug("Health-Check free-cloud: primary=%s ok", primary)
+                    from instincts import get_instincts
+                    from meaning import get_meaning
+                    get_instincts().update_from_system({
+                        "recent_errors": 0 if ok else 1,
+                        "open_questions": len(self._safe_offene_fragen()),
+                        "steffen_engagement": get_meaning().get_bonding("Steffen"),
+                    })
+                    return
+            except Exception as e:
+                log.debug("Health-Check free-cloud branch: %s", e)
+
             from relay import get_relay
             relay = get_relay()
-            # Prüfe ob Ollama erreichbar ist
+            # Primär-Provider prüfen (nicht hardcodiert ollama)
+            probe = cfg.relay.primary_provider or "ollama"
+            if not cfg.is_provider_allowed(probe) or not cfg.get_provider(probe):
+                avail = cfg.available_providers
+                probe = avail[0] if avail else "ollama"
             r = await relay.ask(
                 "Antwort: OK",
-                system   = "Antworte nur mit 'OK'.",
-                provider = "ollama",
-                task_id  = "health",
+                system="Antworte nur mit 'OK'.",
+                provider=probe,
+                task_id="health",
             )
             ok = "OK" in r or not r.startswith("[RELAY")
             if not ok:
-                log.warning(f"Health-Check: Ollama meldet Fehler: {r[:80]}")
+                log.warning("Health-Check: %s meldet Fehler: %s", probe, r[:80])
             else:
-                log.debug("Health-Check: OK")
+                log.debug("Health-Check: OK (%s)", probe)
 
             from instincts import get_instincts
             from meaning import get_meaning

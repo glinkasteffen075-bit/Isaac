@@ -816,12 +816,12 @@ class Executor:
             seen_answers.add(fp)
 
             if antwort.startswith("[RELAY"):
-                if iteration >= 1:
-                    task.log("Loop-Schutz: wiederholter Relay-Fehler")
-                    task.status = TaskStatus.FAILED
-                    task.fehler = antwort[:200]
-                    return
-                self._mark_resumable(task, "relay_failure")
+                # ask_with_fallback already exhausted usable providers — fail fast
+                # instead of RESUMABLE (would hang submit_and_wait up to timeout).
+                task.antwort = antwort
+                task.fehler = antwort[:200]
+                task.status = TaskStatus.FAILED
+                task.log(f"Relay fehlgeschlagen nach Fallback: {antwort[:120]}")
                 return
 
             self._get_watchdog().record_progress(task.id)

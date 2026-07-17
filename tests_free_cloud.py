@@ -101,6 +101,96 @@ class TestFreeCloudHelpers(unittest.TestCase):
             self.assertNotIn("Diese Regel hat höchste Priorität", prompt)
             self.assertNotIn("Isaac filtert Steffens Befehle nicht intern", prompt)
 
+    def test_free_cloud_disables_loopback_llm_and_picks_cloud_primary(self):
+        """Render/HF free: no ollama/local in available; primary is keyed cloud LLM."""
+        import free_cloud as fc
+        import config as config_module
+        import tempfile
+        from pathlib import Path
+
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            old_p = config_module.PROVIDER_SETTINGS_PATH
+            old_r = config_module.RUNTIME_SETTINGS_PATH
+            config_module.PROVIDER_SETTINGS_PATH = Path(tmp.name) / "provider_settings.json"
+            config_module.RUNTIME_SETTINGS_PATH = Path(tmp.name) / "runtime_settings.json"
+            env = {
+                "ISAAC_FREE_CLOUD": "1",
+                "ISAAC_DISABLE_VECTOR_MEMORY": "1",
+                "ACTIVE_PROVIDER": "openrouter",
+                "OPENROUTER_API_KEY": "or-test-key",
+                "GROQ_API_KEY": "groq-test-key",
+                "ISAAC_ALLOW_LOCAL_LLM": "",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                os.environ.pop("ISAAC_ALLOW_LOCAL_LLM", None)
+                fc.apply_free_cloud_defaults()
+                cfg = config_module.IsaacConfig()
+                self.assertFalse(cfg.providers["ollama"].enabled)
+                self.assertFalse(cfg.providers["local"].enabled)
+                self.assertNotIn("ollama", cfg.available_providers)
+                self.assertNotIn("local", cfg.available_providers)
+                self.assertIn("openrouter", cfg.available_providers)
+                self.assertEqual(cfg.relay.primary_provider, "openrouter")
+                self.assertIn("gemini", cfg.free_providers or ["gemini"])
+                # free set includes gemini even if no key (property filters available)
+                free_ids = {
+                    "ollama", "local", "groq", "openrouter", "gemini",
+                    "huggingface", "together", "perplexity", "mistral",
+                }
+                self.assertIn("gemini", free_ids)
+        finally:
+            config_module.PROVIDER_SETTINGS_PATH = old_p
+            config_module.RUNTIME_SETTINGS_PATH = old_r
+            tmp.cleanup()
+
+    def test_fallback_skips_disabled_ollama_on_free_cloud(self):
+        """ask_with_fallback must not waste retries on disabled loopback providers."""
+        import asyncio
+        import free_cloud as fc
+        import config as config_module
+        import tempfile
+        from pathlib import Path
+        from relay import AsyncRelay, ProviderErr
+
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            old_p = config_module.PROVIDER_SETTINGS_PATH
+            old_r = config_module.RUNTIME_SETTINGS_PATH
+            config_module.PROVIDER_SETTINGS_PATH = Path(tmp.name) / "provider_settings.json"
+            config_module.RUNTIME_SETTINGS_PATH = Path(tmp.name) / "runtime_settings.json"
+            env = {
+                "ISAAC_FREE_CLOUD": "1",
+                "ACTIVE_PROVIDER": "openrouter",
+                "OPENROUTER_API_KEY": "or-test-key",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                fc.apply_free_cloud_defaults()
+                cfg = config_module.IsaacConfig()
+                # inject config into relay
+                r = AsyncRelay()
+                r.cfg = cfg
+                r._setup_limiters()
+                order: list[str] = []
+
+                async def fake_dispatch(pcfg, prompt, system, model_override=None):
+                    order.append(pcfg.provider_id)
+                    if pcfg.provider_id == "openrouter":
+                        return ("4", 1)
+                    raise ProviderErr(f"{pcfg.provider_id} should not be tried")
+
+                r._dispatch = fake_dispatch
+                ans, prov = asyncio.run(r.ask_with_fallback("Was ist 2+2?", system="test"))
+                self.assertEqual(ans, "4")
+                self.assertEqual(prov, "openrouter")
+                self.assertEqual(order, ["openrouter"])
+                self.assertNotIn("ollama", order)
+                self.assertNotIn("local", order)
+        finally:
+            config_module.PROVIDER_SETTINGS_PATH = old_p
+            config_module.RUNTIME_SETTINGS_PATH = old_r
+            tmp.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()

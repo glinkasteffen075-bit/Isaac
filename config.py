@@ -88,6 +88,20 @@ def allows_missing_api_key(cfg: "ProviderConfig") -> bool:
     return False
 
 
+def is_loopback_provider(cfg: "ProviderConfig") -> bool:
+    """True for Ollama/local endpoints bound to loopback (unusable on free PaaS)."""
+    ptype = (cfg.provider_type or "").lower().strip()
+    pid = (cfg.provider_id or "").lower().strip()
+    host = _url_host(cfg.base_url)
+    if host in {"127.0.0.1", "localhost", "::1"}:
+        return True
+    if ptype in {"ollama", "local_ollama"} and not host:
+        return True
+    if pid in {"ollama", "local", "local_llm", "local-openai", "local_openai"} and not host:
+        return True
+    return False
+
+
 def _url_host(url: str) -> str:
     raw = (url or "").strip()
     if not raw:
@@ -443,6 +457,20 @@ class IsaacConfig:
             # Free public host: kein stiller Admin
             self.privilege_mode = "user"
 
+        # Loopback-LLMs (Ollama / local OpenAI) sind auf Free-PaaS nicht erreichbar.
+        # Ohne Disable landen sie in available_providers und blockieren den Fallback.
+        allow_local = _bool(os.getenv("ISAAC_ALLOW_LOCAL_LLM"), False)
+        if not allow_local:
+            for pid, prov in self.providers.items():
+                if is_loopback_provider(prov):
+                    prov.enabled = False
+
+        # free_only: Cloud-Demo soll nicht versehentlich Paid-Only-Primary ohne Key halten
+        if not self.free_only_providers:
+            # Env/runtime may already set it; free cloud defaults to free-only when unset
+            if os.getenv("ISAAC_FREE_ONLY_PROVIDERS") is None:
+                self.free_only_providers = True
+
     def _apply_owner_equivalent_defaults(self):
         """Admin-Modus = Owner-Äquivalenz auf vertrauenswürdigen Geräten."""
         if not is_owner_equivalent_mode(self):
@@ -477,6 +505,7 @@ class IsaacConfig:
             "local",
             "groq",
             "openrouter",
+            "gemini",  # AI Studio free quota — documented free-cloud option
             "huggingface",
             "together",
             "perplexity",
@@ -656,24 +685,78 @@ class IsaacConfig:
             defaults = _provider_defaults_from_env()
             self.providers.update(defaults)
 
-        requested = _normalize_provider_id(preferred_default or "")
-        valid_default = requested if requested in self.providers else ""
+        free_allow = {
+            "ollama", "local", "groq", "openrouter", "gemini",
+            "huggingface", "together", "perplexity", "mistral",
+        }
 
+        def _enabled(pid: str) -> bool:
+            cfg = self.providers.get(pid)
+            return bool(cfg and cfg.enabled)
+
+        def _runtime_ready(pid: str) -> bool:
+            """Enabled + free_only allow + configured enough to call."""
+            cfg = self.providers.get(pid)
+            if not cfg or not cfg.enabled:
+                return False
+            if self.free_only_providers and pid not in free_allow:
+                return False
+            return bool(cfg.available)
+
+        def _first_runtime_ready() -> str:
+            try:
+                from free_cloud import recommended_free_providers
+                candidates = list(recommended_free_providers())
+            except Exception:
+                candidates = ["groq", "gemini", "openrouter"]
+            candidates.extend(["ollama", "local"])
+            seen: set[str] = set()
+            for pid in candidates:
+                if pid in seen:
+                    continue
+                seen.add(pid)
+                if pid in self.providers and _runtime_ready(pid):
+                    return pid
+            for pid in self.providers:
+                if _runtime_ready(pid):
+                    return pid
+            return ""
+
+        # 1) Explicit preferred (upsert / set_default) — honor even without key
+        requested = _normalize_provider_id(preferred_default or "")
+        if requested in self.providers and _enabled(requested):
+            valid_default = requested
+        else:
+            valid_default = ""
+
+        # 2) ACTIVE_PROVIDER env — replace if disabled/unusable loopback (free cloud)
         if not valid_default:
             env_default = _normalize_provider_id(os.getenv("ACTIVE_PROVIDER", ""))
-            if env_default in self.providers:
-                valid_default = env_default
+            if env_default in self.providers and _enabled(env_default):
+                if _runtime_ready(env_default):
+                    valid_default = env_default
+                else:
+                    valid_default = _first_runtime_ready() or env_default
+            elif env_default in self.providers and not _enabled(env_default):
+                # e.g. ACTIVE_PROVIDER=ollama on free cloud after loopback disable
+                valid_default = _first_runtime_ready()
 
+        # 3) Existing is_default flag
         if not valid_default:
             for pid, cfg in self.providers.items():
-                if cfg.is_default:
-                    valid_default = pid
+                if cfg.is_default and _enabled(pid):
+                    valid_default = pid if _runtime_ready(pid) else (_first_runtime_ready() or pid)
                     break
 
+        # 4) Auto runtime-ready, then any enabled
         if not valid_default:
-            if "ollama" in self.providers:
-                valid_default = "ollama"
-            else:
+            valid_default = _first_runtime_ready()
+        if not valid_default:
+            for pid, cfg in self.providers.items():
+                if cfg.enabled:
+                    valid_default = pid
+                    break
+            if not valid_default:
                 valid_default = next(iter(self.providers.keys()))
 
         for pid, cfg in self.providers.items():

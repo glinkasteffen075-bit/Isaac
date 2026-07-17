@@ -101,6 +101,11 @@ def recommended_free_providers() -> list[str]:
     return ["groq", "gemini", "openrouter"]
 
 
+def allow_local_llm() -> bool:
+    """Loopback Ollama/local only when explicitly enabled on free cloud."""
+    return _truthy("ISAAC_ALLOW_LOCAL_LLM")
+
+
 def free_hosting_status() -> dict:
     return {
         "free_cloud": free_cloud_enabled(),

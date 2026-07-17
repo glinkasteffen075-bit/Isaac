@@ -109,10 +109,18 @@ class TestProviderConfiguration(unittest.TestCase):
         self.assertEqual(cfg.relay.primary_provider, "custom-openai")
 
     def test_active_provider_env_sets_primary_provider(self):
-        with patch.dict("os.environ", {"ACTIVE_PROVIDER": "groq"}, clear=False):
+        with patch.dict("os.environ", {"ACTIVE_PROVIDER": "groq", "GROQ_API_KEY": "test-groq"}, clear=False):
             cfg = config_module.IsaacConfig()
         self.assertEqual(cfg.relay.primary_provider, "groq")
         self.assertTrue(cfg.providers["groq"].is_default)
+
+    def test_gemini_is_free_provider(self):
+        cfg = config_module.IsaacConfig()
+        # free_providers filters by available; ensure set membership via free_only allowlist path
+        cfg.free_only_providers = True
+        cfg.providers["gemini"].api_key = "g-test"
+        self.assertIn("gemini", cfg.free_providers)
+        self.assertTrue(cfg.is_provider_allowed("gemini"))
 
     def test_provider_settings_file_created_on_upsert(self):
         cfg = config_module.IsaacConfig()

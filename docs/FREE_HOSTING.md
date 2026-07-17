@@ -37,6 +37,8 @@ export ISAAC_DISABLE_VECTOR_MEMORY=1
 export PORT=7860                   # von PaaS gesetzt (Render/HF)
 export ACTIVE_PROVIDER=groq
 export GROQ_API_KEY=...
+# Optional: ISAAC_ALLOW_LOCAL_LLM=1 nur wenn Ollama/local wirklich erreichbar ist
+# Free-Cloud deaktiviert Loopback-Ollama/local automatisch (sonst hängt Fallback)
 ```
 
 Lokal testen:

@@ -255,11 +255,23 @@ class AsyncRelay:
                                 task_id: str = "",
                                 model_override: Optional[str] = None) -> tuple[str, str]:
         reihe: list[str] = []
-        if preferred:
-            reihe.append(preferred)
+        # Ignore non-provider hints like "auto"
+        pref = (preferred or "").strip().lower()
+        if pref and pref not in {"auto", "none", "default"} and self.cfg.get_provider(pref):
+            reihe.append(pref)
         primary = self.cfg.relay.primary_provider
-        if primary not in reihe:
+        if primary and primary not in reihe:
             reihe.append(primary)
+
+        # Cloud providers with keys before loopback-local (avoids free-PaaS ollama lag)
+        try:
+            from free_cloud import recommended_free_providers
+            cloud_first = list(recommended_free_providers())
+        except Exception:
+            cloud_first = ["groq", "gemini", "openrouter"]
+        for p in cloud_first:
+            if p not in reihe:
+                reihe.append(p)
         for p in self.cfg.available_providers:
             if p not in reihe:
                 reihe.append(p)
@@ -271,12 +283,18 @@ class AsyncRelay:
                 continue
             if not self.cfg.is_provider_allowed(name):
                 continue
-            if not self._health[name].available_now():
+            health = self._health.get(name) or self._health.setdefault(name, ProviderHealth())
+            if not health.available_now():
                 continue
             usable.append(name)
 
         if not usable:
-            usable = [n for n in reihe if self.cfg.get_provider(n) and self.cfg.is_provider_allowed(n)]
+            usable = [
+                n for n in reihe
+                if self.cfg.get_provider(n)
+                and self.cfg.is_provider_allowed(n)
+                and self._is_runtime_available(self.cfg.get_provider(n))
+            ]
 
         for pname in usable:
             result = await self.ask(prompt, system, provider=pname, task_id=task_id, model_override=model_override)

@@ -191,6 +191,55 @@ class TestFreeCloudHelpers(unittest.TestCase):
             config_module.RUNTIME_SETTINGS_PATH = old_r
             tmp.cleanup()
 
+    def test_fallback_continues_on_relay_all_retries_failed(self):
+        """'[RELAY] Alle N Versuche' must not abort fallback (openrouter → groq)."""
+        import asyncio
+        import free_cloud as fc
+        import config as config_module
+        import tempfile
+        from pathlib import Path
+        from relay import AsyncRelay, ProviderErr
+
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            old_p = config_module.PROVIDER_SETTINGS_PATH
+            old_r = config_module.RUNTIME_SETTINGS_PATH
+            config_module.PROVIDER_SETTINGS_PATH = Path(tmp.name) / "provider_settings.json"
+            config_module.RUNTIME_SETTINGS_PATH = Path(tmp.name) / "runtime_settings.json"
+            env = {
+                "ISAAC_FREE_CLOUD": "1",
+                "ACTIVE_PROVIDER": "openrouter",
+                "OPENROUTER_API_KEY": "or-test-key",
+                "GROQ_API_KEY": "groq-test-key",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                fc.apply_free_cloud_defaults()
+                cfg = config_module.IsaacConfig()
+                r = AsyncRelay()
+                r.cfg = cfg
+                r._setup_limiters()
+                order: list[str] = []
+
+                async def fake_ask(prompt, system="", provider=None, **kwargs):
+                    order.append(provider)
+                    if provider == "openrouter":
+                        return "[RELAY] Alle 3 Versuche fehlgeschlagen"
+                    if provider == "groq":
+                        return "4"
+                    return f"[RELAY-FEHLER:{provider}] skip"
+
+                r.ask = fake_ask
+                ans, prov = asyncio.run(r.ask_with_fallback("2+2?", system="test"))
+                self.assertEqual(ans, "4")
+                self.assertEqual(prov, "groq")
+                self.assertIn("openrouter", order)
+                self.assertIn("groq", order)
+                self.assertLess(order.index("openrouter"), order.index("groq"))
+        finally:
+            config_module.PROVIDER_SETTINGS_PATH = old_p
+            config_module.RUNTIME_SETTINGS_PATH = old_r
+            tmp.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()

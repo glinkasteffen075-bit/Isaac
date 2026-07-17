@@ -471,6 +471,10 @@ class IsaacConfig:
             if os.getenv("ISAAC_FREE_ONLY_PROVIDERS") is None:
                 self.free_only_providers = True
 
+        # Faster provider failover online (free models often 429 / empty)
+        if self.relay.max_retries > 2:
+            self.relay.max_retries = 2
+
     def _apply_owner_equivalent_defaults(self):
         """Admin-Modus = Owner-Äquivalenz auf vertrauenswürdigen Geräten."""
         if not is_owner_equivalent_mode(self):

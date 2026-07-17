@@ -298,9 +298,12 @@ class AsyncRelay:
 
         for pname in usable:
             result = await self.ask(prompt, system, provider=pname, task_id=task_id, model_override=model_override)
-            if not result.startswith("[RELAY-FEHLER"):
-                return result, pname
-            log.warning("Fallback: %s fehlgeschlagen → weiter", pname)
+            # ask() may return "[RELAY-FEHLER:...]" OR "[RELAY] Alle N Versuche..."
+            # Both must continue fallback — otherwise cloud free-tier never reaches groq/gemini.
+            if isinstance(result, str) and result.startswith("[RELAY"):
+                log.warning("Fallback: %s fehlgeschlagen → weiter (%s)", pname, result[:120])
+                continue
+            return result, pname
 
         return "[RELAY] Alle Provider fehlgeschlagen.", "none"
 

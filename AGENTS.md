@@ -406,16 +406,18 @@ WHEN IN DOUBT: stop, document blocker, do not broaden scope.
 
 Bei vertiefter Arbeit in dieser Reihenfolge:
 
-1. `AGENTS.md` (diese Datei)
-2. `00_hauptanweisung_und_architekturleitlinie.txt`
-3. `00b_arbeitsanweisung_kodex_isaac_evo2.txt`
-4. `01_aktueller_phasenstand_und_arbeitsziel.txt`
-5. `02_bekannte_probleme_root_causes_und_schutzregeln.txt`
-6. `03_validierung_und_modulkarte.txt`
-7. `claude_compact_master_implementation_prompt_for_isaac.txt`
-8. `README.md`, `docs/LEITBILD.md`
+1. `AGENTS.md` (diese Datei) — kanonische Agenten-Anweisung
+2. `06_goal_autonomy_checklist.txt` — aktuelle Phase Goal-Autonomie
+3. `05_evolution2_checklist.txt` — Evolution 2.0 (abgeschlossen, CI-Hinweis)
+4. `docs/OPEN_SOURCE_PATTERNS.md` — bounded Open-Source-Muster
+5. `docs/GITHUB_WATCHLIST.md` — was beobachten / nicht importieren
+6. `docs/LOCAL_LLM.md`, `docs/OPEN_INTERPRETER.md` — optionale lokale Backends/Companions
+7. `README.md`, `docs/LEITBILD.md`
 
-**Priorität bei Widersprüchen:** aktive Phasenanweisung → Hauptanweisung → Phasenstand → Schutzregeln.
+**Priorität bei Widersprüchen:** `AGENTS.md` → aktive Checklist (`06_…`) → Open-Source-Patterns.
+
+Historische Phase-3/4-Checklisten und Alt-Instruktionen liegen nicht mehr im Tree
+(git history / früher `archive/unused`).
 
 ---
 

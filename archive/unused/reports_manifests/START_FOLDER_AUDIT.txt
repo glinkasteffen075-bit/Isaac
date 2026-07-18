@@ -1,3 +1,0 @@
-Startordner: /root/Isaac/isaac
-Dateien im Paket: 76
-Compile-Fehler: 0

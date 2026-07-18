@@ -1,6 +1,6 @@
 GOAL-DIRECTED AUTONOMY — CHECKLIST
 ==================================
-Status: IN PROGRESS (Slice 0+1 gestartet 2026-07-15)
+Status: DONE (2026-07-18) — S0–S4 inkl. Retrieval, Digest, Temporal Facts, Browser-Muster
 Vision: Steffen-Ziele → Isaac Subgoals/Inquiry/Research/Lernen
 Systemschutz bleibt (Constitution/Privilege/Audit).
 

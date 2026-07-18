@@ -1,6 +1,6 @@
 EVOLUTION 2.0 — CONSOLIDATE & DEEPEN
 ====================================
-Status: IN PROGRESS (gestartet 2026-07-15)
+Status: DONE lokal (2026-07-18) — Rest: GitHub Actions Billing-Lock (5.4), kein Code
 Voraussetzung: Phase 1–4 ✅
 
 Ziel: Bestehende Vernetzung vertiefen — keine Feature-Expansion.

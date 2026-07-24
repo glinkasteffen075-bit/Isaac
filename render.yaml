@@ -43,3 +43,14 @@ services:
         sync: false
       - key: OPENROUTER_API_KEY
         sync: false
+      # Optional: Sentry AI monitoring (Python project DSN)
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_TRACES_SAMPLE_RATE
+        value: "0.1"
+      - key: SENTRY_ENVIRONMENT
+        value: production
+      - key: SENTRY_INCLUDE_PROMPTS
+        value: "1"
+      - key: SENTRY_RELEASE
+        value: isaac@5.3

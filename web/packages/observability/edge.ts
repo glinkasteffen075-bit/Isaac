@@ -18,12 +18,19 @@ export const initializeSentry = (): ReturnType<typeof Sentry.init> =>
     // Adjust this value in production, or use tracesSampler for greater control
     tracesSampleRate: 1,
 
+    // Stream gen_ai spans as standalone items (required for Conversations / large prompts)
+    streamGenAiSpans: true,
+
+    // Capture prompts/outputs for AI agent monitoring (PII — owner-confirmed)
+    sendDefaultPii: true,
+
     // Setting this option to true will print useful information to the console while you're setting up Sentry.
     debug: false,
 
-    // Integrations for console logging
+    // Edge: vercelAIIntegration is NOT auto-enabled — register explicitly
     integrations: [
       // Send console.log, console.error, and console.warn calls as logs to Sentry
       Sentry.consoleLoggingIntegration({ levels: ["log", "error", "warn"] }),
+      Sentry.vercelAIIntegration(),
     ],
   });

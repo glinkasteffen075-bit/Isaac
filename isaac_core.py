@@ -99,6 +99,7 @@ class Intent:
     URL_ADD     = "url_add"
     LETTA       = "letta"           # Explizit: Letta Code Companion-CLI
     OPEN_INTERPRETER = "open_interpreter"  # Explizit: Open Interpreter Companion
+    GROK_AGENT  = "grok_agent"      # Explizit: Grok Build Agent CLI (headless)
     EXT_MEMORY  = "ext_memory"      # Status: external memory adapters
 
 
@@ -174,6 +175,13 @@ EXPLICIT_COMMAND_PATTERNS = [
         r"^open interpreter\s*:",
         r"^interpreter\s*:",
     ]),
+    (Intent.GROK_AGENT, [
+        r"^grok\s*:",
+        r"^grok-agent\s*:",
+        r"^grok agent\s*:",
+        r"^xai-agent\s*:",
+        r"^xai agent\s*:",
+    ]),
     (Intent.EXT_MEMORY, [
         r"^external memory$",
         r"^external[- ]memory$",
@@ -184,6 +192,9 @@ EXPLICIT_COMMAND_PATTERNS = [
         r"^oi status$",
         r"^open-interpreter status$",
         r"^open interpreter status$",
+        r"^grok status$",
+        r"^grok-agent status$",
+        r"^grok agent status$",
     ]),
 ]
 
@@ -241,6 +252,8 @@ class IsaacKernel:
         self._last_weather_active: bool = False
         self._last_weather_query: str = ""
         self._background = None   # lazy start in main()
+        # Grok Agent multi-turn session (headless --resume)
+        self._grok_session_id: Optional[str] = None
 
         set_kernel(self)
         self._sudo_token: Optional[str] = None
@@ -273,6 +286,15 @@ class IsaacKernel:
             return local_class_response(interaction_class, user_input)
 
         timing["classification_ms"] = round((time.perf_counter() - t_start) * 1000, 2)
+
+        # Sentry Conversations: group multi-turn spans under one session conversation id
+        try:
+            from isaac_sentry import session_conversation_id, set_conversation_id
+            conv = session_conversation_id()
+            if conv:
+                set_conversation_id(conv)
+        except Exception:
+            pass
 
         t0 = time.monotonic()
 
@@ -458,6 +480,7 @@ class IsaacKernel:
             Intent.EXT_MEMORY: self._handle_ext_memory_status,
             Intent.LETTA:      self._handle_letta,
             Intent.OPEN_INTERPRETER: self._handle_open_interpreter,
+            Intent.GROK_AGENT: self._handle_grok_agent,
         }
         if intent in direkt:
             result = direkt[intent](user_input)
@@ -799,6 +822,8 @@ class IsaacKernel:
                     if modulation.allow_provider_switch is not None
                     else strategy.allow_provider_switch
                 ),
+                allow_agent_companions=strategy.allow_agent_companions,
+                preferred_agent=strategy.preferred_agent,
                 style_note=(strategy.style_note or "") + (f"\n{modulation.neural_note}" if modulation.neural_note else ""),
             )
         typ_map = {
@@ -810,6 +835,20 @@ class IsaacKernel:
             Intent.CHAT:      TaskType.CHAT,
         }
         task_typ = typ_map.get(intent, TaskType.CHAT)
+
+        # Optional companion agent (Grok/OI/Letta) — strategy + auto-select, then inject context
+        agent_ctx_block = ""
+        agent_decision = None
+        try:
+            agent_decision, agent_ctx_block, strategy = self._maybe_run_selected_agent(
+                user_input=user_input,
+                intent=intent,
+                interaction_class=interaction_class,
+                strategy=strategy,
+            )
+        except Exception as exc:
+            log.debug("auto agent selection skipped: %s", exc)
+
         system   = self._build_system(
             sudo_aktiv, emp, wissen_kontext,
             strategy_note=strategy.style_note
@@ -818,6 +857,8 @@ class IsaacKernel:
 
         structured_ctx = self._format_retrieval_context(retrieval_ctx)
         kontext = structured_ctx.strip()
+        if agent_ctx_block:
+            kontext = f"{agent_ctx_block}\n\n{kontext}".strip() if kontext else agent_ctx_block
         prompt = f"{kontext}\n\n{user_input}".strip() if kontext else user_input
 
         task = self.executor.create_task(
@@ -866,42 +907,79 @@ class IsaacKernel:
                 "allow_tools": strategy.allow_tools,
                 "allow_followup": strategy.allow_followup,
                 "allow_provider_switch": strategy.allow_provider_switch,
+                "allow_agent_companions": strategy.allow_agent_companions,
+                "preferred_agent": strategy.preferred_agent or "",
             },
         )
-        task = await self.executor.submit_and_wait(task, timeout=180.0)
-        antwort = task.antwort or task.fehler or "[Keine Antwort]"
-        score   = task.score.total if task.score else 0.0
-
-        cfg = getattr(self, "cfg", None) or get_config()
-        if (
-            getattr(cfg, "auto_provision_providers", True)
-            and cfg.browser_automation
-            and self._relay_failure_needs_provision(antwort)
-        ):
-            failed_provider = self._extract_failed_provider(antwort) or provider or cfg.relay.primary_provider
-            target_ids = None if getattr(cfg, "auto_provision_all_providers", True) else (
-                [failed_provider] if failed_provider else None
+        if agent_decision is not None:
+            task.decision_trace.add(
+                TracePhase.SELECTION,
+                "companion_agent",
+                agent_decision.as_dict() if hasattr(agent_decision, "as_dict") else dict(agent_decision or {}),
             )
-            provision = await self._auto_provision_providers(target_ids)
-            if provision.get("ok"):
-                retry = self.executor.create_task(
-                    typ=task_typ,
-                    prompt=prompt,
-                    beschreibung=f"retry:{user_input[:72]}",
-                    prioritaet=task.prioritaet,
-                    provider=failed_provider or provider,
-                    system_prompt=system,
-                    sudo_aktiv=sudo_aktiv,
-                    strategy=strategy,
-                    interaction_class=interaction_class,
-                    classification=classification,
-                    retrieved_context=retrieval_ctx,
+            if agent_ctx_block:
+                task.decision_trace.add(
+                    TracePhase.CONTEXT_INTEGRATION,
+                    "agent_context_injected",
+                    {
+                        "agent_id": getattr(agent_decision, "agent_id", None),
+                        "chars": len(agent_ctx_block),
+                    },
                 )
-                retry = await self.executor.submit_and_wait(retry, timeout=180.0)
-                if retry.antwort and not self._relay_failure_needs_provision(retry.antwort):
-                    task = retry
-                    antwort = retry.antwort
-                    score = retry.score.total if retry.score else score
+        from contextlib import nullcontext
+
+        try:
+            from isaac_sentry import finish_agent_span, invoke_agent_span
+            agent_cm = invoke_agent_span(
+                agent_name="Isaac",
+                model=provider or "isaac-kernel",
+                user_input=user_input,
+            )
+        except Exception:
+            agent_cm = nullcontext()
+            finish_agent_span = None  # type: ignore[assignment]
+
+        with agent_cm as agent_span:
+            task = await self.executor.submit_and_wait(task, timeout=180.0)
+            antwort = task.antwort or task.fehler or "[Keine Antwort]"
+            score = task.score.total if task.score else 0.0
+
+            cfg = getattr(self, "cfg", None) or get_config()
+            if (
+                getattr(cfg, "auto_provision_providers", True)
+                and cfg.browser_automation
+                and self._relay_failure_needs_provision(antwort)
+            ):
+                failed_provider = self._extract_failed_provider(antwort) or provider or cfg.relay.primary_provider
+                target_ids = None if getattr(cfg, "auto_provision_all_providers", True) else (
+                    [failed_provider] if failed_provider else None
+                )
+                provision = await self._auto_provision_providers(target_ids)
+                if provision.get("ok"):
+                    retry = self.executor.create_task(
+                        typ=task_typ,
+                        prompt=prompt,
+                        beschreibung=f"retry:{user_input[:72]}",
+                        prioritaet=task.prioritaet,
+                        provider=failed_provider or provider,
+                        system_prompt=system,
+                        sudo_aktiv=sudo_aktiv,
+                        strategy=strategy,
+                        interaction_class=interaction_class,
+                        classification=classification,
+                        retrieved_context=retrieval_ctx,
+                    )
+                    retry = await self.executor.submit_and_wait(retry, timeout=180.0)
+                    if retry.antwort and not self._relay_failure_needs_provision(retry.antwort):
+                        task = retry
+                        antwort = retry.antwort
+                        score = retry.score.total if retry.score else score
+            if finish_agent_span:
+                finish_agent_span(
+                    agent_span,
+                    result_text=antwort if isinstance(antwort, str) else str(antwort),
+                    model=task.provider_used or provider or "isaac-kernel",
+                )
 
         # Stabiles lokales Fallback für triviale Inputs, falls Provider ausfallen.
         if task.typ == TaskType.CHAT and is_low_complexity_local_input(user_input):
@@ -2110,6 +2188,184 @@ class IsaacKernel:
         except Exception as exc:
             return f"[Open Interpreter] Fehler: {exc}"
 
+    def _parse_grok_agent_prompt(self, text: str) -> tuple[str, bool, Optional[str]]:
+        """Strip prefix and session directives.
+
+        Returns (prompt, force_new, resume_session_id_override).
+
+        Directives (after prefix):
+          new: | /new | --new     → force new session
+          resume <id>: | @<id>    → resume explicit session
+          clear session | reset   → drop stored session, then treat rest as prompt
+        """
+        prompt = text
+        for prefix in (
+            "grok-agent:",
+            "grok agent:",
+            "xai-agent:",
+            "xai agent:",
+            "grok:",
+        ):
+            low = text.lower()
+            idx = low.find(prefix)
+            if idx >= 0:
+                prompt = text[idx + len(prefix) :].strip()
+                break
+
+        force_new = False
+        resume_override: Optional[str] = None
+        pl = prompt.lower()
+
+        if pl in {"clear session", "reset session", "session clear", "session reset"}:
+            return "", True, None
+
+        # grok: new: task  |  grok: /new task  |  grok: --new task
+        for marker in ("new:", "/new ", "--new "):
+            if pl.startswith(marker):
+                force_new = True
+                prompt = prompt[len(marker) :].strip()
+                break
+        else:
+            if pl == "/new" or pl == "--new" or pl == "new":
+                force_new = True
+                prompt = ""
+
+        # grok: resume <uuid>: task  |  grok: @<uuid> task
+        m = re.match(
+            r"^(?:resume\s+)?@?([0-9a-fA-F-]{8,36})\s*[:\s]\s*(.*)$",
+            prompt,
+            re.DOTALL,
+        )
+        if m and not force_new:
+            cand = m.group(1).strip()
+            rest = (m.group(2) or "").strip()
+            # Avoid eating normal sentences that start with hex-looking words
+            if len(cand) >= 8 and ("-" in cand or len(cand) >= 16):
+                resume_override = cand
+                prompt = rest
+
+        return prompt, force_new, resume_override
+
+    def _handle_grok_agent(self, text: str) -> str:
+        """Explicit Grok Build Agent CLI companion: 'grok: …' / 'grok-agent: …'."""
+        prompt, force_new, resume_override = self._parse_grok_agent_prompt(text)
+
+        # Session clear without task
+        if force_new and not prompt and resume_override is None:
+            try:
+                from external_memory import get_external_memory_bridge
+
+                bridge = get_external_memory_bridge()
+                bridge.grok_agent.clear_session()
+            except Exception:
+                pass
+            self._grok_session_id = None
+            if (text or "").lower().strip().endswith(("clear session", "reset session", "session clear", "session reset")) \
+                    or "clear session" in (text or "").lower() or "reset session" in (text or "").lower():
+                return "[Grok Agent] Session gelöscht. Nächster `grok:` startet neu."
+
+        if not prompt:
+            sid = getattr(self, "_grok_session_id", None) or ""
+            return (
+                "[Grok Agent] Format: grok: AUFGABE\n"
+                "Aliases: grok-agent: | grok agent: | xai-agent:\n"
+                "Session: grok: new: AUFGABE  |  grok: resume <id>: AUFGABE\n"
+                "         grok: clear session  |  auto-resume default ON\n"
+                f"Aktuelle Session: {sid or '(keine)'}\n"
+                "Flag: ISAAC_GROK_AGENT_ENABLED=1\n"
+                "Binary: grok on PATH (Grok Build CLI)\n"
+                "Auth: XAI_API_KEY or `grok login`\n"
+                "Full tool autonomy: ISAAC_GROK_AGENT_ALWAYS_APPROVE=1 "
+                "(--always-approve; SAFE_YOLO deny-rules default ON)\n"
+                "Docs: docs/GROK_AGENT.md"
+            )
+        try:
+            from external_memory import get_external_memory_bridge
+            from privilege import steffen_ctx
+
+            bridge = get_external_memory_bridge()
+            if not bridge.cfg.grok_agent_enabled:
+                return (
+                    "[Grok Agent] Deaktiviert. Setze ISAAC_GROK_AGENT_ENABLED=1 "
+                    "und stelle sicher, dass `grok` auf PATH liegt."
+                )
+            try:
+                from constitution import get_constitution
+
+                decision = get_constitution().validate_action(
+                    "system_command",
+                    {
+                        "command": "grok-agent",
+                        "prompt": prompt[:200],
+                        "owner_approved": True,
+                        "risk": "high"
+                        if bridge.cfg.grok_agent_always_approve
+                        else "normal",
+                        "audit_logged": True,
+                    },
+                )
+                if not decision.get("allowed", True):
+                    blocked = ", ".join(decision.get("blocked_by") or []) or "policy"
+                    return f"[Grok Agent] Verfassung blockiert: {blocked}"
+            except Exception:
+                pass
+            try:
+                ok, reason = self.gate.authorize(
+                    "system_command",
+                    steffen_ctx("Grok Build Agent companion"),
+                )
+                if not ok:
+                    return f"[Grok Agent] Privilege verweigert: {reason}"
+            except Exception:
+                pass
+
+            # Prefer Isaac repo root when cwd not configured
+            cwd = (bridge.cfg.grok_agent_cwd or "").strip() or None
+            if not cwd:
+                try:
+                    from config import BASE_DIR
+
+                    cwd = str(BASE_DIR) if BASE_DIR else None
+                except Exception:
+                    cwd = None
+
+            # Sync kernel session ↔ adapter for multi-turn
+            if force_new:
+                bridge.grok_agent.clear_session()
+                self._grok_session_id = None
+            elif resume_override:
+                bridge.grok_agent.set_session_id(resume_override)
+                self._grok_session_id = resume_override
+            elif self._grok_session_id and not bridge.grok_agent.last_session_id():
+                bridge.grok_agent.set_session_id(self._grok_session_id)
+
+            result = bridge.grok_agent.run(
+                prompt,
+                cwd=cwd,
+                resume_session_id=resume_override,
+                force_new=force_new,
+            )
+            sid = (result.get("session_id") or "").strip()
+            if sid:
+                self._grok_session_id = sid
+            resumed = (result.get("resumed_session_id") or "").strip()
+            sid_note = f" session={sid}" if sid else ""
+            if resumed:
+                sid_note += f" resumed={resumed[:12]}…" if len(resumed) > 12 else f" resumed={resumed}"
+            yolo = " always_approve" if result.get("always_approve") else ""
+            if result.get("safe_yolo"):
+                yolo += "+safe"
+            if result.get("ok"):
+                body = (result.get("text") or "").strip() or "(keine Ausgabe)"
+                return f"[Grok Agent{yolo}{sid_note}]\n{body[:6000]}"
+            err = result.get("error") or "unbekannt"
+            body = (result.get("text") or "").strip()
+            if body:
+                return f"[Grok Agent] Fehler: {err}\n{body[:2500]}"
+            return f"[Grok Agent] Fehler: {err}"
+        except Exception as exc:
+            return f"[Grok Agent] Fehler: {exc}"
+
     def _handle_pause(self, *_) -> str:
         self.gate.pause(steffen_ctx("Pause"))
         return "Isaac pausiert."
@@ -2159,6 +2415,13 @@ class IsaacKernel:
                 "open interpreter:",
                 "interpreter:",
             ),
+            Intent.GROK_AGENT: (
+                "grok:",
+                "grok-agent:",
+                "grok agent:",
+                "xai-agent:",
+                "xai agent:",
+            ),
             Intent.EXT_MEMORY: (
                 "external memory",
                 "external-memory",
@@ -2169,6 +2432,9 @@ class IsaacKernel:
                 "oi status",
                 "open-interpreter status",
                 "open interpreter status",
+                "grok status",
+                "grok-agent status",
+                "grok agent status",
             ),
         }
         prefixes = explicit_prefixes.get(intent, ())
@@ -2227,6 +2493,8 @@ class IsaacKernel:
         allow_tools = intent in (Intent.SEARCH, Intent.RESEARCH)
         allow_followup = interaction_class not in ("SHORT_CLARIFICATION",)
         allow_provider_switch = True
+        allow_agent_companions = False
+        preferred_agent = ""
         style_note = ""
         risk_tags = {
             tag
@@ -2249,6 +2517,16 @@ class IsaacKernel:
         if "quality_regression_risk" in risk_tags and intent == Intent.CHAT:
             allow_provider_switch = False
 
+        # Companion agents: only for work-like intents (never greeting/simple chat alone)
+        if intent in (Intent.CODE, Intent.FILE, Intent.AGENT, Intent.RESEARCH):
+            allow_agent_companions = True
+        elif intent == Intent.CHAT:
+            # Marker-based allow — selection still rejects pure smalltalk
+            from agent_selection import _looks_like_code_work
+
+            if _looks_like_code_work(user_input, intent):
+                allow_agent_companions = True
+
         if cfg.style_mode == "light_sarcastic":
             if self._should_allow_light_sarcasm(user_input, intent, interaction_class):
                 if self._light_sarcasm_triggered(user_input):
@@ -2265,12 +2543,153 @@ class IsaacKernel:
         if interaction_class in ("SHORT_CLARIFICATION",):
             allow_followup = False
             allow_provider_switch = False
+            allow_agent_companions = False
         return Strategy(
             allow_tools=allow_tools,
             allow_followup=allow_followup,
             allow_provider_switch=allow_provider_switch,
+            allow_agent_companions=allow_agent_companions,
+            preferred_agent=preferred_agent,
             style_note=style_note,
         )
+
+    def _companion_availability(self) -> dict[str, bool]:
+        """Which optional companion adapters are enabled+available."""
+        out = {"grok": False, "open_interpreter": False, "letta": False}
+        try:
+            from external_memory import get_external_memory_bridge
+
+            bridge = get_external_memory_bridge()
+            out["grok"] = bool(
+                bridge.cfg.grok_agent_enabled and bridge.grok_agent.available()
+            )
+            out["open_interpreter"] = bool(
+                bridge.cfg.open_interpreter_enabled and bridge.open_interpreter.available()
+            )
+            out["letta"] = bool(bridge.cfg.letta_enabled and bridge.letta.available())
+        except Exception as exc:
+            log.debug("companion availability: %s", exc)
+        return out
+
+    def _maybe_run_selected_agent(
+        self,
+        *,
+        user_input: str,
+        intent: str,
+        interaction_class: str,
+        strategy: Strategy,
+    ) -> tuple[Any, str, Strategy]:
+        """Select + run companion; return (decision, context_block, strategy)."""
+        from agent_selection import (
+            AGENT_GROK,
+            AGENT_LETTA,
+            AGENT_OI,
+            agent_timeout_s,
+            format_agent_context_block,
+            select_companion_agent,
+        )
+
+        available = self._companion_availability()
+        decision = select_companion_agent(
+            user_input=user_input,
+            intent=intent,
+            interaction_class=interaction_class,
+            strategy=strategy,
+            available=available,
+        )
+        if not decision.agent_id:
+            return decision, "", strategy
+
+        # Privilege / constitution gates (same class as explicit companions)
+        try:
+            from constitution import get_constitution
+            from privilege import steffen_ctx
+
+            decision_c = get_constitution().validate_action(
+                "system_command",
+                {
+                    "command": f"auto-agent:{decision.agent_id}",
+                    "prompt": (user_input or "")[:200],
+                    "owner_approved": True,
+                    "risk": "normal",
+                    "audit_logged": True,
+                },
+            )
+            if not decision_c.get("allowed", True):
+                decision = type(decision)(
+                    None,
+                    f"constitution_blocked:{','.join(decision_c.get('blocked_by') or [])}",
+                    "none",
+                    0.0,
+                )
+                return decision, "", strategy
+            ok, reason = self.gate.authorize(
+                "system_command",
+                steffen_ctx(f"Auto companion {decision.agent_id}"),
+            )
+            if not ok:
+                decision = type(decision)(
+                    None, f"privilege_denied:{reason}", "none", 0.0
+                )
+                return decision, "", strategy
+        except Exception as exc:
+            log.debug("auto agent gate: %s", exc)
+
+        from external_memory import get_external_memory_bridge
+        from config import BASE_DIR
+
+        bridge = get_external_memory_bridge()
+        timeout = agent_timeout_s()
+        cwd = str(BASE_DIR)
+        result: dict[str, Any] = {"ok": False, "error": "unknown agent", "text": ""}
+
+        if decision.agent_id == AGENT_GROK:
+            result = bridge.grok_agent.run(
+                user_input, cwd=cwd, timeout=timeout
+            )
+            sid = (result.get("session_id") or "").strip()
+            if sid:
+                self._grok_session_id = sid
+        elif decision.agent_id == AGENT_OI:
+            result = bridge.open_interpreter.run(user_input, cwd=cwd, timeout=timeout)
+            sid = ""
+        elif decision.agent_id == AGENT_LETTA:
+            result = bridge.letta.run(user_input, timeout=timeout)
+            sid = ""
+        else:
+            return decision, "", strategy
+
+        body = (result.get("text") or result.get("error") or "").strip()
+        if not result.get("ok") and not body:
+            # Keep selection decision for trace; no context injection
+            return decision, "", strategy
+
+        block = format_agent_context_block(
+            agent_id=decision.agent_id,
+            reason=decision.reason,
+            text=body,
+            session_id=sid if decision.agent_id == AGENT_GROK else "",
+        )
+        # Steer relay to use agent work product
+        note = (
+            f"\n[Agent] Companion={decision.agent_id} reason={decision.reason}. "
+            "Nutze den Agent-Kontext: fasse zusammen, korrigiere Fehler, "
+            "liefere dem Owner eine klare, nutzbare Antwort."
+        )
+        strategy = Strategy(
+            allow_tools=strategy.allow_tools,
+            allow_followup=strategy.allow_followup,
+            allow_provider_switch=strategy.allow_provider_switch,
+            allow_agent_companions=strategy.allow_agent_companions,
+            preferred_agent=decision.agent_id,
+            style_note=(strategy.style_note or "") + note,
+        )
+
+        if decision.mode == "primary" and result.get("ok") and body:
+            # Primary mode: still inject block; caller could short-circuit later
+            pass
+
+        return decision, block, strategy
 
     def _should_allow_light_sarcasm(self, user_input: str, intent: str, interaction_class: str) -> bool:
         text = (user_input or "").lower()
@@ -2414,6 +2833,13 @@ async def main():
         format  = "[%(asctime)s] %(levelname)-7s %(name)s – %(message)s",
         datefmt = "%H:%M:%S",
     )
+
+    # Optional Sentry AI monitoring (no-op without SENTRY_DSN)
+    try:
+        from isaac_sentry import init_sentry
+        init_sentry()
+    except Exception as e:
+        logging.getLogger("Isaac").warning("Sentry init skipped: %s", e)
 
     # Free-tier PaaS (Render/HF Spaces/Fly free): bind 0.0.0.0, unified /ws, no vector mem
     try:

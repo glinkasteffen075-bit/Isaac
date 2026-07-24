@@ -1,4 +1,4 @@
-"""Optional external memory / companion adapters (Mem0, Cognee, Letta, OI, Grok Agent).
+"""Optional external memory / companion adapters (Mem0, Cognee, Letta, OI, Grok, Copilot).
 
 Opt-in via env flags. Never replaces Isaac SQLite memory ownership.
 """

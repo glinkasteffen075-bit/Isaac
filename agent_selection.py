@@ -18,6 +18,15 @@ from typing import Any, Mapping, Optional
 AGENT_GROK = "grok"
 AGENT_OI = "open_interpreter"
 AGENT_LETTA = "letta"
+AGENT_COPILOT = "copilot"
+
+_COPILOT_MARKERS = (
+    "copilot",
+    "github copilot",
+    "gh copilot",
+    "coding agent",
+    "cloud agent",
+)
 
 _CODE_MARKERS = (
     "code:",
@@ -131,6 +140,11 @@ def _looks_like_letta(text: str) -> bool:
     return any(m in tl for m in _LETTA_MARKERS)
 
 
+def _looks_like_copilot(text: str) -> bool:
+    tl = (text or "").lower()
+    return any(m in tl for m in _COPILOT_MARKERS)
+
+
 def select_companion_agent(
     *,
     user_input: str,
@@ -166,6 +180,8 @@ def select_companion_agent(
         preferred = AGENT_GROK
     if preferred in {"oi", "open-interpreter"}:
         preferred = AGENT_OI
+    if preferred in {AGENT_COPILOT, "copilot_agent", "github_copilot", "gh_copilot"}:
+        preferred = AGENT_COPILOT
 
     mode = "context"
     if _env_bool("ISAAC_AGENT_PRIMARY", False) and intent_l in {"code", "agent", "file"}:
@@ -184,12 +200,22 @@ def select_companion_agent(
     if _looks_like_oi(text) and avail.get(AGENT_OI, False):
         return _pick(AGENT_OI, "oi_markers", 0.85)
 
+    if _looks_like_copilot(text) and avail.get(AGENT_COPILOT, False):
+        return _pick(AGENT_COPILOT, "copilot_markers", 0.88)
+
     if _looks_like_letta(text) and avail.get(AGENT_LETTA, False):
         return _pick(AGENT_LETTA, "letta_markers", 0.8)
 
     if _looks_like_code_work(text, intent_l):
+        # Prefer Copilot when both enabled and text leans GitHub/PR
+        if avail.get(AGENT_COPILOT, False) and re.search(
+            r"\b(github|pull request|\bpr\b|issue|copilot)\b", text.lower()
+        ):
+            return _pick(AGENT_COPILOT, "code_github_or_copilot", 0.92)
         if avail.get(AGENT_GROK, False):
             return _pick(AGENT_GROK, "code_or_agent_task", 0.9)
+        if avail.get(AGENT_COPILOT, False):
+            return _pick(AGENT_COPILOT, "code_fallback_copilot", 0.85)
         if avail.get(AGENT_LETTA, False):
             return _pick(AGENT_LETTA, "code_fallback_letta", 0.7)
         if avail.get(AGENT_OI, False):

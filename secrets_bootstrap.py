@@ -36,6 +36,7 @@ SECRET_REFS: dict[str, str] = {
     "GITHUB_TOKEN": "github.token",
     "GH_TOKEN": "github.token",
     "GITHUB_TOKEN_GLINKASTEFFEN075_BIT": "github.token",
+    "COPILOT_GITHUB_TOKEN": "github.copilot_token",
     "SENTRY_DSN": "sentry.dsn",
     "COGNEE_API_KEY": "memory.cognee.api_key",
     "OPENROUTER_API_KEY_ALT": "provider.openrouter.api_key_alt",
@@ -53,8 +54,12 @@ IMPORT_ENV_KEYS = frozenset(SECRET_REFS.keys()) | {
     "SENTRY_RELEASE",
     "SENTRY_INCLUDE_PROMPTS",
     "ISAAC_GROK_AGENT_ENABLED",
+    "ISAAC_COPILOT_AGENT_ENABLED",
+    "ISAAC_COPILOT_AGENT_ALWAYS_APPROVE",
+    "ISAAC_COPILOT_CLOUD_REPO",
     "ISAAC_AGENT_AUTO_SELECT",
     "ISAAC_OWNER",
+    "COPILOT_GITHUB_TOKEN",
 }
 
 

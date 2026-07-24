@@ -6,8 +6,8 @@ relay (no OpenAI/Anthropic SDK auto-integration).
 
 Env:
   SENTRY_DSN                 — enable Sentry (required)
-  SENTRY_TRACES_SAMPLE_RATE  — default 1.0
-  SENTRY_ENVIRONMENT         — default development / ISAAC_ENV
+  SENTRY_TRACES_SAMPLE_RATE  — optional override (default: 1.0 dev, 0.1 production)
+  SENTRY_ENVIRONMENT         — default development / ISAAC_ENV / production
   SENTRY_RELEASE             — default isaac@5.3
   SENTRY_INCLUDE_PROMPTS     — default 1 (owner-confirmed PII capture)
 
@@ -65,10 +65,20 @@ def init_sentry() -> bool:
 
     _include_prompts = _env_bool("SENTRY_INCLUDE_PROMPTS", True)
 
+    environment = (
+        os.getenv("SENTRY_ENVIRONMENT")
+        or os.getenv("ISAAC_ENV")
+        or ("production" if _env_bool("ISAAC_FREE_CLOUD", False) else "development")
+    ).strip() or "development"
+
+    # Production default 0.1 (cost/volume); full sample in development unless overridden
+    default_rate = "0.1" if environment.lower() in {"production", "prod", "live"} else "1.0"
     try:
-        sample_rate = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "1.0") or "1.0")
+        sample_rate = float(
+            os.getenv("SENTRY_TRACES_SAMPLE_RATE", default_rate) or default_rate
+        )
     except ValueError:
-        sample_rate = 1.0
+        sample_rate = float(default_rate)
     sample_rate = max(0.0, min(1.0, sample_rate))
 
     init_kwargs: dict[str, Any] = {
@@ -77,11 +87,7 @@ def init_sentry() -> bool:
         "send_default_pii": _include_prompts,
         # Standalone gen_ai envelopes (default True on SDK ≥2.60; required for Conversations)
         "stream_gen_ai_spans": True,
-        "environment": (
-            os.getenv("SENTRY_ENVIRONMENT")
-            or os.getenv("ISAAC_ENV")
-            or "development"
-        ),
+        "environment": environment,
         "release": os.getenv("SENTRY_RELEASE", "isaac@5.3"),
     }
 

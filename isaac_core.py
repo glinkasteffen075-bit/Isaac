@@ -100,6 +100,7 @@ class Intent:
     LETTA       = "letta"           # Explizit: Letta Code Companion-CLI
     OPEN_INTERPRETER = "open_interpreter"  # Explizit: Open Interpreter Companion
     GROK_AGENT  = "grok_agent"      # Explizit: Grok Build Agent CLI (headless)
+    COPILOT_AGENT = "copilot_agent"  # Explizit: GitHub Copilot CLI / cloud agent
     EXT_MEMORY  = "ext_memory"      # Status: external memory adapters
 
 
@@ -181,6 +182,15 @@ EXPLICIT_COMMAND_PATTERNS = [
         r"^grok agent\s*:",
         r"^xai-agent\s*:",
         r"^xai agent\s*:",
+    ]),
+    (Intent.COPILOT_AGENT, [
+        r"^copilot\s*:",
+        r"^gh-copilot\s*:",
+        r"^gh copilot\s*:",
+        r"^github-copilot\s*:",
+        r"^github copilot\s*:",
+        r"^copilot-agent\s*:",
+        r"^copilot agent\s*:",
     ]),
     (Intent.EXT_MEMORY, [
         r"^external memory$",
@@ -514,6 +524,7 @@ class IsaacKernel:
             Intent.LETTA:      self._handle_letta,
             Intent.OPEN_INTERPRETER: self._handle_open_interpreter,
             Intent.GROK_AGENT: self._handle_grok_agent,
+            Intent.COPILOT_AGENT: self._handle_copilot_agent,
         }
         if intent in direkt:
             result = direkt[intent](user_input)
@@ -2429,6 +2440,218 @@ class IsaacKernel:
         except Exception as exc:
             return f"[Grok Agent] Fehler: {exc}"
 
+    def _parse_copilot_agent_prompt(
+        self, text: str
+    ) -> tuple[str, bool, str | None, str]:
+        """Strip prefix + session/mode markers for copilot:."""
+        prompt = (text or "").strip()
+        for prefix in (
+            "copilot:",
+            "gh-copilot:",
+            "gh copilot:",
+            "github-copilot:",
+            "github copilot:",
+            "copilot-agent:",
+            "copilot agent:",
+        ):
+            if prompt.lower().startswith(prefix):
+                prompt = prompt[len(prefix) :].strip()
+                break
+
+        force_new = False
+        resume_override: str | None = None
+        mode = "cli"
+        pl = prompt.lower()
+
+        if pl in {"clear session", "reset session", "session clear", "session reset"}:
+            return "", True, None, mode
+
+        if pl in {"status", "info"}:
+            return "__status__", False, None, mode
+
+        if pl in {"tasks", "list tasks", "cloud tasks"}:
+            return "__list_tasks__", False, None, "cloud"
+
+        # copilot: cloud: task  |  copilot: task: prompt
+        for marker, mname in (
+            ("cloud:", "cloud"),
+            ("task:", "cloud"),
+            ("cca:", "cloud"),
+            ("sdk:", "sdk"),
+            ("cli:", "cli"),
+        ):
+            if pl.startswith(marker):
+                mode = mname
+                prompt = prompt[len(marker) :].strip()
+                pl = prompt.lower()
+                break
+
+        for marker in ("new:", "/new ", "--new "):
+            if pl.startswith(marker):
+                force_new = True
+                prompt = prompt[len(marker) :].strip()
+                break
+        else:
+            if pl in {"/new", "--new", "new"}:
+                force_new = True
+                prompt = ""
+
+        m = re.match(
+            r"^(?:resume\s+)?@?([0-9a-fA-F-]{8,36})\s*[:\s]\s*(.*)$",
+            prompt,
+            re.DOTALL,
+        )
+        if m and not force_new:
+            cand = m.group(1).strip()
+            rest = (m.group(2) or "").strip()
+            if len(cand) >= 8 and ("-" in cand or len(cand) >= 16):
+                resume_override = cand
+                prompt = rest
+
+        return prompt, force_new, resume_override, mode
+
+    def _handle_copilot_agent(self, text: str) -> str:
+        """Explicit GitHub Copilot companion: 'copilot: …' / cloud tasks."""
+        prompt, force_new, resume_override, mode = self._parse_copilot_agent_prompt(
+            text
+        )
+
+        if force_new and not prompt and resume_override is None:
+            try:
+                from external_memory import get_external_memory_bridge
+
+                get_external_memory_bridge().copilot_agent.clear_session()
+            except Exception:
+                pass
+            self._copilot_session_id = None
+            return (
+                "[Copilot] Session gelöscht. Nächster `copilot:` startet neu."
+            )
+
+        try:
+            from external_memory import get_external_memory_bridge
+            from privilege import steffen_ctx
+
+            bridge = get_external_memory_bridge()
+        except Exception as exc:
+            return f"[Copilot] Bridge-Fehler: {exc}"
+
+        if prompt == "__status__":
+            st = bridge.copilot_agent.status()
+            lines = [f"[Copilot Status]"]
+            for k, v in st.items():
+                lines.append(f"  {k}: {v}")
+            return "\n".join(lines)
+
+        if prompt == "__list_tasks__":
+            if not bridge.cfg.copilot_agent_enabled:
+                return (
+                    "[Copilot] Deaktiviert. Setze ISAAC_COPILOT_AGENT_ENABLED=1"
+                )
+            r = bridge.copilot_agent.list_cloud_tasks()
+            if r.get("ok"):
+                return f"[Copilot Cloud]\n{r.get('text') or ''}"
+            return f"[Copilot Cloud] Fehler: {r.get('error')}"
+
+        if not prompt:
+            sid = getattr(self, "_copilot_session_id", None) or ""
+            return (
+                "[Copilot] Format: copilot: AUFGABE\n"
+                "Aliases: gh-copilot: | github-copilot: | copilot-agent:\n"
+                "Modi:    copilot: cli: …  |  copilot: sdk: …  |  copilot: cloud: …\n"
+                "Session: copilot: new: AUFGABE  |  copilot: resume <id>: AUFGABE\n"
+                "         copilot: clear session  |  copilot: status\n"
+                "Cloud:   copilot: tasks  |  copilot: cloud: Fix login button\n"
+                f"Aktuelle Session: {sid or '(keine)'}\n"
+                "Flag: ISAAC_COPILOT_AGENT_ENABLED=1\n"
+                "Binary: copilot on PATH (npm i -g @github/copilot)\n"
+                "Auth: COPILOT_GITHUB_TOKEN mit gho_/github_pat_ "
+                "(Classic ghp_ wird abgelehnt) oder `copilot /login`\n"
+                "Yolo: ISAAC_COPILOT_AGENT_ALWAYS_APPROVE=1 (--allow-all)\n"
+                "Docs: docs/COPILOT_AGENT.md"
+            )
+
+        if not bridge.cfg.copilot_agent_enabled:
+            return (
+                "[Copilot] Deaktiviert. Setze ISAAC_COPILOT_AGENT_ENABLED=1 "
+                "und authentifiziere mit OAuth/Fine-Grained PAT (nicht ghp_)."
+            )
+
+        try:
+            from constitution import get_constitution
+
+            decision = get_constitution().validate_action(
+                "system_command",
+                {
+                    "command": "copilot-agent",
+                    "prompt": prompt[:200],
+                    "owner_approved": True,
+                    "risk": "high"
+                    if bridge.cfg.copilot_agent_always_approve
+                    else "normal",
+                    "audit_logged": True,
+                },
+            )
+            if not decision.get("allowed", True):
+                blocked = ", ".join(decision.get("blocked_by") or []) or "policy"
+                return f"[Copilot] Verfassung blockiert: {blocked}"
+        except Exception:
+            pass
+        try:
+            ok, reason = self.gate.authorize(
+                "system_command",
+                steffen_ctx("GitHub Copilot companion"),
+            )
+            if not ok:
+                return f"[Copilot] Privilege verweigert: {reason}"
+        except Exception:
+            pass
+
+        cwd = (bridge.cfg.copilot_agent_cwd or "").strip() or None
+        if not cwd:
+            try:
+                from config import BASE_DIR
+
+                cwd = str(BASE_DIR) if BASE_DIR else None
+            except Exception:
+                cwd = None
+
+        if force_new:
+            bridge.copilot_agent.clear_session()
+            self._copilot_session_id = None
+        elif resume_override:
+            bridge.copilot_agent.set_session_id(resume_override)
+            self._copilot_session_id = resume_override
+        elif self._copilot_session_id and not bridge.copilot_agent.last_session_id():
+            bridge.copilot_agent.set_session_id(self._copilot_session_id)
+
+        try:
+            result = bridge.copilot_agent.run(
+                prompt,
+                cwd=cwd,
+                resume_session_id=resume_override,
+                force_new=force_new,
+                mode=mode,
+            )
+            sid = (result.get("session_id") or "").strip()
+            if sid:
+                self._copilot_session_id = sid
+            via = result.get("via") or mode
+            sid_note = f" session={sid}" if sid else ""
+            yolo = " allow-all" if result.get("always_approve") else ""
+            if result.get("ok"):
+                body = (result.get("text") or "").strip() or "(keine Ausgabe)"
+                return f"[Copilot/{via}{yolo}{sid_note}]\n{body[:6000]}"
+            err = result.get("error") or "unbekannt"
+            body = (result.get("text") or "").strip()
+            auth = result.get("auth_hint") or ""
+            extra = f"\nauth={auth}" if auth else ""
+            if body:
+                return f"[Copilot] Fehler: {err}{extra}\n{body[:2500]}"
+            return f"[Copilot] Fehler: {err}{extra}"
+        except Exception as exc:
+            return f"[Copilot] Fehler: {exc}"
+
     def _handle_pause(self, *_) -> str:
         self.gate.pause(steffen_ctx("Pause"))
         return "Isaac pausiert."
@@ -2484,6 +2707,15 @@ class IsaacKernel:
                 "grok agent:",
                 "xai-agent:",
                 "xai agent:",
+            ),
+            Intent.COPILOT_AGENT: (
+                "copilot:",
+                "gh-copilot:",
+                "gh copilot:",
+                "github-copilot:",
+                "github copilot:",
+                "copilot-agent:",
+                "copilot agent:",
             ),
             Intent.EXT_MEMORY: (
                 "external memory",
@@ -2628,7 +2860,12 @@ class IsaacKernel:
 
     def _companion_availability(self) -> dict[str, bool]:
         """Which optional companion adapters are enabled+available."""
-        out = {"grok": False, "open_interpreter": False, "letta": False}
+        out = {
+            "grok": False,
+            "open_interpreter": False,
+            "letta": False,
+            "copilot": False,
+        }
         try:
             from external_memory import get_external_memory_bridge
 
@@ -2640,6 +2877,9 @@ class IsaacKernel:
                 bridge.cfg.open_interpreter_enabled and bridge.open_interpreter.available()
             )
             out["letta"] = bool(bridge.cfg.letta_enabled and bridge.letta.available())
+            out["copilot"] = bool(
+                bridge.cfg.copilot_agent_enabled and bridge.copilot_agent.available()
+            )
         except Exception as exc:
             log.debug("companion availability: %s", exc)
         return out
@@ -2654,6 +2894,7 @@ class IsaacKernel:
     ) -> tuple[Any, str, Strategy]:
         """Select + run companion; return (decision, context_block, strategy)."""
         from agent_selection import (
+            AGENT_COPILOT,
             AGENT_GROK,
             AGENT_LETTA,
             AGENT_OI,
@@ -2723,6 +2964,13 @@ class IsaacKernel:
             sid = (result.get("session_id") or "").strip()
             if sid:
                 self._grok_session_id = sid
+        elif decision.agent_id == AGENT_COPILOT:
+            result = bridge.copilot_agent.run(
+                user_input, cwd=cwd, timeout=timeout
+            )
+            sid = (result.get("session_id") or "").strip()
+            if sid:
+                self._copilot_session_id = sid
         elif decision.agent_id == AGENT_OI:
             result = bridge.open_interpreter.run(user_input, cwd=cwd, timeout=timeout)
             sid = ""
@@ -2741,7 +2989,9 @@ class IsaacKernel:
             agent_id=decision.agent_id,
             reason=decision.reason,
             text=body,
-            session_id=sid if decision.agent_id == AGENT_GROK else "",
+            session_id=sid
+            if decision.agent_id in {AGENT_GROK, AGENT_COPILOT}
+            else "",
         )
         # Steer relay to use agent work product
         note = (

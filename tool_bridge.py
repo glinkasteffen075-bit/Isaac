@@ -51,6 +51,16 @@ BRIDGE_TOOLS: list[dict[str, Any]] = [
         "trust": 75.0,
         "metadata": {"bridge": "grok_agent"},
     },
+    {
+        "tool_id": "bridge_copilot_agent",
+        "name": "copilot_agent",
+        "kind": "bridge",
+        "category": "code",
+        "description": "Run GitHub Copilot CLI/SDK/cloud companion (ISAAC_COPILOT_AGENT_ENABLED)",
+        "priority": 86,
+        "trust": 75.0,
+        "metadata": {"bridge": "copilot_agent"},
+    },
 ]
 
 
@@ -108,6 +118,8 @@ async def run_bridge(bridge_id: str, prompt: str) -> dict[str, Any]:
         return await _bridge_web_fetch(prompt)
     if bid in {"grok_agent", "grok"}:
         return await _bridge_grok_agent(prompt)
+    if bid in {"copilot_agent", "copilot", "github_copilot"}:
+        return await _bridge_copilot_agent(prompt)
     return {"ok": False, "error": f"unknown bridge: {bid}", "via": "bridge"}
 
 
@@ -292,10 +304,63 @@ async def _bridge_grok_agent(prompt: str) -> dict[str, Any]:
         return {"ok": False, "error": str(exc), "via": "bridge.grok_agent"}
 
 
+async def _bridge_copilot_agent(prompt: str) -> dict[str, Any]:
+    try:
+        from external_memory import get_external_memory_bridge
+        from config import BASE_DIR
+
+        bridge = get_external_memory_bridge()
+        if not bridge.cfg.copilot_agent_enabled:
+            return {
+                "ok": False,
+                "error": "ISAAC_COPILOT_AGENT_ENABLED=0 — set flag to use copilot bridge",
+                "via": "bridge.copilot_agent",
+            }
+        text = prompt
+        low = text.lower()
+        mode = "cli"
+        for p in (
+            "copilot:",
+            "copilot_agent:",
+            "copilot-agent:",
+            "gh-copilot:",
+            "github-copilot:",
+        ):
+            if low.startswith(p):
+                text = text[len(p) :].strip()
+                low = text.lower()
+                break
+        for marker, mname in (
+            ("cloud:", "cloud"),
+            ("task:", "cloud"),
+            ("sdk:", "sdk"),
+            ("cli:", "cli"),
+        ):
+            if low.startswith(marker):
+                mode = mname
+                text = text[len(marker) :].strip()
+                break
+        result = bridge.copilot_agent.run(
+            text or prompt, cwd=str(BASE_DIR), mode=mode
+        )
+        return {
+            "ok": bool(result.get("ok")),
+            "output": (result.get("text") or result.get("error") or "")[:8000],
+            "error": result.get("error") or "",
+            "via": "bridge.copilot_agent",
+            "session_id": result.get("session_id") or "",
+            "mode": result.get("via") or mode,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "via": "bridge.copilot_agent"}
+
+
 def status() -> dict[str, Any]:
     return {
         "enabled": bridge_enabled(),
         "tools": [t["tool_id"] for t in BRIDGE_TOOLS],
         "github_token": bool(_github_token()),
         "grok_flag": (os.getenv("ISAAC_GROK_AGENT_ENABLED") or "0").strip() in {"1", "true", "yes", "on"},
+        "copilot_flag": (os.getenv("ISAAC_COPILOT_AGENT_ENABLED") or "0").strip()
+        in {"1", "true", "yes", "on"},
     }

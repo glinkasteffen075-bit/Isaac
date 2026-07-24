@@ -43,6 +43,7 @@ class ExternalMemoryConfig:
     letta_enabled: bool = False
     open_interpreter_enabled: bool = False
     grok_agent_enabled: bool = False
+    copilot_agent_enabled: bool = False
     write_enabled: bool = False
     min_score: float = 5.0
     search_timeout_s: float = 2.5
@@ -73,6 +74,20 @@ class ExternalMemoryConfig:
     grok_agent_disallowed_tools: str = ""  # comma-separated tool denylist
     grok_agent_rules: str = ""  # extra --rules guardrails
     grok_agent_extra_deny: str = ""  # extra --deny rules (comma-separated)
+    # GitHub Copilot CLI / SDK / cloud agent tasks
+    copilot_agent_bin: str = "copilot"
+    copilot_agent_model: str = ""  # empty → CLI default / auto
+    copilot_agent_cwd: str = ""
+    copilot_agent_timeout_s: float = 300.0
+    copilot_agent_always_approve: bool = False  # --allow-all
+    copilot_agent_auto_resume: bool = True
+    copilot_agent_use_sdk: bool = False  # github-copilot-sdk path
+    copilot_agent_enable_memory: bool = False  # --enable-memory
+    copilot_agent_allow_tools: str = ""  # comma --allow-tool=
+    copilot_agent_deny_tools: str = ""  # comma --deny-tool=
+    copilot_cloud_repo: str = ""  # owner/repo for CCA tasks
+    copilot_cloud_base_ref: str = "main"
+    copilot_cloud_create_pr: bool = False
     ollama_host: str = "http://127.0.0.1:11434"
     ollama_llm: str = "llama3.1:8b"
     ollama_embed: str = "nomic-embed-text:latest"
@@ -85,6 +100,7 @@ class ExternalMemoryConfig:
             or self.letta_enabled
             or self.open_interpreter_enabled
             or self.grok_agent_enabled
+            or self.copilot_agent_enabled
         )
 
 
@@ -105,6 +121,7 @@ def load_external_memory_config() -> ExternalMemoryConfig:
         letta_enabled=_env_bool("ISAAC_LETTA_ENABLED", False),
         open_interpreter_enabled=_env_bool("ISAAC_OPEN_INTERPRETER_ENABLED", False),
         grok_agent_enabled=_env_bool("ISAAC_GROK_AGENT_ENABLED", False),
+        copilot_agent_enabled=_env_bool("ISAAC_COPILOT_AGENT_ENABLED", False),
         write_enabled=_env_bool("ISAAC_EXTERNAL_MEMORY_WRITE", False),
         min_score=_env_float("ISAAC_EXTERNAL_MEMORY_MIN_SCORE", 5.0),
         search_timeout_s=_env_float("ISAAC_EXTERNAL_MEMORY_SEARCH_TIMEOUT", 2.5),
@@ -169,6 +186,39 @@ def load_external_memory_config() -> ExternalMemoryConfig:
         grok_agent_extra_deny=(
             os.getenv("ISAAC_GROK_AGENT_EXTRA_DENY") or ""
         ).strip(),
+        copilot_agent_bin=(
+            os.getenv("COPILOT_BIN")
+            or os.getenv("ISAAC_COPILOT_AGENT_BIN")
+            or "copilot"
+        ).strip()
+        or "copilot",
+        copilot_agent_model=(
+            os.getenv("ISAAC_COPILOT_AGENT_MODEL") or os.getenv("COPILOT_MODEL") or ""
+        ).strip(),
+        copilot_agent_cwd=(os.getenv("ISAAC_COPILOT_AGENT_CWD") or "").strip(),
+        copilot_agent_timeout_s=_env_float("ISAAC_COPILOT_AGENT_TIMEOUT", 300.0),
+        copilot_agent_always_approve=_env_bool(
+            "ISAAC_COPILOT_AGENT_ALWAYS_APPROVE", False
+        ),
+        copilot_agent_auto_resume=_env_bool("ISAAC_COPILOT_AGENT_AUTO_RESUME", True),
+        copilot_agent_use_sdk=_env_bool("ISAAC_COPILOT_AGENT_USE_SDK", False),
+        copilot_agent_enable_memory=_env_bool(
+            "ISAAC_COPILOT_AGENT_ENABLE_MEMORY", False
+        ),
+        copilot_agent_allow_tools=(
+            os.getenv("ISAAC_COPILOT_AGENT_ALLOW_TOOLS") or ""
+        ).strip(),
+        copilot_agent_deny_tools=(
+            os.getenv("ISAAC_COPILOT_AGENT_DENY_TOOLS") or ""
+        ).strip(),
+        copilot_cloud_repo=(
+            os.getenv("ISAAC_COPILOT_CLOUD_REPO") or ""
+        ).strip(),
+        copilot_cloud_base_ref=(
+            os.getenv("ISAAC_COPILOT_CLOUD_BASE_REF") or "main"
+        ).strip()
+        or "main",
+        copilot_cloud_create_pr=_env_bool("ISAAC_COPILOT_CLOUD_CREATE_PR", False),
         ollama_host=ollama_host,
         ollama_llm=(
             os.getenv("ISAAC_MEM0_OLLAMA_MODEL")

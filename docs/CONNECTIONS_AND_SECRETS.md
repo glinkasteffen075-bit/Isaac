@@ -9,6 +9,7 @@ Secrets live in **environment**, **Render env**, or **local** `data/` (gitignore
 |----------|---------|---------|
 | `.env` | ❌ (gitignored) | Primary local secrets |
 | Render / PaaS Env Vars | ❌ | Production (isaac-free) |
+| `COPILOT_GITHUB_TOKEN` (OAuth/fine-grained, **not** classic `ghp_`) | ❌ | Copilot CLI/SDK companion — see `docs/COPILOT_AGENT.md` |
 | `data/secrets_store.json` | ❌ (`data/` ignored) | Runtime secret refs for tools |
 | `data/cli_auth_backup/` | ❌ | Export of CLI auths (`export_cli_auth.sh`) |
 | `.env.example` | ✅ | **Placeholders only** |

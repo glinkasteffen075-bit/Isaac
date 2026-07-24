@@ -140,7 +140,7 @@ class Strategy:
     allow_provider_switch: bool = True
     # Companion agents (Grok/OI/Letta) — opt-in via strategy + ISAAC_AGENT_AUTO_SELECT
     allow_agent_companions: bool = False
-    preferred_agent: str = ""  # "grok" | "open_interpreter" | "letta" | ""
+    preferred_agent: str = ""  # "grok" | "copilot" | "open_interpreter" | "letta" | ""
     style_note: str = ""
 
     def as_dict(self) -> dict[str, Any]:

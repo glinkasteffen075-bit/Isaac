@@ -274,6 +274,15 @@ class IsaacKernel:
 
         timing["classification_ms"] = round((time.perf_counter() - t_start) * 1000, 2)
 
+        # Sentry Conversations: group multi-turn spans under one session conversation id
+        try:
+            from isaac_sentry import session_conversation_id, set_conversation_id
+            conv = session_conversation_id()
+            if conv:
+                set_conversation_id(conv)
+        except Exception:
+            pass
+
         t0 = time.monotonic()
 
         # Ort-Korrektur nach Wetter: „Ich wollte für 99974 Mühlhausen …“
@@ -868,40 +877,60 @@ class IsaacKernel:
                 "allow_provider_switch": strategy.allow_provider_switch,
             },
         )
-        task = await self.executor.submit_and_wait(task, timeout=180.0)
-        antwort = task.antwort or task.fehler or "[Keine Antwort]"
-        score   = task.score.total if task.score else 0.0
+        from contextlib import nullcontext
 
-        cfg = getattr(self, "cfg", None) or get_config()
-        if (
-            getattr(cfg, "auto_provision_providers", True)
-            and cfg.browser_automation
-            and self._relay_failure_needs_provision(antwort)
-        ):
-            failed_provider = self._extract_failed_provider(antwort) or provider or cfg.relay.primary_provider
-            target_ids = None if getattr(cfg, "auto_provision_all_providers", True) else (
-                [failed_provider] if failed_provider else None
+        try:
+            from isaac_sentry import finish_agent_span, invoke_agent_span
+            agent_cm = invoke_agent_span(
+                agent_name="Isaac",
+                model=provider or "isaac-kernel",
+                user_input=user_input,
             )
-            provision = await self._auto_provision_providers(target_ids)
-            if provision.get("ok"):
-                retry = self.executor.create_task(
-                    typ=task_typ,
-                    prompt=prompt,
-                    beschreibung=f"retry:{user_input[:72]}",
-                    prioritaet=task.prioritaet,
-                    provider=failed_provider or provider,
-                    system_prompt=system,
-                    sudo_aktiv=sudo_aktiv,
-                    strategy=strategy,
-                    interaction_class=interaction_class,
-                    classification=classification,
-                    retrieved_context=retrieval_ctx,
+        except Exception:
+            agent_cm = nullcontext()
+            finish_agent_span = None  # type: ignore[assignment]
+
+        with agent_cm as agent_span:
+            task = await self.executor.submit_and_wait(task, timeout=180.0)
+            antwort = task.antwort or task.fehler or "[Keine Antwort]"
+            score = task.score.total if task.score else 0.0
+
+            cfg = getattr(self, "cfg", None) or get_config()
+            if (
+                getattr(cfg, "auto_provision_providers", True)
+                and cfg.browser_automation
+                and self._relay_failure_needs_provision(antwort)
+            ):
+                failed_provider = self._extract_failed_provider(antwort) or provider or cfg.relay.primary_provider
+                target_ids = None if getattr(cfg, "auto_provision_all_providers", True) else (
+                    [failed_provider] if failed_provider else None
                 )
-                retry = await self.executor.submit_and_wait(retry, timeout=180.0)
-                if retry.antwort and not self._relay_failure_needs_provision(retry.antwort):
-                    task = retry
-                    antwort = retry.antwort
-                    score = retry.score.total if retry.score else score
+                provision = await self._auto_provision_providers(target_ids)
+                if provision.get("ok"):
+                    retry = self.executor.create_task(
+                        typ=task_typ,
+                        prompt=prompt,
+                        beschreibung=f"retry:{user_input[:72]}",
+                        prioritaet=task.prioritaet,
+                        provider=failed_provider or provider,
+                        system_prompt=system,
+                        sudo_aktiv=sudo_aktiv,
+                        strategy=strategy,
+                        interaction_class=interaction_class,
+                        classification=classification,
+                        retrieved_context=retrieval_ctx,
+                    )
+                    retry = await self.executor.submit_and_wait(retry, timeout=180.0)
+                    if retry.antwort and not self._relay_failure_needs_provision(retry.antwort):
+                        task = retry
+                        antwort = retry.antwort
+                        score = retry.score.total if retry.score else score
+            if finish_agent_span:
+                finish_agent_span(
+                    agent_span,
+                    result_text=antwort if isinstance(antwort, str) else str(antwort),
+                    model=task.provider_used or provider or "isaac-kernel",
+                )
 
         # Stabiles lokales Fallback für triviale Inputs, falls Provider ausfallen.
         if task.typ == TaskType.CHAT and is_low_complexity_local_input(user_input):
@@ -2414,6 +2443,13 @@ async def main():
         format  = "[%(asctime)s] %(levelname)-7s %(name)s – %(message)s",
         datefmt = "%H:%M:%S",
     )
+
+    # Optional Sentry AI monitoring (no-op without SENTRY_DSN)
+    try:
+        from isaac_sentry import init_sentry
+        init_sentry()
+    except Exception as e:
+        logging.getLogger("Isaac").warning("Sentry init skipped: %s", e)
 
     # Free-tier PaaS (Render/HF Spaces/Fly free): bind 0.0.0.0, unified /ws, no vector mem
     try:

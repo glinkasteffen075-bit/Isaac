@@ -551,6 +551,70 @@ async def run_selected_tool(
 ) -> dict:
     if not selection:
         return error_result("Keine Tool-Auswahl", metadata={"source": "selection"})
+
+    tool_name = (
+        selection.get("name")
+        or selection.get("mcp_name")
+        or selection.get("identifier")
+        or "unknown_tool"
+    )
+    description = "/".join(
+        part
+        for part in (
+            str(selection.get("kind") or "").strip(),
+            str(selection.get("category") or "").strip(),
+            str(selection.get("source") or "").strip(),
+        )
+        if part
+    )
+    span_args = {
+        "source": selection.get("source"),
+        "identifier": selection.get("identifier"),
+        "kind": selection.get("kind"),
+        "category": selection.get("category"),
+        "mcp_name": selection.get("mcp_name"),
+        "prompt_preview": (prompt or "")[:500],
+    }
+
+    from contextlib import nullcontext
+
+    try:
+        from isaac_sentry import execute_tool_span, finish_tool_span
+        tool_cm = execute_tool_span(
+            str(tool_name),
+            arguments=span_args,
+            description=description or "isaac tool",
+        )
+    except Exception:
+        tool_cm = nullcontext()
+        finish_tool_span = None  # type: ignore[assignment]
+
+    with tool_cm as tool_span:
+        result = await _run_selected_tool_body(
+            selection,
+            prompt,
+            override_ctx=override_ctx,
+            skip_constitution=skip_constitution,
+        )
+        if finish_tool_span:
+            # Compact result for Sentry (ok flag + truncated output/error)
+            finish_payload = {
+                "ok": bool(result.get("ok")),
+                "via": result.get("via") or selection.get("source"),
+                "error": (result.get("error") or "")[:800] or None,
+                "output": str(result.get("output") or "")[:1500] or None,
+            }
+            finish_tool_span(tool_span, finish_payload)
+        return result
+
+
+async def _run_selected_tool_body(
+    selection: dict,
+    prompt: str,
+    override_ctx=None,
+    *,
+    skip_constitution: bool = False,
+) -> dict:
     # Executor prüft Constitution oft bereits selbst — dann nicht doppelt.
     if not skip_constitution:
         blocked = constitution_gate_for_tool(selection, prompt, override_ctx=override_ctx)

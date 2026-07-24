@@ -216,10 +216,99 @@ class AsyncRelay:
         if limiter:
             await limiter.acquire(approx_tokens)
 
+        model_name = model_override or prov_cfg.model or prov_name
+        try:
+            from isaac_sentry import finish_chat_span, gen_ai_chat_span
+        except Exception:
+            gen_ai_chat_span = None  # type: ignore[assignment]
+            finish_chat_span = None  # type: ignore[assignment]
+
+        span_cm = (
+            gen_ai_chat_span(
+                model=model_name,
+                provider=prov_name,
+                system=system,
+                prompt=full_prompt,
+                agent_name="Isaac",
+            )
+            if gen_ai_chat_span
+            else None
+        )
+
+        def _token_split(actual: int, result_text: str) -> tuple[int, int, int]:
+            """Split total tokens into input/output for cost-safe reporting."""
+            total = max(0, int(actual or 0))
+            inp = max(1, int(approx_tokens or 0))
+            if total <= 0:
+                out = max(1, RateLimiter.estimate_tokens(result_text or ""))
+                return inp, out, inp + out
+            if total > inp:
+                return inp, total - inp, total
+            # Provider returned only completion or an under-count — keep totals consistent
+            out = max(1, RateLimiter.estimate_tokens(result_text or ""))
+            return max(1, total), out, total + out
+
+        if span_cm is not None:
+            with span_cm as span:
+                return await self._ask_dispatch_loop(
+                    ask_t0=ask_t0,
+                    prov_name=prov_name,
+                    prov_cfg=prov_cfg,
+                    full_prompt=full_prompt,
+                    system=system,
+                    use_cache=use_cache,
+                    model_override=model_override,
+                    model_name=model_name,
+                    limiter=limiter,
+                    approx_tokens=approx_tokens,
+                    task_id=task_id,
+                    span=span,
+                    finish_chat_span=finish_chat_span,
+                    token_split=_token_split,
+                )
+
+        return await self._ask_dispatch_loop(
+            ask_t0=ask_t0,
+            prov_name=prov_name,
+            prov_cfg=prov_cfg,
+            full_prompt=full_prompt,
+            system=system,
+            use_cache=use_cache,
+            model_override=model_override,
+            model_name=model_name,
+            limiter=limiter,
+            approx_tokens=approx_tokens,
+            task_id=task_id,
+            span=None,
+            finish_chat_span=None,
+            token_split=_token_split,
+        )
+
+    async def _ask_dispatch_loop(
+        self,
+        *,
+        ask_t0: float,
+        prov_name: str,
+        prov_cfg: ProviderConfig,
+        full_prompt: str,
+        system: str,
+        use_cache: bool,
+        model_override: Optional[str],
+        model_name: str,
+        limiter: Optional[RateLimiter],
+        approx_tokens: int,
+        task_id: str,
+        span,
+        finish_chat_span,
+        token_split,
+    ) -> str:
+        cache_provider = f"{prov_name}:{model_override}" if model_override else prov_name
         for versuch in range(1, self.cfg.relay.max_retries + 1):
             try:
                 t0 = time.monotonic()
-                result, actual_tokens = await self._dispatch(prov_cfg, full_prompt, system, model_override=model_override)
+                result, actual_tokens = await self._dispatch(
+                    prov_cfg, full_prompt, system, model_override=model_override
+                )
                 dauer = round(time.monotonic() - t0, 2)
                 total_ms = round((time.perf_counter() - ask_t0) * 1000, 2)
                 self._mark_success(prov_name, dauer)
@@ -229,11 +318,22 @@ class AsyncRelay:
                 log.info(
                     "Latency(relay) | provider=%s model=%s dispatch=%ss total=%sms retry=%s",
                     prov_name,
-                    model_override or prov_cfg.model,
+                    model_name,
                     dauer,
                     total_ms,
                     versuch,
                 )
+                if finish_chat_span and span is not None:
+                    inp, out, total = token_split(actual_tokens, result)
+                    finish_chat_span(
+                        span,
+                        result_text=result if isinstance(result, str) else str(result),
+                        input_tokens=inp,
+                        output_tokens=out,
+                        total_tokens=total,
+                        model=model_name,
+                        success=True,
+                    )
                 if use_cache:
                     self.cache.set(full_prompt, system, cache_provider, result)
                 return result
@@ -245,10 +345,20 @@ class AsyncRelay:
                 self._mark_failure(prov_name, msg)
                 AuditLog.error("Relay", msg, f"provider={prov_name}")
                 if versuch == self.cfg.relay.max_retries:
+                    if finish_chat_span and span is not None:
+                        finish_chat_span(
+                            span,
+                            result_text=msg,
+                            model=model_name,
+                            success=False,
+                        )
                     return f"[RELAY-FEHLER:{prov_name}] {msg}"
                 await asyncio.sleep(min(10, 2 * versuch))
 
-        return f"[RELAY] Alle {self.cfg.relay.max_retries} Versuche fehlgeschlagen"
+        err = f"[RELAY] Alle {self.cfg.relay.max_retries} Versuche fehlgeschlagen"
+        if finish_chat_span and span is not None:
+            finish_chat_span(span, result_text=err, model=model_name, success=False)
+        return err
 
     async def ask_with_fallback(self, prompt: str, system: str = "",
                                 preferred: Optional[str] = None,

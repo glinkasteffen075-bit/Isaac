@@ -18,15 +18,24 @@ export const initializeSentry = (): ReturnType<typeof Sentry.init> =>
     // Adjust this value in production, or use tracesSampler for greater control
     tracesSampleRate: 1,
 
+    // Stream gen_ai spans as standalone items (required for Conversations / large prompts)
+    // Default since SDK 10.61.0 — set explicitly for clarity
+    streamGenAiSpans: true,
+
+    // Capture prompts/outputs for AI agent monitoring (PII — owner-confirmed)
+    sendDefaultPii: true,
+
     // Setting this option to true will print useful information to the console while you're setting up Sentry.
     debug: false,
 
     // Capture local variables in stack traces for better debugging
     includeLocalVariables: true,
 
-    // Integrations for console logging
+    // Integrations for console logging + Vercel AI SDK agent tracing
     integrations: [
       // Send console.log, console.error, and console.warn calls as logs to Sentry
       Sentry.consoleLoggingIntegration({ levels: ["log", "error", "warn"] }),
+      // force: true — Next.js production bundles `ai`, which can break auto-detection
+      Sentry.vercelAIIntegration({ force: true }),
     ],
   });

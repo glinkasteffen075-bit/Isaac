@@ -2314,6 +2314,54 @@ class TestEvalSuites(unittest.TestCase):
 
 
 class TestMcpToolRuntime(unittest.TestCase):
+    def test_discover_mcp_bridge_closes_owned_session(self):
+        """Regression ISAAC-4/7: dashboard polls must not leak aiohttp sessions."""
+        from tool_runtime import clear_mcp_bridge_cache, discover_mcp_bridge
+        from mcp_client import MCPClient
+
+        clear_mcp_bridge_cache()
+        closed = {"n": 0}
+        real_close = MCPClient.close
+
+        async def tracking_close(self):
+            closed["n"] += 1
+            return await real_close(self)
+
+        async def boom_capabilities(self):
+            # Force local-fallback path after session is created
+            await self._get_session()
+            raise RuntimeError("force-fallback")
+
+        with patch.object(MCPClient, "capabilities", boom_capabilities), patch.object(
+            MCPClient, "close", tracking_close
+        ):
+            result = asyncio.run(discover_mcp_bridge())
+        self.assertEqual(result.get("source"), "local-fallback")
+        self.assertGreaterEqual(closed["n"], 1, "owned MCPClient must be closed")
+
+        # Cache should serve second call without another live session leak
+        closed["n"] = 0
+        with patch.object(MCPClient, "capabilities", boom_capabilities), patch.object(
+            MCPClient, "close", tracking_close
+        ):
+            result2 = asyncio.run(discover_mcp_bridge())
+        self.assertEqual(result2.get("source"), "local-fallback")
+        self.assertEqual(closed["n"], 0, "cached discover must not open a new client")
+        clear_mcp_bridge_cache()
+
+    def test_mcp_client_close_nulls_session(self):
+        from mcp_client import MCPClient
+
+        async def _run():
+            client = MCPClient("http://127.0.0.1:9")
+            sess = await client._get_session()
+            self.assertIsNotNone(client._session)
+            self.assertFalse(sess.closed)
+            await client.close()
+            self.assertIsNone(client._session)
+
+        asyncio.run(_run())
+
     def test_invoke_mcp_tool_uses_local_registry_fallback(self):
         from tool_runtime import invoke_mcp_tool
 

@@ -65,6 +65,22 @@ Tools still require:
 - Constitution + privilege gates
 - Executor eligibility (`tool_policy`)
 
+### Catalog tools (professional_core)
+
+Auto-registered at boot via `ensure_catalog_tools_registered()`:
+
+- Search: DuckDuckGo, Wikipedia, Stack Overflow, Crossref  
+- Code: GitHub repos/issues, PyPI, npm  
+- Security (authorized/public only): crt.sh, Cloudflare DoH, RDAP, HackerOne directory  
+- Research/Ops: Wayback CDX, Open-Meteo  
+
+Bundles: `free_security_pack`, `free_ops_pack`, `free_dev_pack`, `professional_core`.
+
+### Owner push (blockers only)
+
+See `owner_notify.py` / `docs/OWNER_COMMANDS.md` — ntfy / webhook / Termux when
+Isaac is hard-blocked (creds, keys, URL, browser off, 2FA).
+
 **Not** included (by design — use Grok CLI / companions instead):
 
 - Full MCP marketplace of Grok Build  

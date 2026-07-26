@@ -39,8 +39,10 @@ class BackgroundState:
     letzter_provider:   float = 0.0
     letzter_owner_autonomy: float = 0.0
     letzter_goal_autonomy: float = 0.0
+    letzter_mission: float = 0.0
     owner_task_last_run: dict = field(default_factory=dict)
     goal_autonomy_ticks: int = 0
+    mission_ticks: int = 0
     zyklen:             int   = 0
     dialoge_gesamt:     int   = 0
     diskussionen_gesamt: int  = 0
@@ -72,6 +74,7 @@ class BackgroundLoop:
     DECAY_INTERVAL      = 3600     # 1 Stunde
     OWNER_AUTONOMY_INTERVAL = 3600  # 1 Stunde
     GOAL_AUTONOMY_INTERVAL = 900    # 15 Minuten — Ziel-Motivation
+    MISSION_INTERVAL = 600          # 10 Minuten — Execution-Contract Missionen
     TICK                = 30       # MOBILE: Größerer Tick-Abstand
 
     # MOBILE: Sparmodus ab 30%
@@ -232,6 +235,13 @@ class BackgroundLoop:
                     await self._goal_autonomy_zyklus()
                     self.state.letzter_goal_autonomy = now
 
+                # Execution-Contract Missionen (Browser-Schritte goal-gebunden)
+                if now - self.state.letzter_mission > self._intervall(
+                    self.MISSION_INTERVAL, akku
+                ):
+                    await self._mission_zyklus()
+                    self.state.letzter_mission = now
+
                 # State Dump
                 if now - self.state.letzter_dump > self.DUMP_INTERVAL:
                     self._dump_state()
@@ -372,6 +382,40 @@ class BackgroundLoop:
         except Exception as e:
             log.debug("Goal-Digest: %s", e)
 
+    async def _mission_zyklus(self):
+        """Execution-Contract: aktive Missionen mit echten Browser-Schritten fortsetzen."""
+        try:
+            from execution_contract import run_mission_tick
+
+            browser_on = True
+            try:
+                from config import get_config
+                browser_on = bool(getattr(get_config(), "browser_automation", True))
+            except Exception:
+                pass
+            try:
+                from free_cloud import free_cloud_enabled
+                if free_cloud_enabled():
+                    browser_on = False
+            except Exception:
+                pass
+
+            result = await run_mission_tick(
+                on_note=self._notiere,
+                browser_enabled=browser_on,
+            )
+            advanced = result.get("advanced") or []
+            if advanced:
+                self.state.mission_ticks = int(self.state.mission_ticks or 0) + 1
+                log.info(
+                    "Mission-Tick: active=%s advanced=%s browser=%s",
+                    result.get("active"),
+                    len(advanced),
+                    browser_on,
+                )
+        except Exception as e:
+            log.debug("Mission-Zyklus: %s", e)
+
     async def _decay_check(self):
         try:
             from forgetting_decay import run_decay_cycle
@@ -423,8 +467,10 @@ class BackgroundLoop:
                 "letzter_ki_dialog":  self.state.letzter_ki_dialog,
                 "letzter_owner_autonomy": self.state.letzter_owner_autonomy,
                 "letzter_goal_autonomy": self.state.letzter_goal_autonomy,
+                "letzter_mission": self.state.letzter_mission,
                 "owner_task_last_run": dict(self.state.owner_task_last_run or {}),
                 "goal_autonomy_ticks": int(self.state.goal_autonomy_ticks or 0),
+                "mission_ticks": int(self.state.mission_ticks or 0),
                 "zyklen":             self.state.zyklen,
                 "dialoge_gesamt":     self.state.dialoge_gesamt,
                 "ideen_gesamt":       self.state.ideen_gesamt,
@@ -468,6 +514,8 @@ class BackgroundLoop:
             "owner_autonomy_runs": dict(self.state.owner_task_last_run or {}),
             "goal_autonomy_ticks": int(self.state.goal_autonomy_ticks or 0),
             "letzter_goal_autonomy": self.state.letzter_goal_autonomy,
+            "mission_ticks": int(self.state.mission_ticks or 0),
+            "letzter_mission": self.state.letzter_mission,
         }
 
 

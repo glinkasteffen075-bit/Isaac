@@ -39,11 +39,26 @@ CATEGORY_HINTS = {
     "code": "code",
     "python": "code",
     "github": "code",
+    "pypi": "code",
+    "npm": "code",
     "api": "integration",
     "tool": "integration",
     "mcp": "integration",
     "resource": "resource",
     "datei": "resource",
+    "security": "security",
+    "dns": "security",
+    "crt.sh": "security",
+    "crtsh": "security",
+    "rdap": "security",
+    "whois": "security",
+    "subdomain": "security",
+    "hackerone": "security",
+    "bugbounty": "security",
+    "bug bounty": "security",
+    "ops": "ops",
+    "ip lookup": "ops",
+    "geolocation": "ops",
 }
 
 
@@ -71,6 +86,11 @@ def _headers(tool: dict) -> dict:
         "User-Agent": "Isaac/1.0 (+local tool runtime)",
         "Accept": "application/json, text/plain;q=0.9, */*;q=0.8",
     }
+    meta = tool.get("metadata") if isinstance(tool.get("metadata"), dict) else {}
+    extra = meta.get("headers") if isinstance(meta.get("headers"), dict) else {}
+    for k, v in extra.items():
+        if k and v is not None:
+            headers[str(k)] = str(v)
     if tool.get("auth_type") != "header":
         return headers
     secret = get_secrets_store().get_secret(tool.get("secret_ref", ""))
@@ -78,6 +98,35 @@ def _headers(tool: dict) -> dict:
         return headers
     headers[tool.get("auth_field") or "Authorization"] = f'{tool.get("auth_prefix","")}{secret}'
     return headers
+
+
+def _build_tool_url(tool_row: dict, prompt: str) -> str:
+    """Build request URL; supports path-append tools (crt.sh, RDAP, PyPI)."""
+    base = (tool_row.get("base_url") or tool_row.get("website_url") or "").strip()
+    endpoint = (tool_row.get("endpoint") or "").strip()
+    if endpoint:
+        url = base.rstrip("/") + "/" + endpoint.lstrip("/")
+    else:
+        url = base
+    url = _url_with_query_auth(url, tool_row)
+    meta = tool_row.get("metadata") if isinstance(tool_row.get("metadata"), dict) else {}
+    q = (prompt or "").strip()
+    # Strip common command prefixes for path tools
+    for prefix in ("dns:", "crt:", "rdap:", "whois:", "ip:", "pypi:", "npm:", "fetch:"):
+        if q.lower().startswith(prefix):
+            q = q.split(":", 1)[1].strip()
+            break
+    if meta.get("append_query_to_path") and q:
+        from urllib.parse import quote
+        suffix = str(meta.get("path_suffix") or "")
+        # crt.sh uses ?q= already in base — if base ends with q= keep as query
+        if url.rstrip().endswith("q=") or url.rstrip().endswith("q=%"):
+            return url + quote(q, safe="")
+        return url.rstrip("/") + "/" + quote(q, safe="") + suffix
+    qp = tool_row.get("query_param")
+    if qp is None or str(qp).strip() == "":
+        return url
+    return _append_query(url, str(qp), q or prompt)
 
 
 def _url_with_query_auth(url: str, tool: dict) -> str:
@@ -238,18 +287,18 @@ async def _run_registry_tool(tool, prompt: str) -> dict:
                 ok = bool(result.get("ok"))
                 reg.record(tool.tool_id, ok, f"mcp-run:{result.get('status_code', 200)}")
                 return result
-            url = (tool.base_url.rstrip("/") + "/" + tool.endpoint.lstrip("/")) if tool.endpoint else tool.base_url
-            url = _url_with_query_auth(url, row)
             method = (tool.method or "GET").upper()
             async with aiohttp.ClientSession(timeout=timeout) as sess:
                 if method == "POST":
+                    url = (tool.base_url.rstrip("/") + "/" + tool.endpoint.lstrip("/")) if tool.endpoint else tool.base_url
+                    url = _url_with_query_auth(url, row)
                     async with sess.post(url, headers=_headers(row), json={"prompt": prompt}) as res:
                         text = await res.text()
                         ok = res.status < 400
                         reg.record(tool.tool_id, ok, f"api-run:{res.status}")
                         return {"ok": ok, "content": _response_to_text(res.headers.get('Content-Type', ''), text), "status_code": res.status, "via": "api", "url": str(res.url)}
                 else:
-                    qurl = _append_query(url, tool.query_param or 'q', prompt)
+                    qurl = _build_tool_url(row, prompt)
                     async with sess.get(qurl, headers=_headers(row)) as res:
                         text = await res.text()
                         ok = res.status < 400
@@ -257,9 +306,7 @@ async def _run_registry_tool(tool, prompt: str) -> dict:
                         return {"ok": ok, "content": _response_to_text(res.headers.get('Content-Type', ''), text), "status_code": res.status, "via": "api", "url": str(res.url)}
 
         if tool.kind == "search":
-            base = tool.base_url or tool.website_url
-            url = _url_with_query_auth(base, row)
-            qurl = _append_query(url, tool.query_param or 'q', prompt)
+            qurl = _build_tool_url(row, prompt)
             async with aiohttp.ClientSession(timeout=timeout) as sess:
                 async with sess.get(qurl, headers=_headers(row)) as res:
                     text = await res.text()

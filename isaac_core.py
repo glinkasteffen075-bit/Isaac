@@ -493,6 +493,9 @@ class IsaacKernel:
         intent = self._resolve_intent_from_classification(
             user_input, detected_intent, interaction_class
         )
+        # Mission / natural-language browser imperatives → BROWSER for gates + routing
+        if intent == Intent.CHAT and self._is_browser_request(user_input):
+            intent = Intent.BROWSER
         timing["routing_prep_ms"] = round((time.perf_counter() - t_start) * 1000, 2)
 
         log.info(
@@ -1195,6 +1198,22 @@ class IsaacKernel:
         else:
             self._awaiting_frage_id = None
 
+        # Execution Contract: no fake browser/tool success without evidence
+        try:
+            from execution_contract import apply_anti_hallucination
+
+            tools_ran = bool(
+                (antwort or "").startswith("[Browser]")
+                or (antwort or "").startswith("[Mission]")
+                or (antwort or "").startswith("[Provider]")
+                or "[Evidence]" in (antwort or "")
+            )
+            antwort = apply_anti_hallucination(
+                user_input, antwort, tools_ran=tools_ran
+            )
+        except Exception as exc:
+            log.debug("anti-hallucination skipped: %s", exc)
+
         AuditLog.isaac_output(antwort)
         return antwort
 
@@ -1646,7 +1665,16 @@ class IsaacKernel:
             "navigiere zu",
         )):
             return True
-        return self._is_provider_provision_request(text)
+        if self._is_provider_provision_request(text):
+            return True
+        # Natural-language missions: "gehe auf hackerone", "log dich bei Google ein …"
+        try:
+            from execution_contract import is_browser_mission
+            if is_browser_mission(text):
+                return True
+        except Exception as exc:
+            log.debug("mission browser detect: %s", exc)
+        return False
 
     def _relay_failure_needs_provision(self, antwort: str) -> bool:
         tl = (antwort or "").lower()
@@ -1813,9 +1841,14 @@ class IsaacKernel:
         known = {
             "github": "https://github.com",
             "google": "https://www.google.com",
+            "gmail": "https://mail.google.com",
             "openrouter": "https://openrouter.ai",
             "groq": "https://console.groq.com",
             "wikipedia": "https://de.wikipedia.org",
+            "hackerone": "https://hackerone.com",
+            "bugcrowd": "https://bugcrowd.com",
+            "yeswehack": "https://yeswehack.com",
+            "intigriti": "https://www.intigriti.com",
         }
         key = first.lower().split("/")[0]
         if key in known:
@@ -1883,6 +1916,16 @@ class IsaacKernel:
                     body = raw[len(prefix):].strip()
                     break
             if not body:
+                # Natural-language mission (gehe auf …, login bei …)
+                try:
+                    from execution_contract import detect_mission, mission_to_browser_parse
+                    spec = detect_mission(raw)
+                    if spec:
+                        parsed = mission_to_browser_parse(spec)
+                        if parsed:
+                            return parsed
+                except Exception as exc:
+                    log.debug("mission parse: %s", exc)
                 return None
 
         url_raw, user, password = self._split_browser_target_and_credentials(body)
@@ -1993,11 +2036,67 @@ class IsaacKernel:
             )
 
         if not self.cfg.browser_automation:
-            return (
-                "[Browser] Browser-Automation ist deaktiviert "
-                "(Free-Cloud / Runtime-Setting). "
-                "API-Keys bitte als Environment-Variablen setzen, nicht per Browser-Login."
+            try:
+                from execution_contract import format_evidence_block
+                msg = (
+                    "[Browser] Browser-Automation ist deaktiviert "
+                    "(Free-Cloud / Runtime-Setting). "
+                    "API-Keys bitte als Environment-Variablen setzen, nicht per Browser-Login.\n\n"
+                    + format_evidence_block(
+                        source="browser",
+                        ok=False,
+                        error="browser_automation disabled",
+                    )
+                )
+            except Exception:
+                msg = (
+                    "[Browser] Browser-Automation ist deaktiviert "
+                    "(Free-Cloud / Runtime-Setting). "
+                    "API-Keys bitte als Environment-Variablen setzen, nicht per Browser-Login."
+                )
+            try:
+                from owner_notify import (
+                    KIND_BROWSER_DISABLED,
+                    OwnerBlocker,
+                    notify_owner_blocker,
+                )
+                await notify_owner_blocker(
+                    OwnerBlocker(
+                        kind=KIND_BROWSER_DISABLED,
+                        title="Browser-Automation aus — Mission blockiert",
+                        detail="Owner-Imperativ braucht Browser; Runtime hat browser_automation=false.",
+                        need="enable_browser_or_local_runtime",
+                        source="browser_handler",
+                        cooldown_key="browser_disabled|handler",
+                    ),
+                )
+            except Exception as exc:
+                log.debug("owner_notify browser disabled: %s", exc)
+            return msg
+
+        # Mission accept + background enqueue (goal-bound) before / with first step
+        mission_header = ""
+        try:
+            from execution_contract import (
+                KIND_BOUNTY_RESEARCH,
+                detect_mission,
+                enqueue_mission_from_spec,
+                ensure_goal_for_mission,
+                format_mission_accept,
             )
+            mission_spec = detect_mission(text)
+            if mission_spec and (
+                mission_spec.wants_background
+                or mission_spec.kind == KIND_BOUNTY_RESEARCH
+            ):
+                goal_id = ensure_goal_for_mission(mission_spec)
+                stored = enqueue_mission_from_spec(mission_spec, goal_id=goal_id)
+                mission_header = format_mission_accept(
+                    mission_spec, mission_id=stored.id, goal_id=goal_id
+                ) + "\n\n"
+        except Exception as exc:
+            log.debug("mission enqueue: %s", exc)
+            mission_header = ""
 
         simple = self._parse_simple_browser_request(text)
         if simple:
@@ -2007,12 +2106,26 @@ class IsaacKernel:
                     from urllib.parse import urlparse
                     host = urlparse(simple["url"]).hostname or ""
                     if host:
+                        # Prefer accounts login URL for google-family hosts
+                        login_url = simple["url"]
+                        if "google" in host:
+                            login_url = "https://accounts.google.com/signin/v2/identifier"
+                            host = "accounts.google.com"
                         get_browser().add_credential(
                             host,
-                            simple["url"],
+                            login_url,
                             simple["login_user"],
                             simple["login_password"],
                         )
+                        # also store bare domain for auto-login matching
+                        bare = host.replace("www.", "")
+                        if bare != host:
+                            get_browser().add_credential(
+                                bare,
+                                login_url,
+                                simple["login_user"],
+                                simple["login_password"],
+                            )
                 except Exception as exc:
                     log.debug("Browser credential store skipped: %s", exc)
             actions = [{"action": "goto", "url": simple["url"]}]
@@ -2028,34 +2141,59 @@ class IsaacKernel:
                 actions,
                 name=simple.get("name") or "Quick Browse",
             )
+            try:
+                from execution_contract import format_evidence_block, redact_secrets
+            except Exception:
+                format_evidence_block = None
+                redact_secrets = lambda s: s  # noqa: E731
+
             if result.get("ok"):
                 excerpt = (result.get("memory") or {}).get("page_text", "")[:3500]
                 cred_note = ""
                 if simple.get("login_user"):
                     cred_note = (
                         f"\n(Credentials für {simple.get('login_user')} gespeichert; "
-                        "Auto-Login nur wenn Flow/Login-Aktion greift.)"
+                        "Auto-Login greift beim nächsten Flow auf dieser Domain.)"
                     )
+                if format_evidence_block:
+                    evidence = format_evidence_block(
+                        source="browser",
+                        ok=True,
+                        url=simple["url"],
+                        current_url=str(result.get("current_url", simple["url"])),
+                        steps=result.get("steps") or [],
+                        excerpt=excerpt or "(kein Seiteninhalt extrahiert)",
+                        extra_lines=[
+                            f"login_user_stored={'yes' if simple.get('login_user') else 'no'}",
+                        ],
+                    )
+                    return f"{mission_header}[Browser] Navigation OK\n{evidence}{cred_note}"
                 return (
-                    f"[Browser] {simple['url']}\n"
+                    f"{mission_header}[Browser] {simple['url']}\n"
                     f"Aktuelle URL: {result.get('current_url', simple['url'])}\n\n"
                     f"{excerpt or '(kein Seiteninhalt extrahiert)'}"
                     f"{cred_note}"
                 )
             err = str(result.get("error", "unbekannt"))
-            # Never echo passwords from failed goto URLs
-            err = re.sub(
-                r"(?i)(passwort|password|passwd|pass|pw)\s*:\s*\S+",
-                r"\1: ***",
-                err,
-            )
-            err = re.sub(
-                r"(?i)(login|user|username|email)\s*:\s*\S+",
-                r"\1: ***",
-                err,
-            )
+            if redact_secrets:
+                err = redact_secrets(err)
+            else:
+                err = re.sub(
+                    r"(?i)(passwort|password|passwd|pass|pw)\s*:\s*\S+",
+                    r"\1: ***",
+                    err,
+                )
+            if format_evidence_block:
+                evidence = format_evidence_block(
+                    source="browser",
+                    ok=False,
+                    url=simple["url"],
+                    current_url=str(result.get("current_url", simple["url"])),
+                    error=err,
+                )
+                return f"{mission_header}[Browser] Navigation fehlgeschlagen\n{evidence}"
             return (
-                f"[Browser] Navigation fehlgeschlagen: {err}\n"
+                f"{mission_header}[Browser] Navigation fehlgeschlagen: {err}\n"
                 f"URL: {result.get('current_url', simple['url'])}"
             )
 
@@ -2065,7 +2203,9 @@ class IsaacKernel:
             return (
                 "[Browser] Ungültiger Browser-Befehl.\n"
                 "Format: browser: INSTANCE_ID | URL | click Settings; wait 1; extract #token -> token\n"
-                f"Fehler: {e}"
+                f"Fehler: {e}\n"
+                "Oder natürliche Mission: „Gehe auf hackerone …“ / "
+                "„Log dich bei Google ein login: … passwort: …“"
             )
 
         result = await get_browser().run_flow(
@@ -2074,15 +2214,41 @@ class IsaacKernel:
             spec["actions"],
             name=spec.get("name") or spec["instance_id"],
         )
+        try:
+            from execution_contract import format_evidence_block
+        except Exception:
+            format_evidence_block = None
         if result.get("ok"):
+            if format_evidence_block:
+                evidence = format_evidence_block(
+                    source="browser_flow",
+                    ok=True,
+                    url=spec.get("url") or "",
+                    current_url=str(result.get("current_url") or ""),
+                    steps=result.get("steps") or [],
+                    extra_lines=[
+                        f"instance={result.get('instance_id')}",
+                        f"memory_keys={list((result.get('memory') or {}).keys())}",
+                    ],
+                )
+                return f"{mission_header}[Browser] Flow abgeschlossen\n{evidence}"
             return (
-                f"[Browser] Flow abgeschlossen: {result.get('instance_id')}\n"
+                f"{mission_header}[Browser] Flow abgeschlossen: {result.get('instance_id')}\n"
                 f"URL: {result.get('current_url')}\n"
                 f"Steps: {len(result.get('steps') or [])}\n"
                 f"Memory: {list((result.get('memory') or {}).keys())}"
             )
+        if format_evidence_block:
+            evidence = format_evidence_block(
+                source="browser_flow",
+                ok=False,
+                url=spec.get("url") or "",
+                current_url=str(result.get("current_url") or "-"),
+                error=str(result.get("error", "unbekannt")),
+            )
+            return f"{mission_header}[Browser] Flow fehlgeschlagen\n{evidence}"
         return (
-            f"[Browser] Flow fehlgeschlagen: {result.get('error', 'unbekannt')}\n"
+            f"{mission_header}[Browser] Flow fehlgeschlagen: {result.get('error', 'unbekannt')}\n"
             f"URL: {result.get('current_url', '-')}"
         )
 
@@ -3444,6 +3610,13 @@ class IsaacKernel:
         if strategy_note:
             basis += f"\n{strategy_note}"
 
+        # Execution Contract: never invent tool/browser success
+        try:
+            from execution_contract import anti_hallucination_system_note
+            basis += f"\n{anti_hallucination_system_note()}\n"
+        except Exception:
+            pass
+
         cfg = getattr(self, "cfg", None) or get_config()
         if cfg.style_mode == "professional" or _free:
             basis += (
@@ -3492,9 +3665,15 @@ async def main():
     try:
         from secrets_bootstrap import bootstrap_secrets
         from tool_bridge import ensure_bridge_tools_registered
+        from tool_catalog import ensure_catalog_tools_registered
 
         bootstrap_secrets()
         ensure_bridge_tools_registered()
+        added = ensure_catalog_tools_registered(bundle_id="professional_core")
+        if added:
+            logging.getLogger("Isaac").info(
+                "Catalog tools registered: %s", len(added)
+            )
     except Exception as e:
         logging.getLogger("Isaac").warning("Secrets/tool-bridge bootstrap skipped: %s", e)
 

@@ -1,6 +1,8 @@
 # Isaac auf iPad (a-Shell) + S8 Termux/NetHunter
 
-Zielbild: **iPad Air M3 = Konsole / Rechen-Workflow**, **S8 = Gerätekörper**, **Render = immer erreichbarer Chat**, **Cognee = gemeinsames Memory**.
+Zielbild (Hybrid): **iPad Air M3 = Konsole / Rechen-Workflow**, **S8 = Gerätekörper**, **Render = immer erreichbarer Chat**, **Cognee = gemeinsames Memory**.
+
+Zielbild (**alles iPad**, inkl. lokales LLM): siehe [Lokales LLM / „Ollama“ auf dem iPad](#lokales-llm--ollama-auf-dem-ipad).
 
 ## Was realistisch ist
 
@@ -10,8 +12,9 @@ Zielbild: **iPad Air M3 = Konsole / Rechen-Workflow**, **S8 = Gerätekörper**, 
 | Optional: Kernel **im Vordergrund** | NetHunter / Netzwerk-Tools | LLM-APIs (Groq, OpenRouter, …) |
 | Git, Python-Skripte, `gh` (wenn lauffähig) | Längerer Background / wake-lock | Copilot Cloud Agent Tasks |
 | Grok **Web/App** als schwerer Agent | Owner-Filesystem am Phone | Sentry |
+| **Lokales LLM** via iOS-Server-App (Ollama-API / OpenAI-Compat) | Ollama in Termux oft zu langsam/RAM-eng | — |
 
-**Nicht erwarten:** 24/7-Daemon nur in a-Shell, NetHunter auf iOS, großes Offline-LLM auf dem iPad.
+**Nicht erwarten:** offizielles Ollama-Binary in a-Shell, 24/7-Daemon nur unter iOS, NetHunter auf iPad, 70B-Modelle.
 
 ---
 
@@ -92,12 +95,110 @@ Safari (auf dem iPad): http://127.0.0.1:8766
 
 ---
 
+## Lokales LLM / „Ollama“ auf dem iPad
+
+### Harte Grenze
+
+| | |
+|--|--|
+| Offizielles **Ollama** (ollama.com) auf iPadOS | **Nein** — kein iPad-Build; Metal/MLX-Ollama = **macOS** |
+| Ollama-Binary in **a-Shell** | **Praktisch nein** |
+| **Lokale** Inferenz auf M3 | **Ja** — über **iOS-Apps** mit lokalem HTTP-Server |
+| Isaac anbinden | **Ja** — Provider `ollama` oder `local` → `127.0.0.1` |
+
+„Ollama auf dem iPad“ = **App mit Ollama-kompatibler oder OpenAI-kompatibler API**, die das M3 nutzt — nicht `curl | sh` von ollama.com.
+
+S8 ist für schwere lokale Modelle oft zu schwach; der **Air M3** ist die bessere On-Device-Inferenz-Plattform **über eine LLM-Server-App**, nicht über Termux-Ollama.
+
+### Zielbild „alles iPad“
+
+```text
+[iOS Local-LLM-App :11434 oder :PORT]
+         ▲
+         │ HTTP localhost
+[Isaac in a-Shell] ──► Safari http://127.0.0.1:8766
+[Grok Web/App]         (schwere Agenten-Dialoge)
+```
+
+Beide Apps (LLM-Server + a-Shell) müssen **aktiv** sein; iOS beendet Background-Prozesse.
+
+### S0 — Local-Server-App wählen und testen
+
+1. App installieren, die **lokal** serviert (Beispiele im Ökosystem: Apps mit „Ollama-style API“ / Local LLM Server; GGUF-Apps mit API — **selbst prüfen**, Port und API-Typ in der App-Doku).
+2. Kleines Modell laden (z. B. 1B–3B quantisiert).
+3. In a-Shell erreichbarkeit testen:
+
+```bash
+# Ollama-API?
+curl -s http://127.0.0.1:11434/api/tags
+# oder OpenAI-Compat?
+curl -s http://127.0.0.1:PORT/v1/models
+```
+
+Notiere: **Port**, **API-Typ** (Ollama vs OpenAI), **Model-Name**.
+
+### S1 — Isaac auf Local-App zeigen
+
+Env-Vorlage im Repo: [`deploy/ipad/isaac-ipad-local.env.example`](../deploy/ipad/isaac-ipad-local.env.example)
+
+**A) App spricht Ollama-API (`/api/chat`, `/api/tags`):**
+
+```bash
+ACTIVE_PROVIDER=ollama
+OLLAMA_HOST=http://127.0.0.1:11434
+OLLAMA_MODEL=phi3:mini          # exakter Name aus der App /api/tags
+ISAAC_DISABLE_VECTOR_MEMORY=1
+ISAAC_BIND_HOST=127.0.0.1
+```
+
+**B) App spricht OpenAI Chat Completions:**
+
+```bash
+ACTIVE_PROVIDER=local
+LOCAL_LLM_ENABLED=1
+ISAAC_ALLOW_LOCAL_LLM=1
+LOCAL_LLM_BASE_URL=http://127.0.0.1:PORT/v1/chat/completions
+LOCAL_LLM_MODEL=mein-modell     # exakt wie /v1/models
+LOCAL_LLM_TIMEOUT=300
+ISAAC_DISABLE_VECTOR_MEMORY=1
+ISAAC_BIND_HOST=127.0.0.1
+```
+
+Start wie Stufe B; dann:
+
+1. Local-LLM-App starten + Modell laden  
+2. a-Shell: Isaac starten  
+3. Safari: Dashboard  
+4. `Hallo Isaac` (lokal, kein LLM)  
+5. `Was ist 2+2?` (soll über local/ollama laufen)  
+6. `status:pipeline` → Zeile **Local LLM** / Ollama erreichbar  
+
+Siehe auch [LOCAL_LLM.md](LOCAL_LLM.md).
+
+### Modellgröße (Richtwert Air M3)
+
+| RAM-Klasse | Sinnvoller Start |
+|------------|------------------|
+| 8 GB | 1B–3B Q4 |
+| 12 GB+ | 3B–7B Q4, vors |
+
+Bei OOM: kleineres Modell / stärkere Quantisierung.
+
+### S8 und Ollama
+
+- **LLM:** iPad (App), nicht S8  
+- **S8:** optional nur Device/NetHunter, oder aus LLM-Pfaden streichen  
+- Termux-Ollama auf S8 nur als Notlösung  
+
+---
+
 ## Stufe C — Agenten „wie Grok“
 
 | Weg | Empfehlung |
 |-----|------------|
 | Schwere Dialoge / Planung | **Grok Web oder App** auf dem iPad |
-| Isaac + Tools auf Render | Safari → Render |
+| Lokale / private Inferenz | Local-LLM-App + Isaac (oben) |
+| Isaac + Tools auf Render | Safari → Render (Fallback wenn iPad-Session tot) |
 | Repo-PRs | GitHub im Browser oder CCA (Cloud Agent), nicht NetHunter |
 | Optional CLI in a-Shell | nur wenn `node`/`grok`/`gh` installierbar und stabil |
 
@@ -144,6 +245,9 @@ Sentry      → Fehler
 
 - [ISAAC_REMOTE.md](ISAAC_REMOTE.md) — `cloud:` / `both:` Fleet  
 - [FREE_HOSTING.md](FREE_HOSTING.md) — Render Free  
+- [LOCAL_LLM.md](LOCAL_LLM.md) — Provider `local` / Ollama  
 - [OWNER_COMMANDS.md](OWNER_COMMANDS.md) — Termux/S8  
 - [AUTOMATION_PIPELINE.md](AUTOMATION_PIPELINE.md) — `status:pipeline`  
 - [COPILOT_AGENT.md](COPILOT_AGENT.md) / [GROK_AGENT.md](GROK_AGENT.md) — Companions  
+- Env-Beispiel: [`deploy/ipad/isaac-ipad-local.env.example`](../deploy/ipad/isaac-ipad-local.env.example)  
+

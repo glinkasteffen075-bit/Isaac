@@ -105,6 +105,23 @@ class TestWeatherSearchHelpers(unittest.TestCase):
         )
         self.assertEqual(intent, Intent.SEARCH)
 
+    def test_api_keys_query_not_weather_even_with_retrieval_blob(self):
+        """Regression: polluted task.prompt must not trigger weather_api path."""
+        from executor import Task, TaskType
+
+        user = "Okay zeig mir die Google api keys"
+        blob = (
+            "[active_directives]\n  - prio=9: API-Keys über Browser\n"
+            "[relevant_procedures]\n  - tools=owner:weather Open-Meteo\n\n"
+            f"{user}"
+        )
+        task = Task(id="w1", typ=TaskType.SEARCH, prompt=blob, beschreibung=user)
+        q = task.execution_query()
+        self.assertEqual(q, user)
+        self.assertFalse(looks_like_weather_query(q))
+        # Weather markers only in retrieval, not owner query
+        self.assertTrue(looks_like_weather_query(blob))
+
     def test_regelwerk_skips_german_nouns_and_places(self):
         from regelwerk import Regelwerk
         rw = Regelwerk.__new__(Regelwerk)

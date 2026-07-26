@@ -290,6 +290,126 @@ class TestCriticalBugs(unittest.TestCase):
         parsed = self.kernel._parse_simple_browser_request("Browser auf GitHub")
         self.assertEqual(parsed["url"], "https://github.com")
 
+    def test_bug_browser_without_colon_is_browser_request(self):
+        """'Browser host …' without colon must not fall through to search."""
+        text = "Browser isaac-free.onrender.com kannst du die Seite bedienen?"
+        self.assertTrue(self.kernel._is_browser_request(text))
+        parsed = self.kernel._parse_simple_browser_request(text)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["url"], "https://isaac-free.onrender.com")
+        self.assertIsNone(parsed.get("login_user"))
+
+    def test_bug_browser_url_strips_login_credentials(self):
+        """Credentials must not become part of Page.goto URL."""
+        text = (
+            "Browser: www.google.de login: user@example.com "
+            "passwort: secret123  Kannst du dich einloggen?"
+        )
+        self.assertTrue(self.kernel._is_browser_request(text))
+        parsed = self.kernel._parse_simple_browser_request(text)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["url"], "https://www.google.de")
+        self.assertEqual(parsed.get("login_user"), "user@example.com")
+        self.assertEqual(parsed.get("login_password"), "secret123")
+        self.assertNotIn("login", parsed["url"])
+        self.assertNotIn("secret", parsed["url"])
+
+    def test_bug_execution_query_ignores_retrieval_weather_procedure(self):
+        """Search/tools must use owner line, not retrieval mashup with weather procedure."""
+        from executor import Task, TaskType
+
+        user = "Okay zeig mir die Google api keys"
+        retrieval = (
+            "[active_directives]\n  - prio=9: Provider-API-Keys\n"
+            "[relevant_procedures]\n  - rel=1.00 owner_action tools=owner:weather\n\n"
+            f"{user}"
+        )
+        task = Task(
+            id="t-exec-q",
+            typ=TaskType.SEARCH,
+            prompt=retrieval,
+            beschreibung=user,
+        )
+        self.assertEqual(task.execution_query(), user)
+        self.assertNotIn("weather", task.execution_query().lower())
+        self.assertNotIn("[active_directives]", task.execution_query())
+
+    def test_bug_quality_short_answers_acceptable(self):
+        """Short Q&A and owner short-style must not force 80/200-word follow-ups."""
+        from logic import QualityEvaluator, FollowUpGenerator, prefers_short_answers
+
+        self.assertTrue(prefers_short_answers("Was ist 2+2?"))
+        self.assertTrue(
+            prefers_short_answers(
+                "[Antwortstil] Bleibe knapp, direkt und rein sachlich.\n\nWas ist 2+2?"
+            )
+        )
+        ev = QualityEvaluator()
+        ans = "2+2 ist 4."
+        score = ev.evaluate(ans, "Was ist 2+2?")
+        self.assertTrue(
+            score.acceptable,
+            f"short answer should pass quality, got {score.summary()} issues={score.issues}",
+        )
+        d = FollowUpGenerator(ev).decide(ans, "Was ist 2+2?", score, 0, "openrouter")
+        self.assertFalse(d.needed, f"no follow-up expected, got {d}")
+
+        mid = (
+            "Nein. Ich habe nur die Dashboard-Seite gelesen und nichts in den "
+            "Remote-Chat geschrieben."
+        )
+        s2 = ev.evaluate(mid, "Hast du dort in den Chat etwas geschrieben?")
+        self.assertTrue(s2.acceptable, f"got {s2.summary()} issues={s2.issues}")
+        d2 = FollowUpGenerator(ev).decide(
+            mid, "Hast du dort in den Chat etwas geschrieben?", s2, 0, "openrouter"
+        )
+        self.assertFalse(d2.needed)
+
+    def test_bug_followup_switch_only_when_critical(self):
+        """Provider switch only on critically bad scores — not every weak answer."""
+        from logic import FollowUpGenerator, QualityEvaluator, QualityScore
+
+        ev = QualityEvaluator()
+        gen = FollowUpGenerator(ev)
+        # Moderately weak but not critical — rephrase/targeted, no switch
+        weak = QualityScore(
+            total=4.8, length=5.0, coverage=4.0, specificity=5.0, coherence=5.0,
+            word_count=40, issues=["Schlüsselthemen nicht vollständig abgedeckt"],
+        )
+        d = gen.decide("etwas vage antwort hier mit ein paar woertern", "Erkläre Quantencomputing ausführlich bitte mit Kontext", weak, 0, "openrouter")
+        self.assertTrue(d.needed)
+        self.assertFalse(d.switch_provider, f"unexpected switch: {d}")
+        # Critically bad → switch
+        bad = QualityScore(
+            total=1.2, length=0.0, coverage=0.0, specificity=0.0, coherence=0.0,
+            word_count=2, issues=["Zu kurz: 2/80 Wörter"],
+        )
+        d2 = gen.decide("ok", "Erkläre die Geschichte der Schrift ausführlich", bad, 0, "openrouter")
+        self.assertTrue(d2.needed)
+        self.assertTrue(d2.switch_provider)
+
+    def test_bug_followup_provider_skips_cold_ollama(self):
+        """Follow-up must not prefer never-succeeded Ollama over cloud keys."""
+        from executor import Executor
+        from relay import ProviderHealth
+
+        ex = Executor()
+        prev = ex.relay._health.get("ollama")
+        try:
+            # Simulate ollama present but never healthy this process
+            cold = ProviderHealth()
+            cold.consecutive_failures = 3
+            cold.failure_count = 5
+            cold.success_count = 0
+            cold.last_error = "nicht erreichbar"
+            ex.relay._health["ollama"] = cold
+            self.assertFalse(ex._provider_looks_online("ollama"))
+        finally:
+            if prev is None:
+                ex.relay._health.pop("ollama", None)
+            else:
+                ex.relay._health["ollama"] = prev
+
     def test_capability_recherche_maps_to_research_intent(self):
         intent = self.kernel._resolve_intent_from_classification(
             "recherche: aktuelle KI Sicherheitsstandards",

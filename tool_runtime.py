@@ -26,7 +26,9 @@ CATEGORY_HINTS = {
     "search": "suche",
     "internet": "suche",
     "recherche": "suche",
-    "browser": "suche",
+    # Browser is kernel-owned; do not map to generic web-search tools
+    # (that pulled Open-Meteo / Wikipedia for "Browser …" prompts).
+    "browser": "browser",
     "web": "suche",
     "code": "code",
     "python": "code",

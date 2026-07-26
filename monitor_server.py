@@ -448,6 +448,10 @@ class MonitorServer:
             "goals":       goals_extra.get("goals") or {},
             "missions":    goals_extra.get("missions") or {},
             "remote_smoke": goals_extra.get("remote_smoke") or {},
+            "background":  (
+                (now_snap.get("background") if isinstance(now_snap, dict) else None)
+                or {}
+            ),
         }
 
     def _get_directives(self) -> list[dict]:

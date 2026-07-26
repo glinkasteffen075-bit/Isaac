@@ -7,15 +7,38 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-:root{
-  --bg-0:#0a0b0e;--bg-1:#12141a;--bg-2:#1a1d26;--bg-3:#222632;
-  --line:#2e3444;--line-hot:#3d465c;--text:#e9ecf1;--muted:#9aa3b5;--dim:#6b7385;
-  --rot:#e85d4c;--blau:#4c8dde;--gruen:#3ecf8e;
-  --owner:#d4a24c;--isaac:#2eb8a6;--warn:#e6b84d;--danger:#e85d6a;--info:#6b9fff;
+/* Theme tokens — switch via data-theme on <html> */
+:root, html[data-theme="plasma"]{
+  --bg-0:#0b0d10;--bg-1:#12161c;--bg-2:#181e27;--bg-3:#1f2633;
+  --line:#273140;--line-hot:#3a465c;--text:#e9eef5;--muted:#9aabc0;--dim:#6b7a90;
+  --rot:#ff5c5c;--blau:#5b9dff;--gruen:#3dd68c;
+  --owner:#ffb020;--isaac:#40e0ff;--warn:#ffc14d;--danger:#ff5c7a;--info:#6bb0ff;
+  --isaac-soft:rgba(64,224,255,.14);--owner-soft:rgba(255,176,32,.14);
   --radius:14px;--radius-sm:10px;
   --font:"IBM Plex Sans",system-ui,sans-serif;
   --mono:"IBM Plex Mono",ui-monospace,monospace;
   --shadow:0 12px 40px rgba(0,0,0,.45);
+}
+html[data-theme="violet"]{
+  --bg-0:#0c0a10;--bg-1:#14111c;--bg-2:#1c1828;--bg-3:#252035;
+  --line:#342f48;--line-hot:#4a4266;--text:#f0ecf8;--muted:#a89bb8;--dim:#7a6f90;
+  --rot:#f87171;--blau:#60a5fa;--gruen:#34d399;
+  --owner:#f0abfc;--isaac:#a78bfa;--warn:#fbbf24;--danger:#fb7185;--info:#818cf8;
+  --isaac-soft:rgba(167,139,250,.16);--owner-soft:rgba(240,171,252,.14);
+}
+html[data-theme="ember"]{
+  --bg-0:#100e0c;--bg-1:#1a1612;--bg-2:#241f18;--bg-3:#2e271e;
+  --line:#3d3428;--line-hot:#564836;--text:#f5efe6;--muted:#b5a894;--dim:#857864;
+  --rot:#e85d4c;--blau:#6ba3d6;--gruen:#6bcf8e;
+  --owner:#f5d08a;--isaac:#e8a45a;--warn:#f0c14d;--danger:#e85d6a;--info:#8ab4d9;
+  --isaac-soft:rgba(232,164,90,.16);--owner-soft:rgba(245,208,138,.14);
+}
+html[data-theme="contrast"]{
+  --bg-0:#0a0b0e;--bg-1:#12141a;--bg-2:#1a1d26;--bg-3:#222632;
+  --line:#2e3444;--line-hot:#3d465c;--text:#f2f4f8;--muted:#a8b0c0;--dim:#7a8499;
+  --rot:#e85d4c;--blau:#4c8dde;--gruen:#3ecf8e;
+  --owner:#f0b429;--isaac:#3ee0cc;--warn:#e6b84d;--danger:#e85d6a;--info:#6b9fff;
+  --isaac-soft:rgba(62,224,204,.14);--owner-soft:rgba(240,180,41,.14);
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
@@ -23,8 +46,8 @@ body.dash{
   height:100dvh;overflow:hidden;display:flex;flex-direction:column;
   font-family:var(--font);color:var(--text);
   background:
-    radial-gradient(ellipse 80% 50% at 10% -10%,rgba(46,184,166,.08),transparent 50%),
-    radial-gradient(ellipse 60% 40% at 100% 0%,rgba(212,162,76,.06),transparent 45%),
+    radial-gradient(ellipse 80% 50% at 10% -10%,var(--isaac-soft),transparent 50%),
+    radial-gradient(ellipse 60% 40% at 100% 0%,var(--owner-soft),transparent 45%),
     var(--bg-0);
 }
 button,input,textarea,select{font:inherit;color:inherit}
@@ -47,19 +70,19 @@ input:focus,textarea:focus{outline:1px solid var(--isaac);border-color:var(--isa
 .brand h1{font-size:.95rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--isaac)}
 .brand small{display:block;color:var(--muted);font-size:.75rem;font-weight:400;letter-spacing:0}
 .dot{width:10px;height:10px;border-radius:50%;background:var(--dim);flex-shrink:0}
-.dot.on{background:var(--gruen);box-shadow:0 0 12px rgba(62,207,142,.55)}
+.dot.on{background:var(--gruen);box-shadow:0 0 12px color-mix(in srgb, var(--gruen) 55%, transparent)}
 .dot.boot{background:var(--warn);animation:pulse 1.2s infinite}
 .dot.err{background:var(--danger);animation:pulse .7s infinite}
 @keyframes pulse{50%{opacity:.5}}
 .mode-tog{display:flex;border:1px solid var(--line);border-radius:999px;overflow:hidden}
 .mode-tog button{padding:.4rem .75rem;font-size:.78rem;color:var(--muted)}
-.mode-tog button.active{background:rgba(46,184,166,.15);color:var(--isaac)}
+.mode-tog button.active{background:var(--isaac-soft);color:var(--isaac)}
 .h-actions{margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .chip{
   display:inline-flex;align-items:center;gap:6px;padding:.28rem .55rem;border-radius:999px;
   border:1px solid var(--line);font-size:.72rem;color:var(--muted);background:rgba(0,0,0,.25)
 }
-.chip.hot{border-color:rgba(46,184,166,.4);color:var(--isaac)}
+.chip.hot{border-color:color-mix(in srgb, var(--isaac) 45%, transparent);color:var(--isaac)}
 .chip.warn{border-color:rgba(230,184,77,.4);color:var(--warn)}
 .btn{
   padding:.45rem .75rem;border-radius:var(--radius-sm);border:1px solid var(--line-hot);
@@ -67,12 +90,17 @@ input:focus,textarea:focus{outline:1px solid var(--isaac);border-color:var(--isa
 }
 .btn:hover{border-color:var(--isaac);color:var(--isaac)}
 .btn.danger{border-color:rgba(232,93,106,.45);color:var(--danger)}
-.btn.primary{background:rgba(46,184,166,.12);border-color:rgba(46,184,166,.4);color:var(--isaac)}
+.btn.primary{background:var(--isaac-soft);border-color:color-mix(in srgb, var(--isaac) 45%, transparent);color:var(--isaac)}
 .clock{font-family:var(--mono);font-size:.75rem;color:var(--dim)}
+
+.theme-tog{display:flex;border:1px solid var(--line);border-radius:999px;overflow:hidden;max-width:100%;flex-wrap:wrap}
+.theme-tog button{padding:.35rem .55rem;font-size:.68rem;color:var(--muted);text-transform:capitalize}
+.theme-tog button.active{background:var(--isaac-soft);color:var(--isaac)}
+
 /* NOW */
 .now{
   flex:0 0 auto;border:1px solid var(--line);border-radius:var(--radius);
-  background:linear-gradient(135deg,rgba(26,29,38,.95),rgba(18,20,26,.98));
+  background:linear-gradient(135deg,color-mix(in srgb, var(--bg-2) 95%, transparent),color-mix(in srgb, var(--bg-1) 98%, transparent));
   padding:12px 14px;box-shadow:var(--shadow)
 }
 .now-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}
@@ -91,7 +119,7 @@ input:focus,textarea:focus{outline:1px solid var(--isaac);border-color:var(--isa
   background:var(--dim);border:2px solid var(--bg-1)
 }
 .phase.done .phase-node{background:var(--gruen)}
-.phase.active .phase-node{background:var(--isaac);box-shadow:0 0 14px rgba(46,184,166,.7);animation:pulse 1.8s infinite}
+.phase.active .phase-node{background:var(--isaac);box-shadow:0 0 14px color-mix(in srgb, var(--isaac) 70%, transparent);animation:pulse 1.8s infinite}
 .phase.blocked .phase-node{background:var(--danger)}
 .phase-label{font-size:.62rem;text-transform:uppercase;letter-spacing:.06em;color:var(--dim)}
 .phase.active .phase-label{color:var(--isaac)}
@@ -114,7 +142,7 @@ body.focus .kpi-focus{display:grid}
   display:flex;flex-direction:column;align-items:center;gap:3px;padding:10px 4px;
   border-radius:var(--radius-sm);color:var(--muted);font-size:.62rem;letter-spacing:.02em
 }
-.nav button:hover,.nav button.active{background:rgba(46,184,166,.1);color:var(--isaac)}
+.nav button:hover,.nav button.active{background:var(--isaac-soft);color:var(--isaac)}
 .nav button .ico{font-size:1.05rem;line-height:1}
 /* Stage */
 .stage-wrap{
@@ -136,8 +164,8 @@ body.focus .kpi-focus{display:grid}
 .chat-bar h2{font-size:.82rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
 .msgs{flex:1;min-height:0;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px;overscroll-behavior:contain}
 .msg{max-width:95%;padding:10px 12px;border-radius:12px;font-size:.88rem;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
-.msg.steffen{align-self:flex-end;background:rgba(212,162,76,.12);border:1px solid rgba(212,162,76,.35)}
-.msg.isaac{align-self:flex-start;background:rgba(46,184,166,.1);border:1px solid rgba(46,184,166,.3)}
+.msg.steffen{align-self:flex-end;background:var(--owner-soft);border:1px solid color-mix(in srgb, var(--owner) 40%, transparent)}
+.msg.isaac{align-self:flex-start;background:var(--isaac-soft);border:1px solid color-mix(in srgb, var(--isaac) 35%, transparent)}
 .msg.sys{align-self:center;background:transparent;color:var(--dim);font-size:.75rem;border:none;padding:4px}
 .msg .who{font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-bottom:4px;font-family:var(--mono)}
 .composer{flex:0 0 auto;padding:10px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:8px}
@@ -166,7 +194,7 @@ body.focus .kpi-focus{display:grid}
 .filters button{
   padding:.35rem .65rem;border-radius:999px;border:1px solid var(--line);font-size:.75rem;color:var(--muted)
 }
-.filters button.active{border-color:var(--isaac);color:var(--isaac);background:rgba(46,184,166,.1)}
+.filters button.active{border-color:var(--isaac);color:var(--isaac);background:var(--isaac-soft)}
 /* Tasks */
 .task{
   border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--bg-0);
@@ -210,7 +238,7 @@ body.focus .kpi-focus{display:grid}
 /* Providers */
 .prov-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
 .prov{padding:12px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--bg-0)}
-.prov.primary{outline:1px solid rgba(46,184,166,.4)}
+.prov.primary{outline:1px solid color-mix(in srgb, var(--isaac) 45%, transparent)}
 /* Log */
 .log-row{display:grid;grid-template-columns:64px 100px 1fr;gap:8px;font-size:.75rem;padding:6px 0;border-bottom:1px solid rgba(46,52,68,.4);font-family:var(--mono)}
 .log-row .ts{color:var(--dim)}
@@ -247,6 +275,12 @@ body.focus .kpi-focus{display:grid}
     <div class="mode-tog" role="group" aria-label="Ansicht">
       <button type="button" id="mode-focus" onclick="setMode('focus')">Focus</button>
       <button type="button" id="mode-cockpit" class="active" onclick="setMode('cockpit')">Cockpit</button>
+    </div>
+    <div class="theme-tog" role="group" aria-label="Farbschema" id="theme-tog">
+      <button type="button" data-theme="plasma" onclick="setTheme('plasma')">Cyan</button>
+      <button type="button" data-theme="violet" onclick="setTheme('violet')">Violet</button>
+      <button type="button" data-theme="ember" onclick="setTheme('ember')">Ember</button>
+      <button type="button" data-theme="contrast" onclick="setTheme('contrast')">Contrast</button>
     </div>
     <span class="chip" id="sys-chip">…</span>
     <span class="chip hot" id="prov-chip" title="Primary provider">–</span>
@@ -331,6 +365,7 @@ const NAV = [
 
 const S = {
   mode: localStorage.getItem('isaac.dash.mode') || 'cockpit',
+  theme: localStorage.getItem('isaac.dash.theme') || 'plasma',
   nav: localStorage.getItem('isaac.dash.nav') || 'overview',
   online: false,
   paused: false,
@@ -356,6 +391,18 @@ function nowClock(){
   $('clock').textContent=d.toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 setInterval(nowClock,1000); nowClock();
+
+
+function setTheme(name){
+  const allowed=['plasma','violet','ember','contrast'];
+  if(!allowed.includes(name)) name='plasma';
+  S.theme=name;
+  localStorage.setItem('isaac.dash.theme', name);
+  document.documentElement.setAttribute('data-theme', name);
+  document.querySelectorAll('#theme-tog button').forEach(b=>{
+    b.classList.toggle('active', b.dataset.theme===name);
+  });
+}
 
 function setMode(m){
   S.mode=m; localStorage.setItem('isaac.dash.mode',m);
@@ -653,7 +700,28 @@ function renderOps(){
   const sm=S.state.remote_smoke||{};
   const set=S.state.settings||{};
   const n=S.now||{};
+  const bg=S.state.background||n.background||{};
+  const flags={
+    remote_smoke: sm.enabled,
+    goal_ticks: bg.goal_autonomy_ticks,
+    mission_ticks: bg.mission_ticks,
+    smoke_ticks: bg.remote_smoke_ticks,
+    zyklen: bg.zyklen,
+    running: bg.running,
+  };
   return `
+    <div class="card"><h3>Hintergrund-Automation</h3>
+      <div class="metric"><span>BackgroundLoop</span><span>${bg.running?'läuft':'?'}</span></div>
+      <div class="metric"><span>Zyklen</span><span class="mono">${esc(bg.zyklen??'—')}</span></div>
+      <div class="metric"><span>Goal-Autonomie ticks</span><span class="mono">${esc(bg.goal_autonomy_ticks??0)}</span></div>
+      <div class="metric"><span>Mission ticks</span><span class="mono">${esc(bg.mission_ticks??0)}</span></div>
+      <div class="metric"><span>Remote-smoke ticks (lokal)</span><span class="mono">${esc(bg.remote_smoke_ticks??0)}</span></div>
+      <div class="metric"><span>ISAAC_REMOTE_SMOKE</span><span>${sm.enabled?'an':'aus'}</span></div>
+      <p style="font-size:.72rem;color:var(--dim);margin-top:8px;line-height:1.4">
+        Idle-Ticks sind normal ohne Ziele/Missionen. Keep-alive Free: <code>ISAAC_REMOTE_SMOKE=1</code> auf immer-an Host.
+        Cognee periodisch: <code>ISAAC_AUTO_PIPELINE=1</code>. Ziele: Chat <code>Ziel: …</code>
+      </p>
+    </div>
     <div class="card"><h3>Deploy / Runtime</h3>
       <div class="metric"><span>Active provider</span><span>${esc(set.active_provider||n.provider||'—')}</span></div>
       <div class="metric"><span>Browser automation</span><span>${set.browser_automation?'an':'aus'}</span></div>
@@ -661,16 +729,16 @@ function renderOps(){
       <div class="metric"><span>Dashboard port</span><span>${esc(set.dashboard_port??'—')}</span></div>
     </div>
     <div class="card"><h3>Remote Smoke (Anti-Sleep)</h3>
-      <div class="metric"><span>Enabled</span><span>${sm.enabled?'ja':'nein'}</span></div>
+      <div class="metric"><span>Enabled (local flag)</span><span>${sm.enabled?'ja':'nein'}</span></div>
       <div class="metric"><span>Wake interval</span><span>${esc(sm.wake_interval_s??'—')}s (sleep≈900s)</span></div>
       <div class="metric"><span>Last ok</span><span>${sm.last_ok==null?'–':sm.last_ok?'ok':'fail'}</span></div>
       <div class="metric"><span>Last commit</span><span class="mono">${esc(sm.last_commit||'—')}</span></div>
       <div class="metric"><span>Wake / Full counts</span><span>${esc(sm.wake_count??0)} / ${esc(sm.full_count??0)}</span></div>
     </div>
-    <div class="card"><h3>Background</h3>
-      <pre style="font-size:.72rem;font-family:var(--mono);color:var(--muted);white-space:pre-wrap">${esc(JSON.stringify(n.background||{},null,2).slice(0,600))}</pre>
+    <div class="card"><h3>Background raw</h3>
+      <pre style="font-size:.72rem;font-family:var(--mono);color:var(--muted);white-space:pre-wrap">${esc(JSON.stringify(bg,null,2).slice(0,800))}</pre>
     </div>
-    <p style="font-size:.78rem;color:var(--dim)">Chat: <code>status:pipeline</code> · <code>status:smoke full</code></p>`;
+    <p style="font-size:.78rem;color:var(--dim)">Chat: <code>status:pipeline</code> · <code>status:smoke full</code> · <code>ziele</code></p>`;
 }
 
 function renderAudit(){
@@ -843,6 +911,7 @@ async function connect(){
 /* boot */
 buildNav();
 setMode(S.mode);
+setTheme(S.theme);
 setNav(S.nav);
 PHASES.forEach(()=>{}); // warm
 renderNow();

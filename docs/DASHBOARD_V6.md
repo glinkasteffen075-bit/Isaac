@@ -32,3 +32,24 @@ Shell `100dvh`, Stage + Chat + Nav: `min-height:0` + `overflow-y:auto`.
 
 Lokal: Dashboard-Port (default 8766) oder unified Free `/`.  
 Toggle Focus/Cockpit speichert in `localStorage`.
+
+### Farbschemas (Header)
+
+| Button | Theme | Charakter |
+|--------|--------|-----------|
+| Cyan | `plasma` (Default) | Electric cyan / Ops (Grafana-inspiriert) |
+| Violet | `violet` | Soft violet (Linear/Raycast-inspiriert) |
+| Ember | `ember` | Kupfer/warm dark |
+| Contrast | `contrast` | Höherer Textkontrast, klassisch |
+
+Gespeichert: `localStorage isaac.dash.theme`.
+
+### Hintergrund-Automation (Ops-Panel)
+
+Zeigt BackgroundLoop-Zyklen, Goal-/Mission-/Smoke-Ticks und Flag-Hinweise:
+
+```bash
+ISAAC_REMOTE_SMOKE=1      # Free keep-alive vom immer-an Host
+ISAAC_AUTO_PIPELINE=1     # Ops→Cognee periodisch
+ISAAC_GOAL_AUTONOMY=1     # default an — braucht Ziele im Chat
+```

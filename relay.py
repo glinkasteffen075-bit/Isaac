@@ -344,7 +344,29 @@ class AsyncRelay:
                 msg = str(e)
                 self._mark_failure(prov_name, msg)
                 AuditLog.error("Relay", msg, f"provider={prov_name}")
-                if versuch == self.cfg.relay.max_retries:
+                # Offline / connection errors: fail fast (no 3× ollama spam)
+                msg_l = msg.lower()
+                offline = any(
+                    m in msg_l
+                    for m in (
+                        "nicht erreichbar",
+                        "connection refused",
+                        "connect error",
+                        "connect call failed",
+                        "name or service not known",
+                        "nodename nor servname",
+                        "network is unreachable",
+                        "offline",
+                    )
+                )
+                if offline or versuch == self.cfg.relay.max_retries:
+                    # Longer cooldown so ask_with_fallback skips this backend
+                    if offline:
+                        h = self._health.get(prov_name)
+                        if h is not None:
+                            h.blacklisted_until = time.monotonic() + min(
+                                180, 30 * max(1, h.consecutive_failures)
+                            )
                     if finish_chat_span and span is not None:
                         finish_chat_span(
                             span,

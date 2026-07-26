@@ -920,12 +920,13 @@ class IsaacKernel:
         kontext = structured_ctx.strip()
         if agent_ctx_block:
             kontext = f"{agent_ctx_block}\n\n{kontext}".strip() if kontext else agent_ctx_block
+        # LLM sees retrieval + user; tools/search use beschreibung / execution_query only.
         prompt = f"{kontext}\n\n{user_input}".strip() if kontext else user_input
 
         task = self.executor.create_task(
             typ           = task_typ,
             prompt        = prompt,
-            beschreibung  = user_input[:80],
+            beschreibung  = user_input,  # full owner line (not truncated) for tool/search query
             prioritaet    = 9.0 if sudo_aktiv else 5.0,
             provider      = provider,
             system_prompt = system,
@@ -1631,7 +1632,8 @@ class IsaacKernel:
 
     def _is_browser_request(self, text: str) -> bool:
         tl = (text or "").lower().strip()
-        if tl.startswith("browser:"):
+        # "browser:" and "browser <url> …" (colon optional)
+        if tl.startswith("browser:") or tl.startswith("browser "):
             return True
         if any(tl.startswith(prefix) for prefix in (
             "browser auf",
@@ -1798,8 +1800,11 @@ class IsaacKernel:
         raw = (target or "").strip().strip("\"'")
         if not raw:
             raise ValueError("Leeres Browser-Ziel")
-        if raw.startswith(("http://", "https://")):
-            return raw
+        # First whitespace-separated token is the host/path; drop trailing chatter
+        # e.g. "isaac-free.onrender.com kannst du die Seite bedienen?"
+        first = raw.split()[0].strip().rstrip(".,;:!?") if raw.split() else raw
+        if first.startswith(("http://", "https://")):
+            return first
         known = {
             "github": "https://github.com",
             "google": "https://www.google.com",
@@ -1807,36 +1812,89 @@ class IsaacKernel:
             "groq": "https://console.groq.com",
             "wikipedia": "https://de.wikipedia.org",
         }
-        key = raw.lower().split("/")[0].split()[0]
+        key = first.lower().split("/")[0]
         if key in known:
             return known[key]
         if "." in key or key == "localhost":
-            return f"https://{raw}"
-        return f"https://{raw}.com"
+            return f"https://{first}"
+        return f"https://{first}.com"
+
+    def _split_browser_target_and_credentials(
+        self, body: str
+    ) -> tuple[str, Optional[str], Optional[str]]:
+        """Split `url login: u passwort: p …` into URL + optional credentials.
+
+        Prevents Page.goto on `https://www.google.de login: … passwort: …`.
+        """
+        raw = (body or "").strip()
+        if not raw:
+            return "", None, None
+        user = None
+        password = None
+        user_m = re.search(
+            r"\b(?:login|user|username|email|e-mail)\s*:\s*(\S+)",
+            raw,
+            re.I,
+        )
+        if user_m:
+            user = user_m.group(1).strip().strip("\"'")
+        pass_m = re.search(
+            r"\b(?:passwort|password|passwd|pass|pw)\s*:\s*(\S+)",
+            raw,
+            re.I,
+        )
+        if pass_m:
+            password = pass_m.group(1).strip().strip("\"'")
+        # URL = text before first credential keyword (or full body)
+        url_part = re.split(
+            r"\b(?:login|user|username|email|e-mail|passwort|password|passwd|pass|pw)\s*:",
+            raw,
+            maxsplit=1,
+            flags=re.I,
+        )[0].strip()
+        # Drop trailing natural-language after a clear host token
+        if url_part:
+            tokens = url_part.split()
+            if tokens:
+                url_part = tokens[0].strip().rstrip(".,;:!?")
+        return url_part, user, password
 
     def _parse_simple_browser_request(self, text: str) -> Optional[dict[str, Any]]:
         raw = (text or "").strip()
         lower = raw.lower()
+        body = ""
         if lower.startswith("browser:"):
             body = raw.split(":", 1)[1].strip()
             if body.startswith("{") or "|" in body:
                 return None
-            return {
-                "instance_id": "quick-browse",
-                "url": self._normalize_browser_target(body),
-                "name": "Quick Browse",
-                "extract": True,
-            }
-        for prefix in ("browser auf ", "öffne im browser ", "navigiere zu "):
-            if lower.startswith(prefix):
-                target = raw[len(prefix):].strip()
-                return {
-                    "instance_id": "quick-browse",
-                    "url": self._normalize_browser_target(target),
-                    "name": "Quick Browse",
-                    "extract": True,
-                }
-        return None
+        elif lower.startswith("browser ") and not lower.startswith("browser auf"):
+            # "Browser isaac-free.onrender.com …" (colon optional)
+            body = raw.split(None, 1)[1].strip() if " " in raw else ""
+            if body.startswith("{") or "|" in body:
+                return None
+        else:
+            for prefix in ("browser auf ", "öffne im browser ", "navigiere zu "):
+                if lower.startswith(prefix):
+                    body = raw[len(prefix):].strip()
+                    break
+            if not body:
+                return None
+
+        url_raw, user, password = self._split_browser_target_and_credentials(body)
+        if not url_raw:
+            return None
+        try:
+            url = self._normalize_browser_target(url_raw)
+        except ValueError:
+            return None
+        return {
+            "instance_id": "quick-browse",
+            "url": url,
+            "name": "Quick Browse",
+            "extract": True,
+            "login_user": user,
+            "login_password": password,
+        }
 
     def _parse_browser_action(self, raw: str) -> dict[str, Any]:
         chunk = (raw or "").strip()
@@ -1938,6 +1996,20 @@ class IsaacKernel:
 
         simple = self._parse_simple_browser_request(text)
         if simple:
+            # Optional credentials from "Browser: host login: u passwort: p"
+            if simple.get("login_user") and simple.get("login_password"):
+                try:
+                    from urllib.parse import urlparse
+                    host = urlparse(simple["url"]).hostname or ""
+                    if host:
+                        get_browser().add_credential(
+                            host,
+                            simple["url"],
+                            simple["login_user"],
+                            simple["login_password"],
+                        )
+                except Exception as exc:
+                    log.debug("Browser credential store skipped: %s", exc)
             actions = [{"action": "goto", "url": simple["url"]}]
             if simple.get("extract"):
                 actions.append({
@@ -1953,13 +2025,32 @@ class IsaacKernel:
             )
             if result.get("ok"):
                 excerpt = (result.get("memory") or {}).get("page_text", "")[:3500]
+                cred_note = ""
+                if simple.get("login_user"):
+                    cred_note = (
+                        f"\n(Credentials für {simple.get('login_user')} gespeichert; "
+                        "Auto-Login nur wenn Flow/Login-Aktion greift.)"
+                    )
                 return (
                     f"[Browser] {simple['url']}\n"
                     f"Aktuelle URL: {result.get('current_url', simple['url'])}\n\n"
                     f"{excerpt or '(kein Seiteninhalt extrahiert)'}"
+                    f"{cred_note}"
                 )
+            err = str(result.get("error", "unbekannt"))
+            # Never echo passwords from failed goto URLs
+            err = re.sub(
+                r"(?i)(passwort|password|passwd|pass|pw)\s*:\s*\S+",
+                r"\1: ***",
+                err,
+            )
+            err = re.sub(
+                r"(?i)(login|user|username|email)\s*:\s*\S+",
+                r"\1: ***",
+                err,
+            )
             return (
-                f"[Browser] Navigation fehlgeschlagen: {result.get('error', 'unbekannt')}\n"
+                f"[Browser] Navigation fehlgeschlagen: {err}\n"
                 f"URL: {result.get('current_url', simple['url'])}"
             )
 

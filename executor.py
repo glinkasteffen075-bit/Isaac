@@ -210,6 +210,44 @@ class Task:
         if len(self.log_entries) > 50:
             self.log_entries = self.log_entries[-50:]
 
+    def execution_query(self) -> str:
+        """Owner-facing query for search/tools — never the retrieval mashup.
+
+        `_standard_task` stores retrieval context + user text in `prompt` and the
+        raw owner line in `beschreibung`. MultiSearch/tool selection must use the
+        owner line only; otherwise markers like procedure `weather` false-trigger
+        Open-Meteo and search runs against `[active_directives]…`.
+        """
+        prompt = (self.prompt or "").strip()
+        desc = (self.beschreibung or "").strip()
+        if desc.lower().startswith("retry:"):
+            desc = desc.split(":", 1)[1].strip()
+        # Drop ensemble/sub prefixes for tool routing
+        for prefix in ("ensemble[", "[sub]"):
+            if desc.lower().startswith(prefix):
+                # ensemble[x]:body or [Sub] body
+                if ":" in desc:
+                    desc = desc.split(":", 1)[1].strip()
+                break
+
+        retrievalish = bool(
+            prompt.startswith("[")
+            or prompt.startswith("[active_directives]")
+            or "[active_directives]" in prompt[:120]
+            or "[conversation_history]" in prompt[:400]
+            or "[relevant_procedures]" in prompt
+            or "[relevant_facts]" in prompt[:200]
+        )
+        if retrievalish and "\n\n" in prompt:
+            tail = prompt.rsplit("\n\n", 1)[-1].strip()
+            if tail and not tail.startswith("["):
+                return tail
+        if desc and not desc.startswith("["):
+            return desc
+        if retrievalish:
+            return desc or prompt
+        return prompt or desc
+
     def to_dict(self) -> dict:
         return {
             "id":            self.id,
@@ -267,6 +305,12 @@ class Task:
 
 
 class Executor:
+    # Local backends that often appear "available" in config but are offline
+    # in cloud/dev environments — never prefer them for quality follow-up.
+    _LOCAL_FALLBACK_SKIP = frozenset({
+        "ollama", "local", "local_ollama", "lmstudio", "llama_cpp", "vllm",
+    })
+
     def __init__(self):
         self._tasks:    dict[str, Task]          = {}
         self._queue:    asyncio.PriorityQueue    = asyncio.PriorityQueue()
@@ -282,6 +326,79 @@ class Executor:
         self._tool_state = get_task_tool_state_store()
         self._load_persisted_tasks()
         log.info("Executor v2.0 online")
+
+    def _provider_looks_online(self, name: str) -> bool:
+        """Best-effort: skip blacklisted / health-cooled / keyless local backends."""
+        n = (name or "").strip().lower()
+        if not n:
+            return False
+        cfg = get_config()
+        pcfg = cfg.get_provider(n)
+        if not pcfg or not getattr(pcfg, "available", False):
+            return False
+        if not cfg.is_provider_allowed(n):
+            return False
+        # Prefer cloud keys; local loopback without key is often dead
+        ptype = (getattr(pcfg, "provider_type", "") or "").lower()
+        pid = (getattr(pcfg, "provider_id", "") or n).lower()
+        if n in self._LOCAL_FALLBACK_SKIP or pid in self._LOCAL_FALLBACK_SKIP or ptype in (
+            "ollama", "local_ollama",
+        ):
+            # Only allow if relay health recently succeeded
+            try:
+                health = getattr(self.relay, "_health", {}).get(n)
+                if health is not None:
+                    if not health.available_now():
+                        return False
+                    if health.consecutive_failures > 0 and health.success_count == 0:
+                        return False
+                    if health.success_count == 0 and health.failure_count > 0:
+                        return False
+                    # Never cold-start ollama on follow-up when never succeeded this process
+                    if health.success_count == 0:
+                        return False
+            except Exception:
+                return False
+        try:
+            from watchdog import get_blacklist
+            if not get_blacklist().is_available(n):
+                return False
+        except Exception:
+            pass
+        try:
+            health = getattr(self.relay, "_health", {}).get(n)
+            if health is not None and not health.available_now():
+                return False
+        except Exception:
+            pass
+        return True
+
+    def _pick_followup_provider(self, current: Optional[str]) -> Optional[str]:
+        """Next provider for quality follow-up — online cloud before dead Ollama."""
+        cur = (current or "").strip().lower()
+        ranked: list[str] = []
+        try:
+            from watchdog import get_blacklist
+            ranked = [p for p in get_blacklist().ranked_providers(cur) if p != cur]
+        except Exception:
+            ranked = []
+        # Merge with relay-preferred cloud order
+        cloud_first: list[str] = []
+        try:
+            from free_cloud import recommended_free_providers
+            cloud_first = list(recommended_free_providers())
+        except Exception:
+            cloud_first = ["openrouter", "groq", "gemini"]
+        primary = (get_config().relay.primary_provider or "").strip().lower()
+        ordered: list[str] = []
+        for p in [primary, *cloud_first, *ranked, *list(get_config().available_providers)]:
+            pl = (p or "").strip().lower()
+            if pl and pl not in ordered and pl != cur:
+                ordered.append(pl)
+        for p in ordered:
+            if self._provider_looks_online(p):
+                return p
+        return None
 
     def _get_watchdog(self):
         if not self._watchdog:
@@ -978,11 +1095,12 @@ class Executor:
                 break
 
             if task.allow_provider_switch and (decision.switch_provider or stale_rounds >= 1):
-                from watchdog import get_blacklist
-                ranked = [p for p in get_blacklist().ranked_providers(prov) if p != prov]
-                if ranked:
-                    current_prov = ranked[0]
+                next_prov = self._pick_followup_provider(prov)
+                if next_prov and next_prov != prov:
+                    current_prov = next_prov
                     task.log(f"Provider: {prov} → {current_prov}")
+                elif decision.switch_provider:
+                    task.log(f"Provider-Switch übersprungen (kein gesunder Fallback für {prov})")
 
             queued_next_input = self._tool_state.pop_next_input(task.id)
             if generated_next_input and not queued_next_input:
@@ -1018,10 +1136,11 @@ class Executor:
         """Echte Websuche über MultiSearch."""
         task.log("Websuche gestartet")
         used_tool_ids: set[str] = set()
-        tool_context, _ = await self._maybe_use_tool(task, task.prompt, iteration=0, used_tool_ids=used_tool_ids)
+        query = task.execution_query()
+        tool_context, _ = await self._maybe_use_tool(task, query, iteration=0, used_tool_ids=used_tool_ids)
         search = self._get_search()
         result = await search.search(
-            task.prompt,
+            query,
             max_hits=10,
             load_fulltext=True,
         )
@@ -1031,7 +1150,7 @@ class Executor:
         # Suchergebnisse an KI zur Synthese schicken
         kontext = result.als_kontext(max_hits=8)
         weatherish = any(
-            m in (task.prompt or "").lower()
+            m in (query or "").lower()
             for m in ("wetter", "weather", "temperatur", "vorhersage")
         )
         # Live-Wetter-APIs liefern bereits fertige Fakten → nicht per LLM verwässern
@@ -1050,7 +1169,7 @@ class Executor:
             if weatherish and (result.abstract or result.hits):
                 synth_prompt = (
                     f"Beantworte die Wetterfrage mit den gelieferten LIVE-Daten.\n"
-                    f"Frage: {task.prompt}\n\n"
+                    f"Frage: {query}\n\n"
                     f"Daten:\n{kontext}\n\n"
                     "Regeln: Nenne Ort, Tage, Temperatur min/max, Bedingungen und Quelle. "
                     "Keine Platzhalter wie [Temperatur]. Erfinde keine Zahlen."
@@ -1060,9 +1179,13 @@ class Executor:
                     "Nutze nur die gelieferten Live-Daten. Keine Halluzinationen."
                 )
             else:
+                # Synthesis may use full task.prompt (retrieval) as background if present
+                bg = ""
+                if (task.prompt or "").strip() and (task.prompt or "").strip() != query:
+                    bg = f"\n\nHintergrundkontext (nicht als Suchquery):\n{(task.prompt or '')[:2500]}"
                 synth_prompt = (
-                    f"Basierend auf diesen Suchergebnissen, beantworte: {task.prompt}\n\n"
-                    f"Suchergebnisse:\n{kontext}\n\n"
+                    f"Basierend auf diesen Suchergebnissen, beantworte: {query}\n\n"
+                    f"Suchergebnisse:\n{kontext}{bg}\n\n"
                     f"Antworte strukturiert mit Quellenangaben. "
                     f"Erfinde keine Fakten und keine Platzhalter."
                 )
@@ -1080,7 +1203,7 @@ class Executor:
         task.antwort       = antwort
         task.provider_used = prov
         task.status        = TaskStatus.DONE
-        task.score         = self.logic.evaluate(antwort, task.prompt, task.id)
+        task.score         = self.logic.evaluate(antwort, query, task.id)
         task.decision_trace.add(
             TracePhase.EVALUATION,
             "quality_scored",
@@ -1090,17 +1213,18 @@ class Executor:
                 "provider": prov or "",
                 "via": "search",
                 "hits": len(getattr(result, "hits", []) or []),
+                "execution_query": (query or "")[:120],
             },
         )
-        task.log(f"Suche: {len(result.hits)} Hits aus {result.quellen}")
+        task.log(f"Suche: {len(result.hits)} Hits aus {result.quellen} q={query[:60]!r}")
 
     async def _execute_research(self, task: Task):
         """Tiefere Web-Recherche: mehr Engines, Volltext, Quellen-Synthese."""
         task.log("Recherche gestartet")
         used_tool_ids: set[str] = set()
-        tool_context, _ = await self._maybe_use_tool(task, task.prompt, iteration=0, used_tool_ids=used_tool_ids)
+        query = task.execution_query()
+        tool_context, _ = await self._maybe_use_tool(task, query, iteration=0, used_tool_ids=used_tool_ids)
         search = self._get_search()
-        query = task.prompt
         for prefix in ("recherche:", "recherchiere:"):
             if query.lower().startswith(prefix):
                 query = query.split(":", 1)[1].strip()
@@ -1165,8 +1289,8 @@ class Executor:
         task.antwort = antwort
         task.provider_used = prov
         task.status = TaskStatus.DONE
-        task.score = self.logic.evaluate(antwort, task.prompt, task.id)
-        task.log(f"Recherche: {len(result.hits)} Hits aus {result.quellen}")
+        task.score = self.logic.evaluate(antwort, query, task.id)
+        task.log(f"Recherche: {len(result.hits)} Hits aus {result.quellen} q={query[:60]!r}")
 
     # ── Multi-KI-Task ─────────────────────────────────────────────────────────
     async def _execute_multi_ki(self, task: Task):

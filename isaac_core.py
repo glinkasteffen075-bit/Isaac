@@ -220,6 +220,11 @@ EXPLICIT_COMMAND_PATTERNS = [
         r"^grok status$",
         r"^grok-agent status$",
         r"^grok agent status$",
+        r"^status:pipeline$",
+        r"^status:pipeline\s+sync$",
+        r"^pipeline status$",
+        r"^automation status$",
+        r"^status:automation$",
     ]),
 ]
 
@@ -2220,7 +2225,31 @@ class IsaacKernel:
             pass
         return "\n".join(lines)
 
-    def _handle_ext_memory_status(self, *_) -> str:
+    def _handle_ext_memory_status(self, text: str = "", *_) -> str:
+        tl = (text or "").lower().strip()
+        if any(
+            x in tl
+            for x in (
+                "status:pipeline",
+                "pipeline status",
+                "automation status",
+                "status:automation",
+            )
+        ):
+            try:
+                from automation_pipeline import format_automation_status, run_stack_health_cycle
+
+                if "sync" in tl:
+                    report = run_stack_health_cycle(force_write=True)
+                    write = report.get("memory_write") or {}
+                    extra = (
+                        f"\n\n[Sync] ok={write.get('ok')} written={write.get('written')} "
+                        f"skip={write.get('skipped')} err={write.get('error')}"
+                    )
+                    return (report.get("summary") or format_automation_status()) + extra
+                return format_automation_status()
+            except Exception as exc:
+                return f"[Automation] nicht verfügbar: {exc}"
         try:
             from external_memory import get_external_memory_bridge
 
@@ -3015,6 +3044,10 @@ class IsaacKernel:
                 "grok status",
                 "grok-agent status",
                 "grok agent status",
+                "status:pipeline",
+                "pipeline status",
+                "automation status",
+                "status:automation",
             ),
         }
         prefixes = explicit_prefixes.get(intent, ())

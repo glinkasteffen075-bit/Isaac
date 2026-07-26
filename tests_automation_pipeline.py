@@ -169,6 +169,22 @@ class TestAutomationPipeline(unittest.TestCase):
         self.assertEqual(detect_intent("status:smoke wake"), Intent.EXT_MEMORY)
         self.assertEqual(detect_intent("smoke:remote full"), Intent.EXT_MEMORY)
 
+    def test_sha_match_and_post_deploy_wait_timeout(self):
+        from remote_smoke import _sha_match, wait_for_deploy_commit
+
+        self.assertTrue(_sha_match("f01e314b739e77be", "f01e314b739e"))
+        self.assertTrue(_sha_match("abc1234", "abc1234deadbeef"))
+        self.assertFalse(_sha_match("aaaaaaa", "bbbbbbb"))
+        # forced quick timeout with unreachable host
+        with patch.dict(os.environ, {"RENDER_URL": "http://127.0.0.1:9"}):
+            out = wait_for_deploy_commit(
+                "deadbeef",
+                timeout_s=2.0,
+                poll_s=0.5,
+            )
+        self.assertFalse(out.get("matched"))
+        self.assertIn("timeout", (out.get("error") or "").lower())
+
 
 if __name__ == "__main__":
     unittest.main()

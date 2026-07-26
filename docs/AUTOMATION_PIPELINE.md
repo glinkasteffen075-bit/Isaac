@@ -52,6 +52,30 @@ otherwise wake only.
 
 Reports: `data/remote_smoke_last.json`, state `data/remote_smoke_state.json`.
 
+### R2 — Deploy-Gate (beides: keep-alive **und** post-deploy)
+
+Nach Push auf `main` wartet CI bis Free `healthz.git_commit` den neuen SHA hat,
+dann Full-Smoke (A/B/C/G + Sentry + optional Cognee). Parallel bleibt der
+**10-Minuten-Wake** aktiv (Anti-Sleep).
+
+```bash
+# wait until Free serves this SHA, then full suite
+python3 scripts/remote_smoke_suite.py --mode post-deploy --expect-sha "$(git rev-parse HEAD)"
+
+# deploy sync + smoke if already live
+python3 scripts/check_deploy_sync.py --smoke
+
+# deploy sync + wait for HEAD on Free + smoke
+python3 scripts/check_deploy_sync.py --smoke-wait
+```
+
+GH Actions jobs:
+
+| Job | Trigger | Mode |
+|-----|---------|------|
+| `post-deploy-smoke` | `push` main / dispatch full\|post-deploy | wait + full |
+| `keep-alive` | schedule `*/10` / dispatch wake\|auto | wake or 2h full |
+
 ## Env flags
 
 | Flag | Default | Meaning |

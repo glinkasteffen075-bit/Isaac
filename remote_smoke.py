@@ -649,10 +649,21 @@ def format_report(report: dict[str, Any]) -> str:
             f"cognee write ok={mw.get('ok')} written={mw.get('written')} "
             f"skip={mw.get('skipped') or mw.get('error') or '—'}"
         )
+    if report.get("expected_sha"):
+        lines.append(f"expected_sha={report.get('expected_sha')}")
+    wait = report.get("wait") or {}
+    if wait:
+        lines.append(
+            f"deploy_wait matched={wait.get('matched')} "
+            f"live={wait.get('live')} wait_s={wait.get('wait_s')} "
+            f"attempts={wait.get('attempts')}"
+        )
     if report.get("note"):
         lines.append(str(report["note"]))
     if report.get("skipped"):
         lines.append(f"skipped={report.get('skipped')}")
+    if report.get("error"):
+        lines.append(f"error={report.get('error')}")
     return "\n".join(lines)
 
 
@@ -673,3 +684,140 @@ def status() -> dict[str, Any]:
         "last_commit": state.get("last_commit"),
         "report_path": str(REPORT_PATH),
     }
+
+
+def _sha_match(live: Optional[str], expected: str) -> bool:
+    a = (live or "").strip().lower()
+    b = (expected or "").strip().lower()
+    if not a or not b:
+        return False
+    n = min(len(a), len(b), 12)
+    if n < 7:
+        return a == b
+    return a[:n] == b[:n]
+
+
+def wait_for_deploy_commit(
+    expected_sha: str,
+    *,
+    base_url: Optional[str] = None,
+    timeout_s: float = 600.0,
+    poll_s: float = 20.0,
+) -> dict[str, Any]:
+    """Poll /healthz until live git_commit matches expected (post-deploy gate).
+
+    Each poll is also a keep-alive wake ping (anti-sleep while waiting).
+    """
+    base = (base_url or target_url()).rstrip("/")
+    exp = (expected_sha or "").strip()
+    if not exp:
+        return {"ok": False, "error": "expected_sha empty", "matched": False}
+    t0 = time.time()
+    attempts = 0
+    last: dict[str, Any] = {}
+    while (time.time() - t0) < max(30.0, timeout_s):
+        attempts += 1
+        last = wake_health(base, retries=2, timeout=40.0)
+        live = last.get("git_commit") or ""
+        # full sha may be in raw
+        raw = last.get("raw") if isinstance(last.get("raw"), dict) else {}
+        full = str(raw.get("git_commit") or live or "")
+        if last.get("ok") and (_sha_match(live, exp) or _sha_match(full, exp)):
+            return {
+                "ok": True,
+                "matched": True,
+                "expected": exp[:12],
+                "live": (full or live)[:12],
+                "attempts": attempts,
+                "wait_s": round(time.time() - t0, 1),
+                "health": {k: v for k, v in last.items() if k != "raw"},
+            }
+        time.sleep(max(5.0, poll_s))
+    return {
+        "ok": False,
+        "matched": False,
+        "expected": exp[:12],
+        "live": (last.get("git_commit") or None),
+        "attempts": attempts,
+        "wait_s": round(time.time() - t0, 1),
+        "error": "timeout waiting for deploy commit on healthz",
+        "health": {k: v for k, v in last.items() if k != "raw"} if last else {},
+    }
+
+
+async def run_post_deploy_smoke(
+    expected_sha: str,
+    *,
+    base_url: Optional[str] = None,
+    timeout_s: float = 600.0,
+    poll_s: float = 20.0,
+    write_memory: bool = True,
+) -> dict[str, Any]:
+    """R2 deploy gate: wait until Free serves expected_sha, then full smoke."""
+    wait = wait_for_deploy_commit(
+        expected_sha,
+        base_url=base_url,
+        timeout_s=timeout_s,
+        poll_s=poll_s,
+    )
+    if not wait.get("matched"):
+        report = {
+            "ok": False,
+            "mode": "post_deploy",
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "url": base_url or target_url(),
+            "expected_sha": (expected_sha or "")[:12],
+            "wait": wait,
+            "cases": [],
+            "passed": 0,
+            "total": 0,
+            "error": wait.get("error") or "deploy commit not live",
+            "wake_interval_s": wake_interval_s(),
+            "full_interval_s": full_interval_s(),
+            "render_sleep_threshold_s": RENDER_SLEEP_THRESHOLD_S,
+        }
+        save_report(report)
+        AuditLog.action(
+            "RemoteSmoke",
+            "post_deploy_wait_fail",
+            f"expected={expected_sha[:12]} live={wait.get('live')}",
+            erfolg=False,
+        )
+        if push_on_fail_enabled():
+            try:
+                from owner_notify import KIND_MISSION_STUCK, OwnerBlocker, notify_owner_blocker
+
+                await notify_owner_blocker(
+                    OwnerBlocker(
+                        kind=KIND_MISSION_STUCK,
+                        title="Post-deploy smoke: Render commit not live",
+                        detail=(
+                            f"expected={expected_sha[:12]} live={wait.get('live')} "
+                            f"wait_s={wait.get('wait_s')}"
+                        ),
+                        need="owner_decision_or_data",
+                        source="post_deploy_smoke",
+                        cooldown_key=f"post_deploy_wait|{expected_sha[:12]}",
+                    ),
+                )
+            except Exception as exc:
+                log.debug("post_deploy push: %s", exc)
+        return report
+
+    smoke = await run_full_smoke(
+        base_url or target_url(),
+        write_memory=write_memory,
+        include_sentry=True,
+    )
+    smoke["mode"] = "post_deploy"
+    smoke["expected_sha"] = (expected_sha or "")[:12]
+    smoke["wait"] = wait
+    save_report(smoke)
+    AuditLog.action(
+        "RemoteSmoke",
+        "post_deploy",
+        f"ok={smoke.get('ok')} expected={expected_sha[:12]} "
+        f"passed={smoke.get('passed')}/{smoke.get('total')}",
+        erfolg=bool(smoke.get("ok")),
+    )
+    return smoke

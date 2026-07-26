@@ -37,9 +37,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Isaac remote smoke / keep-alive")
     parser.add_argument(
         "--mode",
-        choices=("full", "wake", "auto"),
+        choices=("full", "wake", "auto", "post-deploy"),
         default="full",
-        help="full=chat suite, wake=health only, auto=interval decision",
+        help="full|wake|auto|post-deploy (wait for SHA then full)",
     )
     parser.add_argument(
         "--loop",
@@ -50,6 +50,17 @@ def main() -> int:
         "--url",
         default="",
         help="Override RENDER_URL / ISAAC_REMOTE_FREE_URL",
+    )
+    parser.add_argument(
+        "--expect-sha",
+        default="",
+        help="Expected git commit for post-deploy mode (or GITHUB_SHA)",
+    )
+    parser.add_argument(
+        "--wait-timeout",
+        type=float,
+        default=600.0,
+        help="Seconds to wait for deploy commit on healthz (post-deploy)",
     )
     parser.add_argument(
         "--no-memory",
@@ -71,6 +82,7 @@ def main() -> int:
         full_interval_s,
         run_auto_tick,
         run_full_smoke,
+        run_post_deploy_smoke,
         run_wake_only,
         status,
         target_url,
@@ -90,6 +102,23 @@ def main() -> int:
             return run_wake_only()
         if mode == "auto":
             return await run_auto_tick(force_full=False)
+        if mode == "post-deploy":
+            sha = (
+                (args.expect_sha or "").strip()
+                or (os.getenv("GITHUB_SHA") or "").strip()
+                or (os.getenv("EXPECT_SHA") or "").strip()
+            )
+            if not sha:
+                return {
+                    "ok": False,
+                    "mode": "post_deploy",
+                    "error": "need --expect-sha or GITHUB_SHA",
+                }
+            return await run_post_deploy_smoke(
+                sha,
+                timeout_s=float(args.wait_timeout),
+                write_memory=not args.no_memory,
+            )
         return await run_full_smoke(write_memory=not args.no_memory)
 
     if not args.loop:

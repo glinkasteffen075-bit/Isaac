@@ -307,14 +307,42 @@ def main() -> int:
         action="store_true",
         help="exit 1 if out of sync",
     )
+    ap.add_argument(
+        "--smoke",
+        action="store_true",
+        help="R2: after sync check, run full remote smoke against Free URL",
+    )
+    ap.add_argument(
+        "--smoke-wait",
+        action="store_true",
+        help="R2: wait until health git_commit matches local HEAD, then full smoke",
+    )
     args = ap.parse_args()
     rep = collect_report()
-    if args.json:
+    if args.json and not (args.smoke or args.smoke_wait):
         print(json.dumps(rep, indent=2, ensure_ascii=False))
     else:
         print_human(rep)
     if args.fail and not rep.get("in_sync"):
         return 1
+
+    if args.smoke or args.smoke_wait:
+        # Import after report so smoke failures don't hide sync output
+        sys.path.insert(0, str(ROOT))
+        import asyncio
+
+        from remote_smoke import format_report, run_full_smoke, run_post_deploy_smoke
+
+        local = (rep.get("local") or {}).get("commit") or _git_rev("HEAD") or ""
+        if args.smoke_wait and local:
+            print(f"\n--- Post-deploy smoke (wait for {local[:12]}) ---")
+            smoke = asyncio.run(run_post_deploy_smoke(local, timeout_s=600.0))
+        else:
+            print("\n--- Remote full smoke ---")
+            smoke = asyncio.run(run_full_smoke(write_memory=True))
+        print(format_report(smoke))
+        if not smoke.get("ok"):
+            return 2
     return 0
 
 

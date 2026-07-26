@@ -1,32 +1,79 @@
-# Keep isaac-free awake (Render Free ~15m sleep) + periodic full smoke.
+# (1) Anti-sleep keep-alive every 10 min (under Render Free ~15m sleep)
+# (2) Post-deploy full smoke on push to main (R2 deploy gate)
 # Must run OUTSIDE Render — sleeping Free cannot self-wake.
 #
 # Secrets optional: SENTRY_AUTH_TOKEN, COGNEE_*, ISAAC_EXTERNAL_MEMORY_WRITE
-# Public health/chat needs no secret.
 
-name: Remote smoke (Render keep-alive)
+name: Remote smoke (keep-alive + post-deploy)
 
 on:
   schedule:
     # Every 10 minutes — under Render Free 15-minute idle sleep
     - cron: "*/10 * * * *"
+  push:
+    branches: ["main"]
   workflow_dispatch:
     inputs:
       mode:
-        description: "wake | full | auto"
+        description: "wake | full | auto | post-deploy"
         required: false
         default: "auto"
+      expect_sha:
+        description: "SHA for post-deploy (default: github.sha)"
+        required: false
+        default: ""
 
 env:
   ISAAC_DISABLE_VECTOR_MEMORY: "1"
   ISAAC_REMOTE_SMOKE: "1"
-  # Hard-cap anti-sleep (seconds)
   ISAAC_REMOTE_SMOKE_WAKE_INTERVAL_S: "600"
   ISAAC_REMOTE_SMOKE_FULL_INTERVAL_S: "7200"
   RENDER_URL: ${{ vars.RENDER_URL || 'https://isaac-free.onrender.com' }}
 
 jobs:
-  remote-smoke:
+  # ── R2: after push to main, wait until Free serves this commit, then full smoke
+  post-deploy-smoke:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.mode == 'post-deploy' || github.event.inputs.mode == 'full'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install websockets
+
+      - name: Wait for deploy + full smoke
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+          EXPECT_SHA: ${{ github.event.inputs.expect_sha || github.sha }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG || 'evo20' }}
+          SENTRY_URL: ${{ vars.SENTRY_URL || 'https://de.sentry.io' }}
+          COGNEE_API_KEY: ${{ secrets.COGNEE_API_KEY }}
+          COGNEE_BASE_URL: ${{ secrets.COGNEE_BASE_URL || vars.COGNEE_BASE_URL }}
+          ISAAC_COGNEE_ENABLED: ${{ secrets.COGNEE_API_KEY && '1' || '0' }}
+          ISAAC_COGNEE_ALLOW_CLOUD: ${{ secrets.COGNEE_API_KEY && '1' || '0' }}
+          ISAAC_EXTERNAL_MEMORY_WRITE: ${{ secrets.ISAAC_EXTERNAL_MEMORY_WRITE || '0' }}
+          ISAAC_REMOTE_SMOKE_WRITE_COGNEE: ${{ secrets.ISAAC_EXTERNAL_MEMORY_WRITE || '0' }}
+          ISAAC_REMOTE_SMOKE_PUSH_ON_FAIL: "0"
+        run: |
+          SHA="${EXPECT_SHA:-$GITHUB_SHA}"
+          echo "Post-deploy gate: expect $SHA on $RENDER_URL"
+          python3 scripts/remote_smoke_suite.py \
+            --mode post-deploy \
+            --expect-sha "$SHA" \
+            --wait-timeout 720
+
+  # ── Anti-sleep: schedule + manual wake/auto (not on every push; post-deploy covers that)
+  keep-alive:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode != 'post-deploy' && github.event.inputs.mode != 'full')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -37,25 +84,21 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install minimal deps
+      - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install websockets
-          # optional for Cognee write path if secrets present
-          if [ -n "${{ secrets.COGNEE_API_KEY }}" ]; then
-            echo "Cognee key present (write only if enabled)"
-          fi
 
       - name: Decide mode
         id: mode
         run: |
           INPUT="${{ github.event.inputs.mode }}"
-          if [ -n "$INPUT" ]; then
+          if [ -n "$INPUT" ] && [ "$INPUT" != "auto" ]; then
             echo "mode=$INPUT" >> "$GITHUB_OUTPUT"
           else
-            # schedule: full once every ~2h window (minute 0 of even hours), else wake
             MIN=$(date -u +%M)
             HOUR=$(date -u +%H)
+            # full suite roughly every 2h on the hour window
             if [ "$MIN" -lt 10 ] && [ $((10#$HOUR % 2)) -eq 0 ]; then
               echo "mode=full" >> "$GITHUB_OUTPUT"
             else
@@ -77,6 +120,5 @@ jobs:
           ISAAC_REMOTE_SMOKE_PUSH_ON_FAIL: "0"
         run: |
           MODE="${{ steps.mode.outputs.mode }}"
-          echo "Running mode=$MODE against $RENDER_URL"
-          python3 scripts/remote_smoke_suite.py --mode "$MODE" --no-memory || \
-            python3 scripts/remote_smoke_suite.py --mode "$MODE"
+          echo "Keep-alive mode=$MODE against $RENDER_URL (wake interval 600s < sleep 900s)"
+          python3 scripts/remote_smoke_suite.py --mode "$MODE"

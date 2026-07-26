@@ -36,8 +36,19 @@ class MCPClient:
         await self.close()
 
     async def close(self):
-        if self._session and not self._session.closed:
-            await self._session.close()
+        """Close the shared ClientSession and drop the connector.
+
+        Without this (and without callers using ``async with`` / ``finally``),
+        aiohttp logs ``Unclosed client session`` / ``Unclosed connector`` —
+        seen heavily on Dashboard ``/api/monitor/state`` polls (ISAAC-4/7).
+        """
+        sess = self._session
+        self._session = None
+        self._initialized = False
+        if sess is not None and not sess.closed:
+            await sess.close()
+            # Let the connector finish closing transports (aiohttp guidance).
+            await asyncio.sleep(0)
 
     @property
     def transport(self) -> str:

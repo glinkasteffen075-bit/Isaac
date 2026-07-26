@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from urllib.parse import urlencode
 
 import aiohttp
@@ -18,6 +19,11 @@ from tool_policy import ToolDecisionReason, ToolPolicy, ToolSelectionDecision
 from result_contract import ensure_result_contract, error_result
 
 _browser = None
+
+# Short TTL cache for MCP discovery — monitor_state polls this every ~0.5–2s.
+_mcp_bridge_cache: dict | None = None
+_mcp_bridge_cache_ts: float = 0.0
+_MCP_BRIDGE_CACHE_TTL_S = 12.0
 
 CATEGORY_HINTS = {
     "wetter": "wetter",
@@ -214,7 +220,8 @@ async def _run_registry_tool(tool, prompt: str) -> dict:
         timeout = aiohttp.ClientTimeout(total=20)
         if tool.kind in ("api", "mcp"):
             if tool.kind == "mcp":
-                bridge = await discover_mcp_bridge(MCPClient(_normalize_mcp_url(tool.base_url)))
+                # discover_mcp_bridge owns/closes when client is omitted (cached path).
+                bridge = await discover_mcp_bridge()
                 mcp_name = resolve_mcp_tool_name(
                     prompt,
                     bridge.get("tools") or [],
@@ -294,13 +301,28 @@ async def _run_registry_tool(tool, prompt: str) -> dict:
 
 
 async def discover_mcp_bridge(client: MCPClient | None = None) -> dict:
+    """Discover remote MCP tools/resources.
+
+    If ``client`` is omitted, a temporary client is created **and always closed**
+    (prevents Unclosed connector/session on frequent dashboard polls). Results
+    are cached briefly so ``/api/monitor/state`` does not open a new session
+    every half-second.
+    """
+    global _mcp_bridge_cache, _mcp_bridge_cache_ts
+
+    owns_client = client is None
+    if owns_client and _mcp_bridge_cache is not None:
+        age = time.monotonic() - _mcp_bridge_cache_ts
+        if age < _MCP_BRIDGE_CACHE_TTL_S:
+            return dict(_mcp_bridge_cache)
+
     client = client or MCPClient(MCP_BRIDGE_URL)
     try:
         capabilities = await client.capabilities()
         tools = await client.tools()
         resources = await client.resources()
         prompts = await client.prompts()
-        return {
+        result = {
             "ok": True,
             "source": "remote",
             "transport": getattr(client, "transport", "rest"),
@@ -313,7 +335,7 @@ async def discover_mcp_bridge(client: MCPClient | None = None) -> dict:
         }
     except Exception as e:
         reg = get_mcp_registry()
-        return {
+        result = {
             "ok": False,
             "source": "local-fallback",
             "error": str(e),
@@ -323,6 +345,24 @@ async def discover_mcp_bridge(client: MCPClient | None = None) -> dict:
             "prompts": reg.prompts(),
             "url": client.api_base,
         }
+    finally:
+        if owns_client:
+            try:
+                await client.close()
+            except Exception:
+                pass
+
+    if owns_client:
+        _mcp_bridge_cache = dict(result)
+        _mcp_bridge_cache_ts = time.monotonic()
+    return result
+
+
+def clear_mcp_bridge_cache() -> None:
+    """Test/helper: drop discovery cache."""
+    global _mcp_bridge_cache, _mcp_bridge_cache_ts
+    _mcp_bridge_cache = None
+    _mcp_bridge_cache_ts = 0.0
 
 
 async def list_live_tool_interfaces() -> dict:

@@ -314,6 +314,107 @@ class TestCriticalBugs(unittest.TestCase):
         self.assertNotIn("login", parsed["url"])
         self.assertNotIn("secret", parsed["url"])
 
+    def test_mission_hackerone_is_browser_request(self):
+        """Natural language bounty mission must not fall through to pure chat."""
+        text = (
+            "gehe auf hackerone oder andere bugbounty Anbieter "
+            "und erarbeite eigenständig Belohnungen"
+        )
+        self.assertTrue(self.kernel._is_browser_request(text))
+        parsed = self.kernel._parse_simple_browser_request(text)
+        self.assertIsNotNone(parsed)
+        self.assertIn("hackerone.com", parsed["url"])
+        from execution_contract import KIND_BOUNTY_RESEARCH, detect_mission
+        spec = detect_mission(text)
+        self.assertIsNotNone(spec)
+        self.assertEqual(spec.kind, KIND_BOUNTY_RESEARCH)
+        self.assertTrue(spec.wants_background)
+
+    def test_mission_google_login_nl_routes_browser(self):
+        """'log dich bei Google ein' with email+password → browser mission."""
+        text = (
+            "log dich bei Google ein login: user@example.com passwort: secret123"
+        )
+        self.assertTrue(self.kernel._is_browser_request(text))
+        parsed = self.kernel._parse_simple_browser_request(text)
+        self.assertIsNotNone(parsed)
+        self.assertIn("google", parsed["url"])
+        self.assertEqual(parsed.get("login_user"), "user@example.com")
+        self.assertEqual(parsed.get("login_password"), "secret123")
+
+    def test_anti_hallucination_blocks_fake_browser_success(self):
+        from execution_contract import apply_anti_hallucination
+
+        fake = "Ich habe mich erfolgreich bei Google eingeloggt und die Seite geöffnet."
+        out = apply_anti_hallucination(
+            "log dich bei Google ein",
+            fake,
+            tools_ran=False,
+        )
+        self.assertIn("Execution Contract", out)
+        self.assertNotIn("erfolgreich bei Google eingeloggt", out.lower())
+        # With evidence marker, leave success text (real tool path)
+        real = "[Browser] ok\n[Evidence]\nok=true\nIch habe navigiert."
+        out2 = apply_anti_hallucination("Browser auf google", real, tools_ran=False)
+        self.assertIn("[Evidence]", out2)
+
+    def test_owner_notify_only_hard_blockers(self):
+        import time
+        from owner_notify import infer_blocker_from_text, notify_owner_blocker, OwnerBlocker
+
+        self.assertIsNone(infer_blocker_from_text("Seite lädt langsam, ich versuche es nochmal"))
+        b = infer_blocker_from_text(
+            "Browser-Automation ist deaktiviert (browser_automation disabled)"
+        )
+        self.assertIsNotNone(b)
+        self.assertEqual(b.kind, "browser_disabled")
+
+        async def _run():
+            with patch.dict(os.environ, {"ISAAC_OWNER_PUSH": "1", "ISAAC_NTFY_TOPIC": ""}, clear=False):
+                with patch("owner_notify.ntfy_topic", return_value=""):
+                    with patch("owner_notify.webhook_url", return_value=""):
+                        r = await notify_owner_blocker(
+                            OwnerBlocker(
+                                kind="missing_credentials",
+                                title="Login fehlt",
+                                detail="test",
+                                need="credentials",
+                                cooldown_key=f"test-creds-{time.time()}",
+                            ),
+                            force=True,
+                        )
+                        return r
+
+        result = asyncio.run(_run())
+        self.assertTrue(result.get("ok"))
+        self.assertTrue(result.get("pushed"))
+
+    def test_professional_core_catalog_registers(self):
+        import tempfile
+        from pathlib import Path
+        from tool_catalog import (
+            professional_core_catalog_ids,
+            ensure_catalog_tools_registered,
+            get_catalog_item,
+        )
+        from tool_registry import ToolRegistry
+
+        ids = professional_core_catalog_ids()
+        self.assertIn("public_crtsh_subdomains", ids)
+        self.assertIn("public_cloudflare_doh", ids)
+        self.assertIsNotNone(get_catalog_item("public_crtsh_subdomains"))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tools.json"
+            reg = ToolRegistry(path=path)
+            with patch("tool_registry.get_tool_registry", return_value=reg):
+                added = ensure_catalog_tools_registered(bundle_id="professional_core")
+            self.assertTrue(len(added) >= 5)
+            # idempotent
+            with patch("tool_registry.get_tool_registry", return_value=reg):
+                added2 = ensure_catalog_tools_registered(bundle_id="professional_core")
+            self.assertEqual(added2, [])
+
     def test_bug_execution_query_ignores_retrieval_weather_procedure(self):
         """Search/tools must use owner line, not retrieval mashup with weather procedure."""
         from executor import Task, TaskType
@@ -3622,6 +3723,23 @@ class TestPhase4Connect(unittest.TestCase):
         mock_run = asyncio.run(_run())
         mock_run.assert_awaited_once()
         self.assertEqual(bg.state.goal_autonomy_ticks, 1)
+
+    def test_background_mission_cycle_invokes_mission_tick(self):
+        from background_loop import BackgroundLoop
+
+        bg = BackgroundLoop()
+
+        async def _run():
+            with patch(
+                "execution_contract.run_mission_tick",
+                return_value={"ok": True, "advanced": [{"id": "m1"}], "active": 1},
+            ) as mock_run:
+                await bg._mission_zyklus()
+            return mock_run
+
+        mock_run = asyncio.run(_run())
+        mock_run.assert_awaited_once()
+        self.assertEqual(bg.state.mission_ticks, 1)
 
     def test_ensemble_intent_and_model_panel(self):
         from isaac_core import detect_intent, Intent

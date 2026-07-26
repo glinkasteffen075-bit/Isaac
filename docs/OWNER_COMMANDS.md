@@ -26,6 +26,52 @@ Im Isaac-Chat (Dashboard oder CLI) einfach sprechen — z. B. `Isaac, zeige wl
 
 **Nicht als Befehl:** Erklär-Chat (`erkläre mir das Wetter als Motiv in Literatur`) → normaler Chat-Pfad.
 
+### Execution Contract (Missionen + Browser)
+
+Natural-language Imperative werden als **Mission** erkannt und mit echten Tools
+ausgeführt — nicht nur im Chat „beschrieben“. Antworten brauchen `[Evidence]` /
+`[Browser]`-Blöcke; ohne Tool-Lauf behauptet Isaac keinen Login-/Navigations-Erfolg.
+
+| Beispiel | Wirkung |
+|----------|---------|
+| `Browser: google.de` | Navigate + Text-Extract |
+| `Browser: google.de login: u@x passwort: …` | Credentials speichern + Navigate |
+| `Gehe auf hackerone und erarbeite eigenständig Belohnungen` | Mission + Goal + Background-Ticks |
+| `Log dich bei Google ein login: u@x passwort: …` | Browser-Login-Mission |
+
+**Grenzen:**
+
+- **Render Free / Free-Cloud:** `browser_automation` oft aus → ehrliche Evidence `ok=false`.
+- **Bug-Bounty:** nur **autorisierte, in-scope** Programme; kein unautorisiertes Scannen.
+- **Passwörter:** nie im Chat wiederholen; Credentials nur in `data/browser_creds.json` (gitignored).
+- **Hintergrund:** `ISAAC_EXECUTION_MISSIONS=1` (Default), Intervall ~10 Min (`MISSION_INTERVAL`).
+
+Siehe Modul `execution_contract.py`.
+
+### Owner-Push (nur bei echten Blockern)
+
+Isaac pusht **nur**, wenn er wirklich nicht weiterkommt (Credentials, API-Keys,
+URL/Ziel, Browser aus, 2FA/Captcha, Mission-Schritt). Kein Spam bei normalen Fehlern.
+
+| Env | Wirkung |
+|-----|---------|
+| `ISAAC_OWNER_PUSH=1` | an (Default) |
+| `ISAAC_NTFY_TOPIC=mein-topic` | Push via [ntfy](https://ntfy.sh) (Handy-App) |
+| `ISAAC_NTFY_URL=https://ntfy.sh` | optional eigener ntfy-Server |
+| `ISAAC_NTFY_TOKEN=…` | optional Auth |
+| `ISAAC_OWNER_WEBHOOK_URL=https://…` | optional JSON-Webhook |
+| `ISAAC_OWNER_PUSH_COOLDOWN_S=21600` | gleicher Blocker max. alle 6h |
+| `ISAAC_OWNER_PUSH_MIN_INTERVAL_S=300` | global min. 5 Min zwischen Pushes |
+
+Zusätzlich: Termux-Notification wenn verfügbar; immer Log in `data/owner_blockers.jsonl`.
+
+### Professionelle Tools
+
+Beim Start registriert Isaac das Bundle **`professional_core`** (Suche, GitHub,
+PyPI/npm, CT-Logs crt.sh, Cloudflare DoH, RDAP, Wayback, HackerOne Directory public).
+Weitere Bundles im Dashboard / `tool_catalog.py`: `free_security_pack`, `free_ops_pack`,
+`free_dev_pack`.
+
 ### Owner-Autonomie (Background, bounded)
 
 Proaktive geplante Tasks nur im Admin-Modus (`owner_autonomy.py`):

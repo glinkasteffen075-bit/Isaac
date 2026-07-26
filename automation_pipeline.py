@@ -262,6 +262,76 @@ def _probe_isaac_local() -> dict[str, Any]:
     }
 
 
+def _probe_local_llm() -> dict[str, Any]:
+    """Probe Ollama-native or OpenAI-compat local server (iPad app / laptop)."""
+    provider = (os.getenv("ACTIVE_PROVIDER") or "").strip().lower()
+    ollama_host = (os.getenv("OLLAMA_HOST") or "http://127.0.0.1:11434").rstrip("/")
+    local_url = (os.getenv("LOCAL_LLM_BASE_URL") or "").strip()
+    out: dict[str, Any] = {
+        "ok": False,
+        "active_provider": provider or None,
+        "mode": None,
+        "endpoint": None,
+        "models_hint": None,
+        "error": None,
+    }
+    # Prefer explicit local/ollama provider; still probe common localhost if set
+    if provider == "ollama" or (not provider and ollama_host):
+        out["mode"] = "ollama"
+        out["endpoint"] = ollama_host
+        ok, data = _http_json(f"{ollama_host}/api/tags", timeout=5.0)
+        if ok and isinstance(data, dict):
+            models = data.get("models") or []
+            names = []
+            for m in models[:5]:
+                if isinstance(m, dict):
+                    names.append(str(m.get("name") or m.get("model") or "")[:40])
+            out["ok"] = True
+            out["models_hint"] = names or ["(tags ok, empty list)"]
+            out["configured_model"] = (os.getenv("OLLAMA_MODEL") or "").strip() or None
+            return out
+        out["error"] = str(data)[:120] if not ok else "unexpected /api/tags"
+        if provider == "ollama":
+            return out
+    if provider == "local" or local_url:
+        out["mode"] = "openai_compat"
+        base = local_url
+        if not base:
+            out["error"] = "LOCAL_LLM_BASE_URL empty"
+            return out
+        out["endpoint"] = base
+        # derive /v1/models from completions URL when possible
+        models_url = base
+        if models_url.endswith("/chat/completions"):
+            models_url = models_url[: -len("/chat/completions")] + "/models"
+        elif "/v1/" in models_url and not models_url.rstrip("/").endswith("models"):
+            # leave as-is; try stripping path after v1
+            idx = models_url.find("/v1/")
+            if idx >= 0:
+                models_url = models_url[: idx + 4] + "models"
+        headers = {"Accept": "application/json"}
+        key = (os.getenv("LOCAL_LLM_API_KEY") or "").strip()
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        ok, data = _http_json(models_url, headers=headers, timeout=5.0)
+        if ok:
+            out["ok"] = True
+            out["configured_model"] = (os.getenv("LOCAL_LLM_MODEL") or "").strip() or None
+            if isinstance(data, dict) and isinstance(data.get("data"), list):
+                out["models_hint"] = [
+                    str((m or {}).get("id") or "")[:40]
+                    for m in data.get("data")[:5]
+                    if m
+                ]
+            return out
+        out["error"] = str(data)[:120] if not ok else "models probe failed"
+        return out
+    out["mode"] = "cloud_or_unset"
+    out["error"] = "ACTIVE_PROVIDER is not ollama/local (no local probe required)"
+    out["ok"] = True  # not a failure when using cloud providers
+    return out
+
+
 def build_automation_status() -> dict[str, Any]:
     """Inspectable multi-system readiness (Stage 0)."""
     try:
@@ -284,6 +354,7 @@ def build_automation_status() -> dict[str, Any]:
         "letta": _probe_letta(),
         "github": _probe_github(),
         "sentry": _probe_sentry(),
+        "local_llm": _probe_local_llm(),
         "flags": {
             "ISAAC_AUTO_PIPELINE": auto_pipeline_enabled(),
             "ISAAC_AUTO_REDEPLOY": _env_bool("ISAAC_AUTO_REDEPLOY", False),
@@ -293,9 +364,15 @@ def build_automation_status() -> dict[str, Any]:
             "ISAAC_LETTA_ENABLED": _env_bool("ISAAC_LETTA_ENABLED", False),
             "ISAAC_COPILOT_AGENT_ENABLED": _env_bool("ISAAC_COPILOT_AGENT_ENABLED", False),
             "ISAAC_AGENT_AUTO_SELECT": _env_bool("ISAAC_AGENT_AUTO_SELECT", False),
+            "ACTIVE_PROVIDER": (os.getenv("ACTIVE_PROVIDER") or "").strip() or None,
         },
     }
     # overall readiness: core path
+    llm = status.get("local_llm") or {}
+    local_llm_ready = bool(llm.get("ok")) and llm.get("mode") in {"ollama", "openai_compat"}
+    # If cloud provider active, local_llm probe may be n/a
+    if llm.get("mode") == "cloud_or_unset":
+        local_llm_ready = False
     status["ready"] = {
         "memory_loop": bool((status["cognee"] or {}).get("ok")),
         "ops_loop": bool((status["render"] or {}).get("ok")) or not _free_cloud(),
@@ -303,6 +380,7 @@ def build_automation_status() -> dict[str, Any]:
         and bool(status["flags"].get("ISAAC_COPILOT_AGENT_ENABLED")),
         "aggressive_pr": bool(status["flags"].get("ISAAC_GH_AUTO_PR"))
         and bool((status["github"] or {}).get("ok")),
+        "local_llm": local_llm_ready,
     }
     return status
 
@@ -360,12 +438,30 @@ def format_automation_status(status: Optional[dict[str, Any]] = None) -> str:
             f"         • {row.get('shortId')}: {row.get('title')} (n={row.get('count')})"
         )
 
+    llm = st.get("local_llm") or {}
+    mode = llm.get("mode") or "-"
+    if mode == "cloud_or_unset":
+        lines.append(
+            f"LocalLLM: n/a (ACTIVE_PROVIDER={llm.get('active_provider') or 'unset'}; "
+            "use ollama|local for on-device)"
+        )
+    else:
+        lines.append(
+            f"LocalLLM: {'OK' if llm.get('ok') else 'FAIL'}  mode={mode}  "
+            f"endpoint={llm.get('endpoint') or '-'}  model={llm.get('configured_model') or '-'}"
+        )
+        if llm.get("models_hint"):
+            lines.append(f"         models={', '.join(llm.get('models_hint') or [])}")
+        if llm.get("error") and not llm.get("ok"):
+            lines.append(f"         error={llm.get('error')}")
+
     ready = st.get("ready") or {}
     lines.append("")
     lines.append(
         "Ready:  "
         f"memory={ready.get('memory_loop')}  ops={ready.get('ops_loop')}  "
-        f"gh_agent={ready.get('github_agent')}  aggressive_pr={ready.get('aggressive_pr')}"
+        f"gh_agent={ready.get('github_agent')}  aggressive_pr={ready.get('aggressive_pr')}  "
+        f"local_llm={ready.get('local_llm')}"
     )
     lines.append("")
     lines.append(

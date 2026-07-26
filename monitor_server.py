@@ -394,6 +394,34 @@ class MonitorServer:
             "multi_tool_mode": bool(getattr(self.cfg, "multi_tool_mode", False)),
         }
 
+        now_snap: dict = {}
+        goals_extra: dict = {}
+        try:
+            from monitor_now import build_now_snapshot, build_goals_missions_extras
+
+            bg = {}
+            try:
+                if self.kernel and getattr(self.kernel, "_background", None):
+                    bg = self.kernel._background.status() or {}
+            except Exception:
+                pass
+            now_snap = build_now_snapshot(
+                executor=self.executor,
+                gate=self.gate,
+                provider=str(settings.get("active_provider") or ""),
+                background=bg,
+            )
+            goals_extra = build_goals_missions_extras()
+        except Exception as exc:
+            log.debug("NOW snapshot skipped: %s", exc)
+            now_snap = {
+                "headline": "NOW nicht verfügbar",
+                "subline": str(exc)[:80],
+                "pipeline_phase": "idle",
+                "phases": {},
+                "updated_ts": time.time(),
+            }
+
         return {
             "ts":          time.strftime("%H:%M:%S"),
             "paused":      self.gate.is_paused,
@@ -416,6 +444,10 @@ class MonitorServer:
             "blacklist":   blacklist_status,
             "neural":      neural_status,
             "governance":  governance_status,
+            "now":         now_snap,
+            "goals":       goals_extra.get("goals") or {},
+            "missions":    goals_extra.get("missions") or {},
+            "remote_smoke": goals_extra.get("remote_smoke") or {},
         }
 
     def _get_directives(self) -> list[dict]:

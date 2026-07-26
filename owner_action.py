@@ -2221,6 +2221,13 @@ async def _isaac_ops(action: OwnerAction) -> tuple[str, bool]:
             )
     except Exception:
         pass
+    try:
+        from automation_pipeline import format_automation_status
+
+        lines.append("")
+        lines.append(format_automation_status())
+    except Exception:
+        pass
     return "\n".join(lines), True
 
 

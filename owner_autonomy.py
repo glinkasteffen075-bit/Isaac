@@ -36,6 +36,7 @@ _TASK_ENV_ALIASES: dict[str, str] = {
     "weekly_deep_cleanup": "WEEKLY",
     "daily_isaac_health": "HEALTH",
     "weekly_toolkit_sync": "TOOLKIT",
+    "daily_stack_health": "STACK_HEALTH",
 }
 
 _WEEKDAY_ALIASES: dict[str, int] = {
@@ -233,6 +234,18 @@ DEFAULT_SCHEDULED_OWNER_TASKS: tuple[ScheduledOwnerTask, ...] = (
         min_interval_hours=12.0,
         requires_plugged=False,
         min_battery_percent=30,
+    ),
+    # Stage 1 automation: multi-system health → Cognee (needs ISAAC_AUTO_PIPELINE=1 for write)
+    ScheduledOwnerTask(
+        task_id="daily_stack_health",
+        action_kind="automation_ops",
+        params={"op": "stack_health"},
+        raw_phrase="status:pipeline sync",
+        window_start_hour=7,
+        window_end_hour=22,
+        min_interval_hours=12.0,
+        requires_plugged=False,
+        min_battery_percent=25,
     ),
     ScheduledOwnerTask(
         task_id="weekly_toolkit_sync",
@@ -625,6 +638,17 @@ async def run_due_owner_autonomy_tasks(
                 from security_toolkit import execute_security_command
 
                 result, ok = await execute_security_command(dict(task.params))
+            elif task.action_kind == "automation_ops":
+                from automation_pipeline import run_stack_health_cycle
+
+                report = run_stack_health_cycle(force_write=True)
+                write = report.get("memory_write") or {}
+                result = (
+                    (report.get("summary") or "")
+                    + f"\n\n[Memory] ok={write.get('ok')} written={write.get('written')} "
+                    f"skip={write.get('skipped')}"
+                )
+                ok = True
             else:
                 result, ok = await execute_owner_action(action)
         except Exception as exc:

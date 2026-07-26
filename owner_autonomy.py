@@ -247,6 +247,18 @@ DEFAULT_SCHEDULED_OWNER_TASKS: tuple[ScheduledOwnerTask, ...] = (
         requires_plugged=False,
         min_battery_percent=25,
     ),
+    # Full remote smoke against Free URL (anti-sleep keep-alive is separate: ISAAC_REMOTE_SMOKE)
+    ScheduledOwnerTask(
+        task_id="daily_remote_smoke",
+        action_kind="automation_ops",
+        params={"op": "remote_smoke"},
+        raw_phrase="status:smoke full",
+        window_start_hour=8,
+        window_end_hour=22,
+        min_interval_hours=12.0,
+        requires_plugged=False,
+        min_battery_percent=25,
+    ),
     ScheduledOwnerTask(
         task_id="weekly_toolkit_sync",
         action_kind="security_toolkit",
@@ -639,16 +651,24 @@ async def run_due_owner_autonomy_tasks(
 
                 result, ok = await execute_security_command(dict(task.params))
             elif task.action_kind == "automation_ops":
-                from automation_pipeline import run_stack_health_cycle
+                op = str((task.params or {}).get("op") or "stack_health")
+                if op == "remote_smoke":
+                    from remote_smoke import format_report, run_full_smoke
 
-                report = run_stack_health_cycle(force_write=True)
-                write = report.get("memory_write") or {}
-                result = (
-                    (report.get("summary") or "")
-                    + f"\n\n[Memory] ok={write.get('ok')} written={write.get('written')} "
-                    f"skip={write.get('skipped')}"
-                )
-                ok = True
+                    report = await run_full_smoke(write_memory=True, include_sentry=True)
+                    result = format_report(report)
+                    ok = bool(report.get("ok"))
+                else:
+                    from automation_pipeline import run_stack_health_cycle
+
+                    report = run_stack_health_cycle(force_write=True)
+                    write = report.get("memory_write") or {}
+                    result = (
+                        (report.get("summary") or "")
+                        + f"\n\n[Memory] ok={write.get('ok')} written={write.get('written')} "
+                        f"skip={write.get('skipped')}"
+                    )
+                    ok = True
             else:
                 result, ok = await execute_owner_action(action)
         except Exception as exc:

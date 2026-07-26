@@ -225,6 +225,12 @@ EXPLICIT_COMMAND_PATTERNS = [
         r"^pipeline status$",
         r"^automation status$",
         r"^status:automation$",
+        r"^status:smoke$",
+        r"^status:smoke\s+\w+$",
+        r"^smoke:remote$",
+        r"^smoke:remote\s+\w+$",
+        r"^remote smoke$",
+        r"^remote smoke\s+\w+$",
     ]),
 ]
 
@@ -2400,8 +2406,13 @@ class IsaacKernel:
                 "pipeline status",
                 "automation status",
                 "status:automation",
+                "status:smoke",
+                "smoke:remote",
+                "remote smoke",
             )
         ):
+            if any(x in tl for x in ("status:smoke", "smoke:remote", "remote smoke")):
+                return self._handle_remote_smoke(tl)
             try:
                 from automation_pipeline import format_automation_status, run_stack_health_cycle
 
@@ -2422,6 +2433,57 @@ class IsaacKernel:
             return get_external_memory_bridge().status_text()
         except Exception as exc:
             return f"[External Memory] nicht verfügbar: {exc}"
+
+    def _handle_remote_smoke(self, tl: str) -> str:
+        """status:smoke | status:smoke wake | status:smoke full
+
+        Keep-alive must run from outside Render Free (sleep ≈15 min).
+        """
+        try:
+            from remote_smoke import (
+                format_report,
+                run_full_smoke,
+                run_wake_only,
+                status as smoke_status,
+            )
+        except Exception as exc:
+            return f"[Remote Smoke] Modul fehlt: {exc}"
+
+        run_wake = "wake" in tl
+        run_full = any(x in tl for x in ("full", "run", "sync"))
+        bare = tl.strip() in {
+            "status:smoke",
+            "smoke:remote",
+            "remote smoke",
+        }
+
+        if bare or (not run_wake and not run_full):
+            st = smoke_status()
+            return (
+                "[Remote Smoke Status]\n"
+                + "\n".join(f"{k}={v}" for k, v in st.items())
+                + "\n\nBefehle: status:smoke full | status:smoke wake\n"
+                "Anti-Sleep: wake alle ≤10 Min von außen "
+                "(GH Actions cron oder lokal ISAAC_REMOTE_SMOKE=1)."
+            )
+        if run_wake and not run_full:
+            try:
+                return format_report(run_wake_only())
+            except Exception as exc:
+                return f"[Remote Smoke] wake fehlgeschlagen: {exc}"
+        try:
+            report = asyncio.run(run_full_smoke())
+            return format_report(report)
+        except RuntimeError:
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                report = pool.submit(lambda: asyncio.run(run_full_smoke())).result(
+                    timeout=600
+                )
+            return format_report(report)
+        except Exception as exc:
+            return f"[Remote Smoke] full fehlgeschlagen: {exc}"
 
     def _handle_letta(self, text: str) -> str:
         """Explicit Letta Code companion run: 'letta: …' / 'coding-agent: …'."""
@@ -3214,6 +3276,9 @@ class IsaacKernel:
                 "pipeline status",
                 "automation status",
                 "status:automation",
+                "status:smoke",
+                "smoke:remote",
+                "remote smoke",
             ),
         }
         prefixes = explicit_prefixes.get(intent, ())

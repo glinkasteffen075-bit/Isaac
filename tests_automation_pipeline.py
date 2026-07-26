@@ -95,6 +95,80 @@ class TestAutomationPipeline(unittest.TestCase):
         task = next(t for t in DEFAULT_SCHEDULED_OWNER_TASKS if t.task_id == "daily_stack_health")
         self.assertEqual(task.action_kind, "automation_ops")
 
+    def test_daily_remote_smoke_scheduled(self):
+        from owner_autonomy import DEFAULT_SCHEDULED_OWNER_TASKS
+
+        task = next(
+            t for t in DEFAULT_SCHEDULED_OWNER_TASKS if t.task_id == "daily_remote_smoke"
+        )
+        self.assertEqual(task.action_kind, "automation_ops")
+        self.assertEqual((task.params or {}).get("op"), "remote_smoke")
+
+    def test_remote_smoke_wake_interval_under_sleep(self):
+        from remote_smoke import (
+            RENDER_SLEEP_THRESHOLD_S,
+            MAX_WAKE_INTERVAL_S,
+            classify_expectation,
+            build_smoke_memory_text,
+            wake_interval_s,
+        )
+
+        self.assertLess(MAX_WAKE_INTERVAL_S, RENDER_SLEEP_THRESHOLD_S)
+        with patch.dict(os.environ, {"ISAAC_REMOTE_SMOKE_WAKE_INTERVAL_S": "99999"}):
+            # hard-capped so Free cannot sleep between pings
+            self.assertLessEqual(wake_interval_s(), MAX_WAKE_INTERVAL_S)
+            self.assertLess(wake_interval_s(), RENDER_SLEEP_THRESHOLD_S)
+        with patch.dict(os.environ, {"ISAAC_REMOTE_SMOKE_WAKE_INTERVAL_S": "600"}):
+            self.assertEqual(wake_interval_s(), 600.0)
+
+        ok, _ = classify_expectation("A", "Hallo Steffen!")
+        self.assertTrue(ok)
+        ok_g, note = classify_expectation(
+            "G", "Ich habe mich erfolgreich bei Google eingeloggt"
+        )
+        self.assertFalse(ok_g)
+        self.assertIn("hallucin", note.lower())
+
+        text = build_smoke_memory_text(
+            {
+                "mode": "full",
+                "ts": "t",
+                "ok": True,
+                "url": "https://isaac-free.onrender.com",
+                "git_commit": "abc",
+                "active_provider": "groq",
+                "wake_interval_s": 600,
+                "full_interval_s": 7200,
+                "health": {"ok": True, "ms": 12},
+                "cases": [
+                    {
+                        "case": "A",
+                        "pass": True,
+                        "ms": 100,
+                        "expect_note": "greeting",
+                        "response": "Hallo",
+                    }
+                ],
+                "sentry": {
+                    "ok": True,
+                    "unresolved_count_sample": 1,
+                    "unresolved_preview": [
+                        {"shortId": "ISAAC-1", "count": 2, "title": "x"}
+                    ],
+                },
+            }
+        )
+        self.assertIn("remote_smoke", text)
+        self.assertIn("ISAAC-1", text)
+        self.assertIn("case A", text)
+
+    def test_status_smoke_intent(self):
+        from isaac_core import detect_intent, Intent
+
+        self.assertEqual(detect_intent("status:smoke"), Intent.EXT_MEMORY)
+        self.assertEqual(detect_intent("status:smoke wake"), Intent.EXT_MEMORY)
+        self.assertEqual(detect_intent("smoke:remote full"), Intent.EXT_MEMORY)
+
 
 if __name__ == "__main__":
     unittest.main()

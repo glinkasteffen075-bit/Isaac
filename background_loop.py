@@ -40,9 +40,11 @@ class BackgroundState:
     letzter_owner_autonomy: float = 0.0
     letzter_goal_autonomy: float = 0.0
     letzter_mission: float = 0.0
+    letzter_remote_smoke: float = 0.0
     owner_task_last_run: dict = field(default_factory=dict)
     goal_autonomy_ticks: int = 0
     mission_ticks: int = 0
+    remote_smoke_ticks: int = 0
     zyklen:             int   = 0
     dialoge_gesamt:     int   = 0
     diskussionen_gesamt: int  = 0
@@ -75,6 +77,8 @@ class BackgroundLoop:
     OWNER_AUTONOMY_INTERVAL = 3600  # 1 Stunde
     GOAL_AUTONOMY_INTERVAL = 900    # 15 Minuten — Ziel-Motivation
     MISSION_INTERVAL = 600          # 10 Minuten — Execution-Contract Missionen
+    # Remote smoke keep-alive: poll tick often; remote_smoke module enforces <15m wake
+    REMOTE_SMOKE_TICK = 60          # 1 Minute — prüft ob wake/full fällig
     TICK                = 30       # MOBILE: Größerer Tick-Abstand
 
     # MOBILE: Sparmodus ab 30%
@@ -241,6 +245,12 @@ class BackgroundLoop:
                 ):
                     await self._mission_zyklus()
                     self.state.letzter_mission = now
+
+                # Remote smoke / Render Free anti-sleep (nur wenn ISAAC_REMOTE_SMOKE=1)
+                # Wichtig: läuft auf immer-an Host (lokal/S8), nicht auf schlafendem Free.
+                if now - self.state.letzter_remote_smoke > self.REMOTE_SMOKE_TICK:
+                    await self._remote_smoke_zyklus()
+                    self.state.letzter_remote_smoke = now
 
                 # State Dump
                 if now - self.state.letzter_dump > self.DUMP_INTERVAL:
@@ -416,6 +426,32 @@ class BackgroundLoop:
         except Exception as e:
             log.debug("Mission-Zyklus: %s", e)
 
+    async def _remote_smoke_zyklus(self):
+        """Keep-alive + full smoke against remote Free URL (anti Render sleep)."""
+        try:
+            from free_cloud import free_cloud_enabled
+            # On Free itself: cannot keep self awake after sleep; skip to save cycles
+            if free_cloud_enabled():
+                return
+        except Exception:
+            pass
+        try:
+            from remote_smoke import remote_smoke_enabled, run_auto_tick
+
+            if not remote_smoke_enabled():
+                return
+            result = await run_auto_tick(on_note=self._notiere)
+            if result.get("mode") in {"wake", "full"}:
+                self.state.remote_smoke_ticks = int(self.state.remote_smoke_ticks or 0) + 1
+                log.info(
+                    "RemoteSmoke: mode=%s ok=%s commit=%s",
+                    result.get("mode"),
+                    result.get("ok"),
+                    result.get("git_commit"),
+                )
+        except Exception as e:
+            log.debug("RemoteSmoke-Zyklus: %s", e)
+
     async def _decay_check(self):
         try:
             from forgetting_decay import run_decay_cycle
@@ -468,9 +504,11 @@ class BackgroundLoop:
                 "letzter_owner_autonomy": self.state.letzter_owner_autonomy,
                 "letzter_goal_autonomy": self.state.letzter_goal_autonomy,
                 "letzter_mission": self.state.letzter_mission,
+                "letzter_remote_smoke": self.state.letzter_remote_smoke,
                 "owner_task_last_run": dict(self.state.owner_task_last_run or {}),
                 "goal_autonomy_ticks": int(self.state.goal_autonomy_ticks or 0),
                 "mission_ticks": int(self.state.mission_ticks or 0),
+                "remote_smoke_ticks": int(self.state.remote_smoke_ticks or 0),
                 "zyklen":             self.state.zyklen,
                 "dialoge_gesamt":     self.state.dialoge_gesamt,
                 "ideen_gesamt":       self.state.ideen_gesamt,
@@ -516,6 +554,8 @@ class BackgroundLoop:
             "letzter_goal_autonomy": self.state.letzter_goal_autonomy,
             "mission_ticks": int(self.state.mission_ticks or 0),
             "letzter_mission": self.state.letzter_mission,
+            "remote_smoke_ticks": int(self.state.remote_smoke_ticks or 0),
+            "letzter_remote_smoke": self.state.letzter_remote_smoke,
         }
 
 

@@ -504,6 +504,17 @@ class IsaacKernel:
             intent = Intent.BROWSER
         timing["routing_prep_ms"] = round((time.perf_counter() - t_start) * 1000, 2)
 
+        # Dashboard NOW (fail-open telemetry only)
+        try:
+            from monitor_now import set_now_phase
+            set_now_phase(
+                "classification",
+                headline=f"{intent}: {(user_input or '')[:80]}",
+                subline=f"class={interaction_class}",
+            )
+        except Exception:
+            pass
+
         log.info(
             f"Input: '{user_input[:50]}' │ Intent: {intent} │ "
             f"Node: {emp.node.zustand} │ Sudo: {sudo_aktiv}"

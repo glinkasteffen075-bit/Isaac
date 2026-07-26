@@ -392,6 +392,16 @@ class CogneeAdapter:
                 ],
                 timeout=max(float(self._cfg.write_timeout_s), 15.0),
             )
+            # Search requires cognify after add (otherwise empty graph / 0 hits).
+            try:
+                self._cloud_request(
+                    "POST",
+                    "/api/v1/cognify",
+                    body={"datasets": [self.DATASET_NAME]},
+                    timeout=max(float(self._cfg.write_timeout_s), 45.0),
+                )
+            except Exception as cognify_exc:
+                log.debug("Cognee cloud cognify after add: %s", cognify_exc)
             return True
         except Exception as exc:
             log.debug("Cognee cloud remember failed: %s", exc)

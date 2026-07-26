@@ -343,7 +343,6 @@ class AsyncRelay:
             except ProviderErr as e:
                 msg = str(e)
                 self._mark_failure(prov_name, msg)
-                AuditLog.error("Relay", msg, f"provider={prov_name}")
                 # Offline / connection errors: fail fast (no 3× ollama spam)
                 msg_l = msg.lower()
                 offline = any(
@@ -359,6 +358,21 @@ class AsyncRelay:
                         "offline",
                     )
                 )
+                # Expected offline backends (esp. Ollama) must not hit Sentry via
+                # LoggingIntegration(event_level=ERROR) on AuditLog.error.
+                expected_offline = offline and (
+                    prov_name == "ollama" or "ollama" in msg_l
+                )
+                if expected_offline:
+                    log.warning("[Relay] %s provider=%s (expected offline, no Sentry)", msg[:120], prov_name)
+                    AuditLog.action(
+                        "Relay",
+                        f"offline:{prov_name}",
+                        msg[:160],
+                        erfolg=False,
+                    )
+                else:
+                    AuditLog.error("Relay", msg, f"provider={prov_name}")
                 if offline or versuch == self.cfg.relay.max_retries:
                     # Longer cooldown so ask_with_fallback skips this backend
                     if offline:

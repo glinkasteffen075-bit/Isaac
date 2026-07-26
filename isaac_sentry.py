@@ -125,6 +125,41 @@ def _build_integrations() -> list[Any]:
     return integrations
 
 
+def _before_send(event: dict[str, Any], hint: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Drop expected noise (Ollama offline on Free / non-primary) — keep real bugs."""
+    try:
+        msg = ""
+        if event.get("logentry") and isinstance(event["logentry"], dict):
+            msg = str(event["logentry"].get("message") or "")
+        if not msg and event.get("message"):
+            msg = str(event.get("message") or "")
+        if not msg:
+            exc = (event.get("exception") or {}).get("values") or []
+            if exc and isinstance(exc[0], dict):
+                msg = str(exc[0].get("value") or "")
+        ml = msg.lower()
+        # Expected local/free backend absence
+        ollama_noise = (
+            "ollama nicht erreichbar" in ml
+            or ("ollama" in ml and "nicht erreichbar" in ml)
+            or ("ollama" in ml and "connection refused" in ml)
+        )
+        if ollama_noise:
+            free = _env_bool("ISAAC_FREE_CLOUD", False)
+            primary = (os.getenv("ACTIVE_PROVIDER") or os.getenv("ISAAC_PRIMARY_PROVIDER") or "").strip().lower()
+            if free or primary not in {"", "ollama"}:
+                return None
+        # Intentional verify smokes
+        if "isaac_sentry_verify" in ml or "isaac sentry" in ml and "smoke" in ml:
+            return None
+        # KeyboardInterrupt from restarts
+        if "keyboardinterrupt" in ml:
+            return None
+    except Exception:
+        pass
+    return event
+
+
 def init_sentry() -> bool:
     """Initialize Sentry once with tracing, profiling, logs, metrics, AI spans."""
     global _initialized, _include_prompts, _session_conversation_id
@@ -173,6 +208,7 @@ def init_sentry() -> bool:
         "send_default_pii": _include_prompts,
         "max_breadcrumbs": int(_env_float("SENTRY_MAX_BREADCRUMBS", 100)),
         "debug": _env_bool("SENTRY_DEBUG", False),
+        "before_send": _before_send,
         # Tracing (Performance)
         "enable_tracing": True,
         "traces_sample_rate": traces,

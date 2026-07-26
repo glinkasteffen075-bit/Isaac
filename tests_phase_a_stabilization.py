@@ -358,6 +358,39 @@ class TestCriticalBugs(unittest.TestCase):
         out2 = apply_anti_hallucination("Browser auf google", real, tools_ran=False)
         self.assertIn("[Evidence]", out2)
 
+    def test_followup_und_continuity_no_credential_fishing(self):
+        """'Und?' must not open key/browser missions; strip noise + style_note."""
+        from executor import Strategy
+        from low_complexity import InteractionClass
+
+        k = self.kernel
+        self.assertTrue(k._is_short_followup("Und?"))
+        self.assertTrue(k._is_short_followup("und dann?"))
+        self.assertFalse(k._is_short_followup("Was ist 2+2?"))
+
+        noisy = (
+            "active_directives\n"
+            "  - prio=9: Provider-API-Keys selbst beschaffen\n"
+            "  - login: steffen@x passwort: secret\n"
+            "recent: 2+2 is 4\n"
+        )
+        clean = k._strip_mission_noise_from_context(noisy)
+        self.assertNotIn("api-key", clean.lower().replace("_", "-"))
+        self.assertNotIn("passwort", clean.lower())
+        self.assertIn("2+2", clean)
+
+        strat = k._select_response_strategy(
+            "Und?",
+            Intent.CHAT,
+            InteractionClass.NORMAL_CHAT,
+            retrieval_ctx={},
+        )
+        self.assertIsInstance(strat, Strategy)
+        self.assertFalse(strat.allow_tools)
+        self.assertFalse(strat.allow_provider_switch)
+        self.assertIn("Follow-up", strat.style_note or "")
+        self.assertIn("Anmeldedaten", strat.style_note or "")
+
     def test_owner_notify_only_hard_blockers(self):
         import time
         from owner_notify import infer_blocker_from_text, notify_owner_blocker, OwnerBlocker

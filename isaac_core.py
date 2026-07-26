@@ -876,6 +876,9 @@ class IsaacKernel:
                               classification: ClassificationResult,
                               constitution_gate: Optional[dict] = None,
                               ) -> tuple[str, float]:
+        # Follow-ups: strip key/browser mission noise from side context
+        if intent == Intent.CHAT and self._is_short_followup(user_input):
+            wissen_kontext = self._strip_mission_noise_from_context(wissen_kontext or "")
         retrieval_ctx = self._retrieve_relevant_context(
             user_input=user_input,
             intent=intent,
@@ -942,6 +945,8 @@ class IsaacKernel:
         provider = self._provider_hint(user_input)
 
         structured_ctx = self._format_retrieval_context(retrieval_ctx)
+        if intent == Intent.CHAT and self._is_short_followup(user_input):
+            structured_ctx = self._strip_mission_noise_from_context(structured_ctx)
         kontext = structured_ctx.strip()
         if agent_ctx_block:
             kontext = f"{agent_ctx_block}\n\n{kontext}".strip() if kontext else agent_ctx_block
@@ -3328,16 +3333,63 @@ class IsaacKernel:
 
         return Intent.CHAT
 
+    def _is_short_followup(self, text: str) -> bool:
+        """Short conversational follow-ups (e.g. 'Und?') — not new missions."""
+        try:
+            from low_complexity import normalize_low_complexity
+            tl = normalize_low_complexity(text or "")
+        except Exception:
+            tl = (text or "").lower().strip()
+        if not tl:
+            return False
+        exact = {
+            "und?", "und", "und dann?", "und dann", "und nun?", "und nun",
+            "und jetzt?", "und jetzt", "na und?", "na und", "weiter?", "weiter",
+            "warum?", "warum", "wieso?", "wieso", "weshalb?", "weshalb",
+            "wie bitte?", "was meinst du?", "was meinst du", "und?", "??",
+            "…?", "...?", "und so weiter?", "und weiter?",
+        }
+        if tl in exact:
+            return True
+        words = tl.split()
+        if len(words) <= 3 and tl.endswith("?"):
+            if words[0] in {"und", "warum", "wieso", "weshalb", "wieso", "wie"}:
+                return True
+        return False
+
+    @staticmethod
+    def _strip_mission_noise_from_context(text: str) -> str:
+        """Remove key-hunt / browser-login / provisioning noise from context blocks."""
+        if not (text or "").strip():
+            return text or ""
+        drop_markers = (
+            "api-key", "api key", "api_keys", "provider-api", "provider api",
+            "openrouter", "groq einrichten", "keys selbst", "auto_provision",
+            "provider_auto_connect", "passwort", "password", "login:",
+            "browser-automation", "browser automation", "anmeldedaten",
+            "fehlende keys", "token beschaffen", "provision",
+        )
+        lines = []
+        for line in (text or "").splitlines():
+            low = line.lower()
+            if any(m in low for m in drop_markers):
+                continue
+            lines.append(line)
+        return "\n".join(lines).strip()
+
     def _retrieve_relevant_context(
         self, user_input: str, intent: str, interaction_class: str
     ) -> dict[str, Any]:
         from self_model_hooks import enrich_retrieval_with_self_model
 
+        n_hist = 6
+        if intent == Intent.CHAT and self._is_short_followup(user_input):
+            n_hist = 4  # keep recent turns for continuity, less bulk noise
         retrieval_ctx = self.memory.build_retrieval_context(
             user_input=user_input,
             intent=intent,
             interaction_class=interaction_class,
-            n_history=6,
+            n_history=n_hist,
         ).as_dict()
         return enrich_retrieval_with_self_model(retrieval_ctx)
 
@@ -3403,6 +3455,17 @@ class IsaacKernel:
                     style_note += "\n[Antwortstil] Bleibe knapp, direkt und rein sachlich."
             else:
                 style_note += "\n[Antwortstil] Kein Sarkasmus in dieser Antwort."
+
+        # Short follow-ups: stay on topic; no credential/browser/key hunting
+        if intent == Intent.CHAT and self._is_short_followup(user_input):
+            allow_tools = False
+            allow_agent_companions = False
+            allow_provider_switch = False
+            style_note += (
+                "\n[Follow-up] Beziehe dich auf den unmittelbar vorherigen User-Turn und deine "
+                "letzte Antwort. Keine neuen Themen, keine Browser-/Login-/API-Key-Missionen, "
+                "keine Anmeldedaten anfordern — außer der User fragt explizit danach."
+            )
 
         # Kürzeste Klärungen ohne Eskalation.
         if interaction_class in ("SHORT_CLARIFICATION",):

@@ -88,3 +88,19 @@ python3 scripts/render_chat_smoke.py
 - Never commit DSN or auth tokens.
 - `.env` / `.env.local` are gitignored.
 - Rotate tokens that were pasted into chat.
+
+## Hygiene policy (2026-07-26)
+
+**Do not leave intentional / environmental noise unresolved:**
+
+| Pattern | Action |
+|---------|--------|
+| Verify smokes (`isaac_sentry_verify`, full-stack smoke) | resolve |
+| `KeyboardInterrupt` on restart | resolve |
+| HTTP on WebSocket port (`missing Connection header`) | resolve |
+| Unclosed connector after MCP session-close fix | resolve; reopen if recurs |
+| Ollama unreachable when primary ≠ ollama / Free-Cloud | **filtered** (`before_send` + relay uses warning, not AuditLog.error) |
+
+Code: `isaac_sentry._before_send`, `relay` expected_offline path.
+
+Unresolved should stay **real production bugs** only.

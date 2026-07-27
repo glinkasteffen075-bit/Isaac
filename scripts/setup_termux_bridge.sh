@@ -81,6 +81,21 @@ grep -q '^ISAAC_TERMUX_SSH_PORT=' "$ENV_FILE" 2>/dev/null || echo "ISAAC_TERMUX_
 grep -q '^ISAAC_TERMUX_SSH_IDENTITY=' "$ENV_FILE" 2>/dev/null || echo "ISAAC_TERMUX_SSH_IDENTITY=$KEY_PATH" >> "$ENV_FILE"
 if ! grep -q '^ISAAC_TERMUX_SSH_USER=' "$ENV_FILE" 2>/dev/null; then
   echo "ISAAC_TERMUX_SSH_USER=$SSH_USER" >> "$ENV_FILE"
+else
+  # keep user in sync with detected Termux uid
+  sed -i "s/^ISAAC_TERMUX_SSH_USER=.*/ISAAC_TERMUX_SSH_USER=$SSH_USER/" "$ENV_FILE" 2>/dev/null || true
+fi
+
+# Shared storage so Kali-Chroot can pick up the private key (bind mounts differ)
+if [ -d /sdcard ] || [ -d /storage/emulated/0 ]; then
+  SD="${SDCARD:-/sdcard}"
+  [ -d "$SD" ] || SD="/storage/emulated/0"
+  if [ -d "$SD" ]; then
+    cp -f "$KEY_PATH" "$SD/isaac_termux_bridge_id" 2>/dev/null || true
+    cp -f "$PUB_PATH" "$SD/isaac_termux_bridge.pub" 2>/dev/null || true
+    chmod 600 "$SD/isaac_termux_bridge_id" 2>/dev/null || true
+    echo "  Shared key (für Chroot): $SD/isaac_termux_bridge_id"
+  fi
 fi
 
 echo ""
@@ -89,7 +104,12 @@ echo "  Bridge-Workdir: $BRIDGE_DIR"
 echo "  SSH-Key:        $KEY_PATH"
 echo "  SSH-User:       $SSH_USER (ggf. in .env.local anpassen)"
 echo ""
+echo "Falls Isaac im Kali-Chroot den Key nicht sieht, dort ausführen:"
+echo "  cp /sdcard/isaac_termux_bridge_id ~/isaacnew/data/termux_bridge_id"
+echo "  chmod 600 ~/isaacnew/data/termux_bridge_id"
+echo ""
 echo "Test in Isaac (Linux-Chroot):"
+echo "  python3 -c \"from termux_bridge import diagnose_bridge; print(diagnose_bridge())\""
 echo "  python3 -c \"import asyncio; from computer_use import get_computer_use, parse_agent_body; print(asyncio.run(get_computer_use().execute(parse_agent_body('diagnose'))))\""
 echo ""
 echo "Wichtig: Termux:API-App öffnen und Berechtigungen (Storage, Draw over, etc.) erlauben."

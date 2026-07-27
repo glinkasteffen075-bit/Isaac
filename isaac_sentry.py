@@ -125,9 +125,44 @@ def _build_integrations() -> list[Any]:
     return integrations
 
 
-def _before_send(event: dict[str, Any], hint: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """Drop expected noise (Ollama offline on Free / non-primary) — keep real bugs."""
+_EXPECTED_SHUTDOWN_TYPES = frozenset({
+    "KeyboardInterrupt",
+    "SystemExit",
+    "CancelledError",  # asyncio cancel during redeploy
+    "asyncio.exceptions.CancelledError",
+})
+
+
+def _exception_type_names(event: dict[str, Any], hint: dict[str, Any]) -> list[str]:
+    names: list[str] = []
     try:
+        exc_info = hint.get("exc_info") if isinstance(hint, dict) else None
+        if exc_info and len(exc_info) >= 1 and exc_info[0] is not None:
+            t = exc_info[0]
+            names.append(getattr(t, "__name__", "") or str(t))
+            names.append(f"{getattr(t, '__module__', '')}.{getattr(t, '__name__', '')}")
+    except Exception:
+        pass
+    try:
+        for item in (event.get("exception") or {}).get("values") or []:
+            if isinstance(item, dict):
+                t = str(item.get("type") or "").strip()
+                if t:
+                    names.append(t)
+    except Exception:
+        pass
+    return [n for n in names if n]
+
+
+def _before_send(event: dict[str, Any], hint: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Drop expected noise (Ollama offline, restarts) — keep real bugs."""
+    try:
+        # Shutdown / redeploy noise — filter by exception type, not only message text
+        for tname in _exception_type_names(event, hint or {}):
+            short = tname.rsplit(".", 1)[-1]
+            if tname in _EXPECTED_SHUTDOWN_TYPES or short in _EXPECTED_SHUTDOWN_TYPES:
+                return None
+
         msg = ""
         if event.get("logentry") and isinstance(event["logentry"], dict):
             msg = str(event["logentry"].get("message") or "")
@@ -137,6 +172,11 @@ def _before_send(event: dict[str, Any], hint: dict[str, Any]) -> Optional[dict[s
             exc = (event.get("exception") or {}).get("values") or []
             if exc and isinstance(exc[0], dict):
                 msg = str(exc[0].get("value") or "")
+                if not msg:
+                    msg = str(exc[0].get("type") or "")
+        # title often equals type name for bare interrupts
+        if not msg and event.get("title"):
+            msg = str(event.get("title") or "")
         ml = msg.lower()
         # Expected local/free backend absence
         ollama_noise = (
@@ -150,10 +190,13 @@ def _before_send(event: dict[str, Any], hint: dict[str, Any]) -> Optional[dict[s
             if free or primary not in {"", "ollama"}:
                 return None
         # Intentional verify smokes
-        if "isaac_sentry_verify" in ml or "isaac sentry" in ml and "smoke" in ml:
+        if "isaac_sentry_verify" in ml or ("isaac sentry" in ml and "smoke" in ml):
             return None
-        # KeyboardInterrupt from restarts
-        if "keyboardinterrupt" in ml:
+        # KeyboardInterrupt / SystemExit from restarts (message path)
+        if "keyboardinterrupt" in ml or "systemexit" in ml:
+            return None
+        # WS probe noise (health checkers without Upgrade header)
+        if "invalidupgrade" in ml or "missing connection header" in ml:
             return None
     except Exception:
         pass
@@ -209,6 +252,11 @@ def init_sentry() -> bool:
         "max_breadcrumbs": int(_env_float("SENTRY_MAX_BREADCRUMBS", 100)),
         "debug": _env_bool("SENTRY_DEBUG", False),
         "before_send": _before_send,
+        # SDK-level ignore for restart/redeploy noise (also covered by before_send)
+        "ignore_errors": [
+            KeyboardInterrupt,
+            SystemExit,
+        ],
         # Tracing (Performance)
         "enable_tracing": True,
         "traces_sample_rate": traces,
@@ -241,6 +289,7 @@ def init_sentry() -> bool:
         "enable_metrics",
         "enable_tracing",
         "propagate_traces",
+        "ignore_errors",
     ]
     while True:
         try:

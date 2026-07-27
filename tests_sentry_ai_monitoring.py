@@ -8,6 +8,35 @@ from unittest import mock
 
 
 class TestSentryAiMonitoringNoOp(unittest.TestCase):
+    def test_before_send_drops_keyboardinterrupt_by_type(self):
+        import isaac_sentry as mod
+
+        event = {
+            "exception": {"values": [{"type": "KeyboardInterrupt", "value": ""}]},
+            "title": "KeyboardInterrupt",
+        }
+        self.assertIsNone(mod._before_send(event, {}))
+        # hint.exc_info path
+        self.assertIsNone(
+            mod._before_send({"message": "x"}, {"exc_info": (KeyboardInterrupt, KeyboardInterrupt(), None)})
+        )
+        # real bug must pass through
+        kept = mod._before_send(
+            {"exception": {"values": [{"type": "ValueError", "value": "boom"}]}},
+            {},
+        )
+        self.assertIsNotNone(kept)
+
+    def test_before_send_drops_invalidupgrade_noise(self):
+        import isaac_sentry as mod
+
+        self.assertIsNone(
+            mod._before_send(
+                {"message": "InvalidUpgrade: missing Connection header"},
+                {},
+            )
+        )
+
     def test_init_without_dsn_is_disabled(self):
         import isaac_sentry as mod
 

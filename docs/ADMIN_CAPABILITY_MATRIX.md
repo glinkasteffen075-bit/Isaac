@@ -133,7 +133,19 @@ Immer „verstanden"         Nur imperative / explizite Befehle sicher
 
 ---
 
-## 8. Schnelltest
+## 8. MCP-Oberfläche (Contract)
+
+Lokales MCP-Grundgerüst (JSON-RPC + optional HTTP): **6 Tools, 7 Resources, 2 Prompts**, Privilege-Maps, keine Subagent-Expansion.
+
+Vollständige Matrix und Error-Shapes: [MCP_CAPABILITY.md](MCP_CAPABILITY.md)
+
+```bash
+ISAAC_DISABLE_VECTOR_MEMORY=1 python3 -m evals.mcp_eval
+```
+
+---
+
+## 9. Schnelltest
 
 ```bash
 ISAAC_DISABLE_VECTOR_MEMORY=1 python3 scripts/owner_action_live_test.py
@@ -142,7 +154,7 @@ ISAAC_DISABLE_VECTOR_MEMORY=1 python3 scripts/owner_action_live_test.py --live  
 
 ---
 
-## 9. Zurück zu eingeschränkt
+## 10. Zurück zu eingeschränkt
 
 ```env
 ISAAC_PRIVILEGE_MODE=user

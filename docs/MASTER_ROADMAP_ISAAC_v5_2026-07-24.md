@@ -166,12 +166,12 @@ Jeder Track: **klein, testbar, ROT/BLAU/GRÜN-Ownership, nach jedem Substep runn
 
 - [x] Tools + Resources + Prompts + Privilege-Map (Grundgerüst)  
 - [x] JSON-RPC + REST Bridge  
-- [ ] Contract-Tests: jede `resource://*` liest konsistent; unknown tool rejected (teilweise in mcp_eval)  
-- [ ] stdio-Transport Smoke in evals  
-- [ ] Docs: Owner-Commands / Capability-Matrix aktualisieren  
-- [ ] **Nicht:** Multi-Agent, remote Subagent-Orchestrierung  
+- [x] Contract-Tests: jede Resource lesbar; unknown tool/resource/prompt rejected; Privilege-Maps exact (`evals/mcp_eval.py`)  
+- [x] stdio-Transport Smoke in evals  
+- [x] Docs: `docs/MCP_CAPABILITY.md` + Verweis in Admin-Capability-Matrix  
+- [x] **Nicht:** Multi-Agent, remote Subagent-Orchestrierung (bleibt Do-NOT)  
 
-**DoD:** `evals.mcp` grün + dokumentierte resource:// Liste = Registry-Output.
+**DoD:** `evals.mcp` grün + dokumentierte resource:// Liste = Registry-Output. **(2026-07-27)**
 
 #### C3 — Checkpoint / Resume (GRÜN)
 

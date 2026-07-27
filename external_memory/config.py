@@ -52,11 +52,18 @@ class ExternalMemoryConfig:
     owner_id: str = "Steffen"
     mem0_allow_cloud: bool = False
     cognee_allow_cloud: bool = False
+    letta_allow_cloud: bool = False
     cognee_base_url: str = ""
     cognee_api_key: str = ""
     mem0_dir: Path = Path()
     cognee_dir: Path = Path()
     letta_bin: str = "letta"
+    letta_api_key: str = ""
+    letta_base_url: str = "https://api.letta.com"
+    letta_agent_id: str = ""
+    letta_agent_name: str = "isaac"
+    letta_model: str = "openai/gpt-4o-mini"
+    letta_embedding: str = "openai/text-embedding-3-small"
     open_interpreter_bin: str = "interpreter"
     open_interpreter_sandbox: str = "read-only"
     open_interpreter_provider: str = "openrouter"
@@ -130,6 +137,7 @@ def load_external_memory_config() -> ExternalMemoryConfig:
         owner_id=owner,
         mem0_allow_cloud=_env_bool("ISAAC_MEM0_ALLOW_CLOUD", False),
         cognee_allow_cloud=_env_bool("ISAAC_COGNEE_ALLOW_CLOUD", False),
+        letta_allow_cloud=_env_bool("ISAAC_LETTA_ALLOW_CLOUD", False),
         cognee_base_url=(
             os.getenv("COGNEE_BASE_URL") or os.getenv("ISAAC_COGNEE_BASE_URL") or ""
         ).strip().rstrip("/"),
@@ -139,6 +147,32 @@ def load_external_memory_config() -> ExternalMemoryConfig:
         mem0_dir=Path(os.getenv("ISAAC_MEM0_DIR") or (DATA_DIR / "mem0")),
         cognee_dir=Path(os.getenv("ISAAC_COGNEE_DIR") or (DATA_DIR / "cognee")),
         letta_bin=(os.getenv("LETTA_BIN") or "letta").strip() or "letta",
+        letta_api_key=(
+            os.getenv("LETTA_API_KEY") or os.getenv("ISAAC_LETTA_API_KEY") or ""
+        ).strip(),
+        letta_base_url=(
+            os.getenv("LETTA_BASE_URL")
+            or os.getenv("ISAAC_LETTA_BASE_URL")
+            or "https://api.letta.com"
+        ).strip().rstrip("/")
+        or "https://api.letta.com",
+        letta_agent_id=(
+            os.getenv("LETTA_AGENT_ID") or os.getenv("ISAAC_LETTA_AGENT_ID") or ""
+        ).strip(),
+        letta_agent_name=(
+            os.getenv("LETTA_AGENT_NAME") or os.getenv("ISAAC_LETTA_AGENT_NAME") or "isaac"
+        ).strip()
+        or "isaac",
+        letta_model=(
+            os.getenv("LETTA_MODEL") or os.getenv("ISAAC_LETTA_MODEL") or "openai/gpt-4o-mini"
+        ).strip()
+        or "openai/gpt-4o-mini",
+        letta_embedding=(
+            os.getenv("LETTA_EMBEDDING")
+            or os.getenv("ISAAC_LETTA_EMBEDDING")
+            or "openai/text-embedding-3-small"
+        ).strip()
+        or "openai/text-embedding-3-small",
         open_interpreter_bin=(
             os.getenv("OPEN_INTERPRETER_BIN")
             or os.getenv("ISAAC_OPEN_INTERPRETER_BIN")

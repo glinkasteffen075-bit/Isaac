@@ -2513,8 +2513,9 @@ class IsaacKernel:
         if not prompt:
             return (
                 "[Letta] Format: letta: AUFGABE\n"
-                "Install: npm i -g @letta-ai/letta-code\n"
-                "Flag: ISAAC_LETTA_ENABLED=1"
+                "Cloud: LETTA_API_KEY + ISAAC_LETTA_ENABLED=1 + ISAAC_LETTA_ALLOW_CLOUD=1\n"
+                "CLI: npm i -g @letta-ai/letta-code\n"
+                "Docs: docs/LETTA.md"
             )
         try:
             from external_memory import get_external_memory_bridge
@@ -2523,8 +2524,8 @@ class IsaacKernel:
             bridge = get_external_memory_bridge()
             if not bridge.cfg.letta_enabled:
                 return (
-                    "[Letta] Deaktiviert. Setze ISAAC_LETTA_ENABLED=1 und installiere "
-                    "@letta-ai/letta-code."
+                    "[Letta] Deaktiviert. Setze ISAAC_LETTA_ENABLED=1 "
+                    "(Cloud: LETTA_API_KEY + ISAAC_LETTA_ALLOW_CLOUD=1)."
                 )
             # Constitution / privilege gate for shell-like companion
             try:

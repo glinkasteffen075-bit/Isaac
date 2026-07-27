@@ -46,7 +46,7 @@ class ExternalMemoryBridge:
 
         def _one(adapter) -> list[dict[str, Any]]:
             if not getattr(adapter, "available", lambda: False)():
-                # Letta search can work without binary (context files only)
+                # Letta search: files and/or cloud memory when enabled
                 if adapter.name != "letta" or not self.cfg.letta_enabled:
                     return []
             try:

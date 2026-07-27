@@ -384,13 +384,32 @@ class SelfModel:
         return None
 
     def apply_relationship_delta(self, key: str, delta: float, reason: str = ''):
+        """Apply relationship change through learning_policy.bounded_update (C4)."""
         rel = self.data.setdefault('relationship_state', {})
         before = float(rel.get(key, 0.5) or 0.5)
-        after = max(0.0, min(1.0, before + float(delta)))
+        try:
+            from learning_policy import bounded_update
+
+            # direction ±1 with |delta| as evidence strength (capped)
+            direction = 1.0 if float(delta) >= 0 else -1.0
+            strength = min(1.0, abs(float(delta)) * 8.0)  # 0.03 → ~0.24
+            bounded = bounded_update(
+                "relationship",
+                direction=direction,
+                evidence_strength=strength,
+                relevance=0.9,
+            )
+            step = bounded if abs(bounded) >= abs(float(delta)) * 0.25 else float(delta)
+            # Never exceed raw |delta| magnitude in one step (extra safety)
+            if abs(step) > abs(float(delta)) * 2.0:
+                step = float(delta)
+        except Exception:
+            step = float(delta)
+        after = max(0.0, min(1.0, before + step))
         rel[key] = after
         self._save(self.data)
         AuditLog.development('relationship_update', 'relationship', key, after - before, reason)
-        return {'before': before, 'after': after}
+        return {'before': before, 'after': after, 'step': after - before}
 
     def add_hypothesis(self, text: str):
         ep = self.data.setdefault('epistemic_state', {})

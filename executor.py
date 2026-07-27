@@ -48,6 +48,7 @@ from decision_trace import (
     DecisionTrace,
     TracePhase,
     build_execution_llm_trace_data,
+    maybe_export_portable_trace,
 )
 from result_contract import ensure_result_contract
 from tool_policy import (
@@ -604,6 +605,24 @@ class Executor:
         if task.status == TaskStatus.CANCELLED:
             return
         if task.status in (TaskStatus.DONE, TaskStatus.FAILED):
+            # Bounded learning marker for procedure / score feedback (C4)
+            try:
+                tools = [
+                    (t.get("name") if isinstance(t, dict) else str(t))
+                    for t in (getattr(task, "used_tools", None) or [])[-6:]
+                ]
+                task.decision_trace.add(
+                    TracePhase.LEARNING,
+                    "procedure_record" if tools else "turn_complete",
+                    {
+                        "ok": task.status == TaskStatus.DONE,
+                        "score_total": round(float(task.score.total), 3) if task.score else None,
+                        "tools": tools,
+                        "provider": (task.provider_used or "")[:40],
+                    },
+                )
+            except Exception:
+                pass
             self._checkpoint(
                 task,
                 CheckpointState.LEARNING_COMMIT,
@@ -622,6 +641,14 @@ class Executor:
                     score_total=task.score.total if task.score else None,
                 ),
             )
+            # C1 residual: optional portable file export (opt-in env)
+            try:
+                maybe_export_portable_trace(
+                    getattr(task, "decision_trace", None),
+                    request_id=str(task.id or ""),
+                )
+            except Exception:
+                pass
             self._persist_task(task)
         elif task.status == TaskStatus.RESUMABLE:
             self._persist_task(task)
@@ -1626,25 +1653,32 @@ class Executor:
         memory_refs: list | None = None,
     ) -> int:
         # Soft transition check — log only, never block execution.
-        prev = getattr(task, "checkpoint_state", "") or ""
+        prev = normalize_state(getattr(task, "checkpoint_state", "") or "")
         new_norm = normalize_state(state_name)
+        note = transition_note(prev, new_norm)
         if prev and not is_valid_transition(prev, new_norm, strict=False):
+            # True graph break — warn. Soft_ok/preferred never reach here.
             log.warning(
                 "checkpoint soft-invalid transition task=%s %s",
                 task.id,
-                transition_note(prev, new_norm),
+                note,
             )
+        elif note.startswith("soft_ok:"):
+            # Expected alternate path (resume, requeue) — debug only (C3 polish)
+            log.debug("checkpoint soft_ok task=%s %s", task.id, note)
+        # Persist normalized pipeline state (resume_requested → planning, etc.)
+        store_state = new_norm or state_name
         input_snapshot = build_input_snapshot(task, current_prompt=current_prompt)
         cp_id = get_memory().save_task_checkpoint(
             task.id,
-            state_name,
+            store_state,
             input_snapshot=input_snapshot,
             tool_snapshot=tool_snapshot or {},
             result_snapshot=result_snapshot or {},
             memory_refs=memory_refs or [],
             side_effect_refs=side_effect_refs or [],
         )
-        task.checkpoint_state = state_name
+        task.checkpoint_state = store_state
         task.checkpoint_ts = time.strftime("%Y-%m-%d %H:%M:%S")
         return cp_id
 
@@ -1656,7 +1690,8 @@ class Executor:
             return False
         cp = get_memory().get_latest_checkpoint(task_id)
         task.log("Resume angefordert")
-        task.checkpoint_state = "resume_requested"
+        # Meta-marker only for logs; pipeline state stays resumable/planning
+        task.checkpoint_state = CheckpointState.PLANNING
         task.checkpoint_ts = time.strftime("%Y-%m-%d %H:%M:%S")
         task.resume_checkpoint_id = int(cp.get("checkpoint_id", 0)) if cp else 0
         task.resume_strategy = "from_checkpoint"

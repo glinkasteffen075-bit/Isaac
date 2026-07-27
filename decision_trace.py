@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -254,6 +255,18 @@ def enrich_gen_ai_attributes(data: dict[str, Any]) -> dict[str, Any]:
     ):
         if src in out and dst not in out:
             out[dst] = out[src]
+    # total tokens (explicit or sum of in+out)
+    if "total_tokens" in out and "gen_ai.usage.total_tokens" not in out:
+        out["gen_ai.usage.total_tokens"] = out["total_tokens"]
+    elif "gen_ai.usage.total_tokens" not in out:
+        try:
+            tin = out.get("gen_ai.usage.input_tokens")
+            tout = out.get("gen_ai.usage.output_tokens")
+            if tin is not None or tout is not None:
+                out["gen_ai.usage.total_tokens"] = int(tin or 0) + int(tout or 0)
+                out.setdefault("total_tokens", out["gen_ai.usage.total_tokens"])
+        except (TypeError, ValueError):
+            pass
     return out
 
 
@@ -272,12 +285,19 @@ def build_execution_llm_trace_data(
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Canonical payload for TracePhase.EXECUTION model-call events."""
+    pc = int(max(0, prompt_chars))
+    rc = int(max(0, response_chars))
+    # Rough char→token estimate when relay does not report usage (~4 chars/token)
+    if input_tokens is None and pc:
+        input_tokens = max(1, pc // 4)
+    if output_tokens is None and rc:
+        output_tokens = max(1, rc // 4)
     data: dict[str, Any] = {
         "provider": (provider or "")[:80],
         "model": (model or "")[:120],
         "iteration": int(iteration),
-        "prompt_chars": int(max(0, prompt_chars)),
-        "response_chars": int(max(0, response_chars)),
+        "prompt_chars": pc,
+        "response_chars": rc,
         "ok": bool(ok),
     }
     if latency_ms is not None:
@@ -287,6 +307,8 @@ def build_execution_llm_trace_data(
         data["input_tokens"] = int(input_tokens)
     if output_tokens is not None:
         data["output_tokens"] = int(output_tokens)
+    if input_tokens is not None or output_tokens is not None:
+        data["total_tokens"] = int(input_tokens or 0) + int(output_tokens or 0)
     if error:
         data["error"] = str(error)[:200]
     if extra:
@@ -309,6 +331,27 @@ def export_portable_trace(
     except OSError:
         pass
     return path
+
+
+def maybe_export_portable_trace(
+    trace: DecisionTrace | None,
+    request_id: str = "",
+    *,
+    enabled: bool | None = None,
+) -> Path | None:
+    """Export when ISAAC_PORTABLE_TRACE_EXPORT is on (or enabled=True). Fail-soft."""
+    if trace is None:
+        return None
+    if enabled is None:
+        raw = str(os.getenv("ISAAC_PORTABLE_TRACE_EXPORT", "0") or "0").strip().lower()
+        enabled = raw in {"1", "true", "yes", "on"}
+    if not enabled:
+        return None
+    try:
+        rid = (request_id or "").strip() or f"task-{int(time.time())}"
+        return export_portable_trace(trace, request_id=rid)
+    except Exception:
+        return None
 
 
 def _portable_span_name(phase: TracePhase) -> str:

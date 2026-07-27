@@ -176,19 +176,19 @@ Jeder Track: **klein, testbar, ROT/BLAU/GRÜN-Ownership, nach jedem Substep runn
 #### C3 — Checkpoint / Resume (GRÜN)
 
 - [x] CheckpointState + Resume + soft Transitions  
-- [ ] Preferred-Path dort glätten, wo Executor unnötig soft-invalid loggt  
-- [ ] Resume-Szenarien in reliability/replay halten  
+- [x] Preferred-Path glätten (eval→done, planning→learning_commit); soft_ok nur debug  
+- [x] Resume setzt normalized PLANNING; Resume-Unit + reliability/replay  
 
-**DoD:** Keine parallele SM; Resume-Evals grün; Soft-Logs selten.
+**DoD:** Keine parallele SM; Resume-Evals grün; Soft-Logs selten. **(2026-07-27)**
 
 #### C4 — Self-Model & bounded Learning (BLAU/ROT)
 
 - [x] Self-Model + Hooks + identity_eval  
-- [ ] Lücken: Owner-Feedback → relationship_state / shared_themes wo noch dünn  
-- [ ] LEARNING-Phase konsistent bei procedure_record  
-- [ ] `learning_policy.bounded_update` nicht umgehen  
+- [x] Owner-Feedback → relationship_state (Korrektur/Bestätigung) + shared_themes  
+- [x] LEARNING-Phase `procedure_record` / `turn_complete` im Executor-Finalize  
+- [x] `learning_policy.bounded_update` in `apply_relationship_delta`  
 
-**DoD:** identity_eval + learning_eval grün; keine ungebundene Self-Rewrite-Loop.
+**DoD:** identity_eval + learning_eval grün; keine ungebundene Self-Rewrite-Loop. **(2026-07-27)**
 
 #### C5 — Release / CI (ops)
 
@@ -233,7 +233,7 @@ Jeder Track: **klein, testbar, ROT/BLAU/GRÜN-Ownership, nach jedem Substep runn
 
 - [x] vector_memory optional / disable-flag  
 - [x] external_memory Mem0/Cognee/Letta OFF default  
-- [ ] Fail-soft Tests bei fehlenden Packages  
+- [x] Fail-soft Tests (Bridge timeout/exception/score-gate) + Letta labels **(2026-07-27)**
 
 #### M2 — Procedure / Decay
 
@@ -354,7 +354,7 @@ Validierungsfälle A–G: `evals/replay_eval` (erweitert H–J).
 - [x] Phase 1–4 + E2.0 + Goal S0–S4 im Code und in AGENTS ehrlich ✅  
 - [x] Drive-Patches bewertet und abgelehnt wo redundant/gefährlich  
 - [x] Eval-Harness deckt Governance, Routing, Goals, MCP ab (96+)  
-- [ ] Track C1–C2 abgeschlossen (portable+MCP Contracts)  
+- [x] Track C1–C2 abgeschlossen (portable+MCP Contracts)  
 - [ ] CI grün (Billing)  
 - [ ] Research-Brain nicht mit Kernel-main vermischt  
 

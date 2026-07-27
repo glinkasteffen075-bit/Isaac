@@ -55,6 +55,7 @@ PREFERRED_TRANSITIONS: dict[str, frozenset[str]] = {
     CheckpointState.PLANNING: frozenset({
         CheckpointState.TOOL_PENDING,
         CheckpointState.EVALUATING,  # Chat ohne Tools
+        CheckpointState.LEARNING_COMMIT,  # lightweight local answer
         CheckpointState.FAILED,
     }),
     CheckpointState.TOOL_PENDING: frozenset({
@@ -65,6 +66,7 @@ PREFERRED_TRANSITIONS: dict[str, frozenset[str]] = {
     CheckpointState.EVALUATING: frozenset({
         CheckpointState.LEARNING_COMMIT,
         CheckpointState.TOOL_PENDING,  # Follow-up / Tool-Nachzug
+        CheckpointState.DONE,  # short path when learning skipped
         CheckpointState.FAILED,
     }),
     CheckpointState.LEARNING_COMMIT: frozenset({

@@ -43,6 +43,18 @@ CONFIRMATION_MARKERS = (
     "perfekt so",
     "so ist gut",
     "genau richtig",
+    "gut gemacht",
+    "super so",
+    "das stimmt",
+    "korrekt",
+)
+CORRECTION_FEEDBACK_MARKERS = (
+    "falsch",
+    "stimmt nicht",
+    "nicht richtig",
+    "das war falsch",
+    "nein so nicht",
+    "korrigiere",
 )
 CORRECTION_PATTERN = re.compile(
     r"^(?:korrektur|fakt|weiß):\s*(.+?)\s*=\s*(.+)$",
@@ -204,12 +216,24 @@ def process_interaction(
         else:
             sm.apply_relationship_delta("owner_trust", 0.02, "positive acknowledgment")
 
+    # Explicit correction language (any class) → soft trust dip + feedback note
+    lowered_fb = (user_input or "").strip().lower()
+    if any(m in lowered_fb for m in CORRECTION_FEEDBACK_MARKERS):
+        sm.note_owner_feedback(user_input[:500])
+        sm.apply_relationship_delta("owner_trust", -0.03, "owner correction language")
+        updates["feedback"] = True
+
     if interaction_class == InteractionClass.NORMAL_CHAT:
         theme = _extract_topic_theme(user_input)
         if theme:
             tracked = sm.track_shared_theme(theme)
             if tracked:
                 updates["themes"].append(tracked)
+        # Positive confirmation in normal chat also strengthens relationship (C4)
+        if _is_positive_confirmation(user_input) and score >= CONFIRMATION_MIN_SCORE:
+            sm.note_owner_feedback(user_input[:500])
+            sm.apply_relationship_delta("owner_trust", 0.02, "chat confirmation")
+            updates["feedback"] = True
 
     if emp and getattr(emp, "node", None):
         zustand = str(getattr(emp.node, "zustand", "") or "").lower()

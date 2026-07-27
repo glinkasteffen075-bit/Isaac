@@ -19,8 +19,26 @@
 | `LETTA_EMBEDDING` | `openai/text-embedding-3-small` | Embeddings |
 | `LETTA_BIN` | `letta` | CLI Companion |
 | `ISAAC_EXTERNAL_MEMORY_WRITE` | `0` | Archival-Write freigeben |
+| `ISAAC_EXTERNAL_MEMORY_MIN_SCORE` | `5.0` | Quality-Gate für **Write** (0–10) |
+| `ISAAC_EXTERNAL_MEMORY_SEARCH_TIMEOUT` | `2.5` | Gesamt-Timeout Suche (s), clamp 0.5–60 |
+| `ISAAC_EXTERNAL_MEMORY_SEARCH_MIN_SCORE` | `0.25` | Drop schwache Hits (0–1) |
+| `ISAAC_EXTERNAL_MEMORY_SEARCH_LIMIT` | `4` | Hits pro Adapter |
+| `ISAAC_EXTERNAL_MEMORY_MAX_HIT_CHARS` | `400` | Clip pro Hit |
 
 **Niemals** Keys committen. Nur `.env` / Render Secrets / `data/cli_auth_backup/`.
+
+### Retrieval-Shape (M1b)
+
+Hits landen in `semantic_context` als:
+
+```text
+[external_memory]
+  - (letta:archival score=0.90) …
+  - (letta:core score=0.72) …
+```
+
+Zusätzlich: `preferences_context` mit `source=letta` (kind archival|core|file).  
+**Kein** Orchestrator — nur Kontext für den bestehenden Kernel-Pfad.
 
 ---
 

@@ -44,11 +44,13 @@ Optional BLAU-Ergänzung unter `external_memory/`. **Kein** Ersatz von `memory.p
 | Open Interpreter (Codex harness) | Companion CLI, **nicht** Orchestrator | OFF | nur `oi:` / `interpreter: …`; Sandbox default `read-only` |
 
 **Flags:** `ISAAC_MEM0_ENABLED`, `ISAAC_COGNEE_ENABLED`, `ISAAC_LETTA_ENABLED`, `ISAAC_OPEN_INTERPRETER_ENABLED`, `ISAAC_EXTERNAL_MEMORY_WRITE`.  
+**Gates:** `ISAAC_EXTERNAL_MEMORY_SEARCH_TIMEOUT`, `…_SEARCH_MIN_SCORE`, `…_MIN_SCORE` (write), `…_MAX_HIT_CHARS`.  
 **Install:** `bash scripts/install_external_memory.sh` / `requirements-memory-extra.txt`; OI: Binary `interpreter` + `docs/OPEN_INTERPRETER.md`.  
 **Cloud:** Mem0/Cognee/Letta Cloud nur mit `*_ALLOW_CLOUD=1`.  
 Cognee: `COGNEE_BASE_URL` + `COGNEE_API_KEY` + `ISAAC_COGNEE_ALLOW_CLOUD=1`. Seed: `scripts/seed_cognee_cloud.py`.  
 Letta: `LETTA_API_KEY` + `ISAAC_LETTA_ALLOW_CLOUD=1` (+ optional `LETTA_AGENT_ID`) — siehe [LETTA.md](LETTA.md).  
-**Fail-soft:** fehlende Packages/Credits → No-Op, Kernel bleibt runnable.
+**Fail-soft:** Timeout / fehlende Packages / Credits → leere Hits oder klarer Fehler, Kernel bleibt runnable.  
+**Bridge:** parallel search, score-normalize, Letta kind labels, write path Mem0+Cognee+Letta archival.
 
 ### 4. Tool/Skill Schema (Hermes-Agent-Kompatibilität)
 

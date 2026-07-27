@@ -17,6 +17,34 @@ from external_memory.open_interpreter_adapter import OpenInterpreterAdapter
 
 log = logging.getLogger("Isaac.ExternalMemory")
 
+# Stable sort key for multi-backend merge
+_SOURCE_ORDER = {"mem0": 0, "cognee": 1, "letta": 2}
+
+
+def _normalize_score(raw: Any) -> float:
+    """Map adapter scores onto a rough 0–1 range for gating/display."""
+    try:
+        score = float(raw)
+    except (TypeError, ValueError):
+        return 0.5
+    if score < 0:
+        return 0.0
+    if score <= 1.0:
+        return score
+    # Some backends return 0–100 or quality 0–10
+    if score <= 10.0:
+        return min(1.0, score / 10.0)
+    if score <= 100.0:
+        return min(1.0, score / 100.0)
+    return 1.0
+
+
+def _clip(text: str, n: int) -> str:
+    t = (text or "").strip()
+    if len(t) <= n:
+        return t
+    return t[: max(0, n - 1)].rstrip() + "…"
+
 
 class ExternalMemoryBridge:
     """Aggregates Mem0 / Cognee / Letta / OI / Grok / Copilot with fail-soft semantics."""
@@ -29,6 +57,7 @@ class ExternalMemoryBridge:
         self.open_interpreter = OpenInterpreterAdapter(self.cfg)
         self.grok_agent = GrokAgentAdapter(self.cfg)
         self.copilot_agent = CopilotAgentAdapter(self.cfg)
+        self._last_search_meta: dict[str, Any] = {}
 
     def any_enabled(self) -> bool:
         return self.cfg.any_enabled
@@ -38,45 +67,113 @@ class ExternalMemoryBridge:
         return [self.mem0, self.cognee, self.letta]
 
     def search_all(self, query: str, *, limit: int | None = None) -> list[dict[str, Any]]:
+        """Parallel, time-bounded search across enabled adapters. Never raises."""
+        meta: dict[str, Any] = {
+            "query_len": len(query or ""),
+            "timeout_s": self.cfg.search_timeout_s,
+            "errors": {},
+            "timed_out": False,
+            "adapter_hits": {},
+        }
+        self._last_search_meta = meta
+
         if not self.any_enabled() or not (query or "").strip():
             return []
-        lim = limit if limit is not None else self.cfg.search_limit
-        timeout = self.cfg.search_timeout_s
+
+        lim = max(1, min(12, int(limit if limit is not None else self.cfg.search_limit)))
+        timeout = float(self.cfg.search_timeout_s)
+        min_score = float(self.cfg.search_min_score)
+        max_chars = int(self.cfg.max_hit_chars)
         hits: list[dict[str, Any]] = []
 
-        def _one(adapter) -> list[dict[str, Any]]:
+        def _one(adapter) -> tuple[str, list[dict[str, Any]], str]:
+            name = getattr(adapter, "name", "?")
             if not getattr(adapter, "available", lambda: False)():
                 # Letta search: files and/or cloud memory when enabled
-                if adapter.name != "letta" or not self.cfg.letta_enabled:
-                    return []
+                if name != "letta" or not self.cfg.letta_enabled:
+                    return name, [], "unavailable"
             try:
-                return list(adapter.search(query, limit=lim) or [])
+                raw = list(adapter.search(query, limit=lim) or [])
+                return name, raw, ""
             except Exception as exc:
-                log.debug("external search %s failed: %s", adapter.name, exc)
-                return []
+                log.debug("external search %s failed: %s", name, exc)
+                return name, [], str(exc)[:160]
 
-        # Parallel short searches with overall deadline
         deadline = time.monotonic() + timeout
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            futs = {pool.submit(_one, a): a.name for a in self.adapters()}
+        # wait=False on shutdown so a hung adapter cannot block the kernel path
+        pool = ThreadPoolExecutor(max_workers=3)
+        futs: dict[Any, str] = {}
+        try:
+            futs = {pool.submit(_one, a): getattr(a, "name", "?") for a in self.adapters()}
             try:
                 for fut in as_completed(futs, timeout=timeout):
                     if time.monotonic() > deadline:
+                        meta["timed_out"] = True
                         break
                     try:
                         remaining = max(0.05, deadline - time.monotonic())
-                        part = fut.result(timeout=remaining)
+                        name, part, err = fut.result(timeout=remaining)
+                        meta["adapter_hits"][name] = len(part)
+                        if err:
+                            meta["errors"][name] = err
                         hits.extend(part)
                     except Exception as exc:
                         log.debug("external search future failed: %s", exc)
+                        meta["errors"][futs.get(fut, "?")] = str(exc)[:160]
             except TimeoutError:
+                meta["timed_out"] = True
                 log.debug("external search_all overall timeout (%.1fs)", timeout)
             except Exception as exc:
                 log.debug("external search_all failed: %s", exc)
-        # Stable order: mem0, cognee, letta; cap total
-        order = {"mem0": 0, "cognee": 1, "letta": 2}
-        hits.sort(key=lambda h: (order.get(h.get("source", ""), 9), -(h.get("score") or 0)))
-        return hits[: lim * 2]
+                meta["errors"]["_all"] = str(exc)[:160]
+        finally:
+            for fut in futs:
+                if not fut.done():
+                    fut.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
+
+        normalized: list[dict[str, Any]] = []
+        for h in hits:
+            if not isinstance(h, dict):
+                continue
+            text = _clip(str(h.get("text") or ""), max_chars)
+            if not text:
+                continue
+            score = _normalize_score(h.get("score"))
+            if score < min_score:
+                continue
+            item = dict(h)
+            item["text"] = text
+            item["score"] = score
+            item["source"] = str(h.get("source") or "external")
+            # Structured kind for Letta (archival/core/file) if present
+            if item["source"] == "letta" and not item.get("kind"):
+                item["kind"] = self._infer_letta_kind(text)
+            normalized.append(item)
+
+        # Prefer higher score within source order; cap total
+        normalized.sort(
+            key=lambda h: (
+                _SOURCE_ORDER.get(str(h.get("source") or ""), 9),
+                -(float(h.get("score") or 0)),
+            )
+        )
+        out = normalized[: lim * 2]
+        meta["returned"] = len(out)
+        meta["raw_hits"] = len(hits)
+        self._last_search_meta = meta
+        return out
+
+    @staticmethod
+    def _infer_letta_kind(text: str) -> str:
+        t = (text or "").lower()
+        if "[letta:archival]" in t or t.startswith("[letta:archival]"):
+            return "archival"
+        if "[letta:core" in t:
+            return "core"
+        if "[letta:" in t:
+            return "file"
+        return "memory"
 
     def remember_turn(
         self,
@@ -87,7 +184,7 @@ class ExternalMemoryBridge:
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Write turn to write-capable adapters when enabled + score gate."""
-        result = {"ok": False, "written": [], "skipped": "disabled"}
+        result: dict[str, Any] = {"ok": False, "written": [], "skipped": "disabled"}
         if not self.cfg.write_enabled:
             return result
         if float(score) < float(self.cfg.min_score):
@@ -111,66 +208,97 @@ class ExternalMemoryBridge:
 
         written: list[str] = []
         errors: dict[str, str] = {}
-        for adapter in (self.mem0, self.cognee):
-            if not adapter.available():
-                continue
+        # Mem0 + Cognee + Letta Cloud archival (bounded write path)
+        for adapter in (self.mem0, self.cognee, self.letta):
+            name = getattr(adapter, "name", "?")
             try:
+                # Letta remember does not require CLI; checks cloud+write itself
+                if name == "letta":
+                    if not self.cfg.letta_enabled:
+                        continue
+                elif not adapter.available():
+                    continue
                 ok = adapter.remember(messages, metadata=meta)
                 if ok:
-                    written.append(adapter.name)
+                    written.append(name)
                 else:
-                    errors[adapter.name] = "remember returned false"
+                    errors[name] = "remember returned false"
             except Exception as exc:
-                errors[adapter.name] = str(exc)
-                log.debug("remember_turn %s: %s", adapter.name, exc)
+                errors[name] = str(exc)[:200]
+                log.debug("remember_turn %s: %s", name, exc)
 
-        result = {
+        return {
             "ok": bool(written),
             "written": written,
             "errors": errors,
             "skipped": "" if written else "no backend wrote",
         }
-        return result
 
     def format_hits(self, hits: list[dict[str, Any]]) -> str:
+        """Human/LLM-facing block for semantic_context."""
         if not hits:
             return ""
         lines = ["[external_memory]"]
         for h in hits:
-            src = h.get("source") or "?"
+            src = str(h.get("source") or "?")
             text = (h.get("text") or "").strip()
             if not text:
                 continue
             score = h.get("score")
-            if score is not None:
-                lines.append(f"  - ({src} score={score}) {text}")
+            kind = h.get("kind") or h.get("label") or ""
+            # Avoid double-prefix noise if adapter already labeled
+            body = text
+            if src == "letta":
+                tag = f"letta:{kind}" if kind else "letta"
+                # Strip redundant [letta:…] wrappers for cleaner context lines
+                if body.startswith("[letta:"):
+                    close = body.find("]")
+                    if close > 0:
+                        body = body[close + 1 :].strip()
+                score_s = f" score={float(score):.2f}" if score is not None else ""
+                lines.append(f"  - ({tag}{score_s}) {body}")
             else:
-                lines.append(f"  - ({src}) {text}")
+                if score is not None:
+                    lines.append(f"  - ({src} score={float(score):.2f}) {body}")
+                else:
+                    lines.append(f"  - ({src}) {body}")
         return "\n".join(lines) if len(lines) > 1 else ""
 
     def hits_as_preferences(self, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Map Mem0 hits into preferences_context shape."""
+        """Map Mem0 + Letta hits into preferences_context shape for retrieval."""
         prefs: list[dict[str, Any]] = []
         for h in hits:
-            if h.get("source") != "mem0":
+            src = str(h.get("source") or "")
+            if src not in {"mem0", "letta"}:
                 continue
             text = (h.get("text") or "").strip()
             if not text:
                 continue
-            prefs.append(
-                {
-                    "source": "mem0",
-                    "text": text[:180],
-                    "confidence": float(h.get("score") or 0.5),
-                }
-            )
-        return prefs[:4]
+            # Prefer clean body for letta
+            if src == "letta" and text.startswith("[letta:"):
+                close = text.find("]")
+                if close > 0:
+                    text = text[close + 1 :].strip()
+            kind = str(h.get("kind") or "")
+            entry: dict[str, Any] = {
+                "source": src,
+                "text": text[:180],
+                "confidence": float(h.get("score") or 0.5),
+            }
+            if kind:
+                entry["kind"] = kind
+            prefs.append(entry)
+        return prefs[:6]
 
     def status(self) -> dict[str, Any]:
         return {
             "any_enabled": self.any_enabled(),
             "write_enabled": self.cfg.write_enabled,
             "min_score": self.cfg.min_score,
+            "search_timeout_s": self.cfg.search_timeout_s,
+            "search_min_score": self.cfg.search_min_score,
+            "search_limit": self.cfg.search_limit,
+            "last_search": dict(self._last_search_meta or {}),
             "adapters": {
                 "mem0": self.mem0.status(),
                 "cognee": self.cognee.status(),
@@ -185,7 +313,9 @@ class ExternalMemoryBridge:
         st = self.status()
         lines = [
             f"External Memory │ enabled={st['any_enabled']} "
-            f"write={st['write_enabled']} min_score={st['min_score']}"
+            f"write={st['write_enabled']} min_score={st['min_score']} "
+            f"search_to={st.get('search_timeout_s')}s "
+            f"hit_min={st.get('search_min_score')}"
         ]
         for name, info in st["adapters"].items():
             extra = ""
@@ -194,6 +324,8 @@ class ExternalMemoryBridge:
             mode = info.get("mode")
             if mode and mode not in ("off", "pending", ""):
                 extra += f" mode={mode}"
+            if name == "letta" and info.get("cloud_ok"):
+                extra += " cloud=1"
             lines.append(
                 f"  {name}: enabled={info.get('enabled')} "
                 f"available={info.get('available')}{extra}"

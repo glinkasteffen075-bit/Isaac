@@ -334,6 +334,8 @@ class LettaAdapter:
                     {
                         "text": f"[letta:{name}] {snippet}",
                         "source": self.name,
+                        "kind": "file",
+                        "label": name,
                         "score": score,
                         "path": str(path),
                     }
@@ -368,6 +370,8 @@ class LettaAdapter:
                     {
                         "text": f"[letta:archival] {text[:500]}",
                         "source": self.name,
+                        "kind": "archival",
+                        "label": "archival",
                         "score": min(0.95, max(0.3, score_f if score_f <= 1 else score_f / 100.0)),
                     }
                 )
@@ -404,6 +408,8 @@ class LettaAdapter:
                         {
                             "text": f"[letta:core:{label}] {value[:400]}",
                             "source": self.name,
+                            "kind": "core",
+                            "label": label,
                             "score": score,
                         }
                     )

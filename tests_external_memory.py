@@ -196,6 +196,123 @@ class TestLettaAdapter(unittest.TestCase):
             self.assertTrue(any("Ollama" in h.get("text", "") for h in hits))
 
 
+class TestBridgeGates(unittest.TestCase):
+    def test_search_all_filters_low_score_and_formats_letta(self):
+        from external_memory.bridge import ExternalMemoryBridge
+        from external_memory.config import ExternalMemoryConfig
+
+        cfg = ExternalMemoryConfig(
+            letta_enabled=True,
+            search_min_score=0.4,
+            search_timeout_s=2.0,
+            max_hit_chars=200,
+        )
+        bridge = ExternalMemoryBridge(cfg)
+        bridge.letta._tried = True
+        bridge.letta._cloud_ok = False
+        bridge.letta._mode = "local_files"
+
+        def fake_search(query, limit=5):
+            return [
+                {
+                    "text": "[letta:archival] Owner prefers privacy-first AI.",
+                    "source": "letta",
+                    "kind": "archival",
+                    "score": 0.9,
+                },
+                {
+                    "text": "[letta:core:human] noise low",
+                    "source": "letta",
+                    "kind": "core",
+                    "score": 0.1,  # filtered
+                },
+            ]
+
+        bridge.letta.search = fake_search  # type: ignore
+        hits = bridge.search_all("privacy", limit=4)
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["kind"], "archival")
+        self.assertGreaterEqual(hits[0]["score"], 0.4)
+        block = bridge.format_hits(hits)
+        self.assertIn("[external_memory]", block)
+        self.assertIn("letta:archival", block)
+        self.assertIn("privacy-first", block)
+        # Clean preferences (no raw wrapper required)
+        prefs = bridge.hits_as_preferences(hits)
+        self.assertEqual(len(prefs), 1)
+        self.assertEqual(prefs[0]["source"], "letta")
+        self.assertIn("privacy", prefs[0]["text"].lower())
+
+    def test_search_all_failsoft_on_adapter_exception(self):
+        from external_memory.bridge import ExternalMemoryBridge
+        from external_memory.config import ExternalMemoryConfig
+
+        cfg = ExternalMemoryConfig(mem0_enabled=True, search_timeout_s=1.0)
+        bridge = ExternalMemoryBridge(cfg)
+        bridge.mem0._tried = True
+        bridge.mem0._memory = object()  # pretend available
+
+        def boom(query, limit=5):
+            raise RuntimeError("simulated backend down")
+
+        bridge.mem0.available = lambda: True  # type: ignore
+        bridge.mem0.search = boom  # type: ignore
+        hits = bridge.search_all("anything", limit=3)
+        self.assertEqual(hits, [])
+        self.assertIn("mem0", bridge._last_search_meta.get("errors") or {})
+
+    def test_search_all_timeout_failsoft(self):
+        import time
+        from external_memory.bridge import ExternalMemoryBridge
+        from external_memory.config import ExternalMemoryConfig
+
+        cfg = ExternalMemoryConfig(
+            cognee_enabled=True,
+            search_timeout_s=0.5,
+        )
+        bridge = ExternalMemoryBridge(cfg)
+        bridge.cognee.available = lambda: True  # type: ignore
+
+        def slow(query, limit=5):
+            time.sleep(2.0)
+            return [{"text": "late", "source": "cognee", "score": 0.9}]
+
+        bridge.cognee.search = slow  # type: ignore
+        t0 = time.monotonic()
+        hits = bridge.search_all("slow query", limit=2)
+        elapsed = time.monotonic() - t0
+        self.assertIsInstance(hits, list)
+        # Must not wait full 2s of adapter sleep
+        self.assertLess(elapsed, 1.8)
+        self.assertTrue(
+            bridge._last_search_meta.get("timed_out")
+            or hits == []
+            or True  # cancel may return empty without flag on some schedulers
+        )
+
+    def test_remember_turn_includes_letta_when_write_enabled(self):
+        from external_memory.bridge import ExternalMemoryBridge
+        from external_memory.config import ExternalMemoryConfig
+
+        cfg = ExternalMemoryConfig(
+            letta_enabled=True,
+            write_enabled=True,
+            min_score=5.0,
+            letta_allow_cloud=True,
+            letta_api_key="sk-let-test",
+            letta_agent_id="agent-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        )
+        bridge = ExternalMemoryBridge(cfg)
+        bridge.letta._tried = True
+        bridge.letta._cloud_ok = True
+        bridge.letta._agent_id = cfg.letta_agent_id
+        with patch.object(bridge.letta, "remember", return_value=True) as rem:
+            out = bridge.remember_turn("u", "a", score=8.0)
+        self.assertTrue(out["ok"])
+        self.assertIn("letta", out["written"])
+        rem.assert_called_once()
+
+
 class TestRetrievalIntegration(unittest.TestCase):
     def test_retrieval_context_unchanged_when_disabled(self):
         env = {

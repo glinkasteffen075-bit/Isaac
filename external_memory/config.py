@@ -49,6 +49,9 @@ class ExternalMemoryConfig:
     search_timeout_s: float = 2.5
     write_timeout_s: float = 3.0
     search_limit: int = 4
+    # Drop noisy retrieval hits below this (0–1 scale after normalize)
+    search_min_score: float = 0.25
+    max_hit_chars: int = 400
     owner_id: str = "Steffen"
     mem0_allow_cloud: bool = False
     cognee_allow_cloud: bool = False
@@ -131,9 +134,17 @@ def load_external_memory_config() -> ExternalMemoryConfig:
         copilot_agent_enabled=_env_bool("ISAAC_COPILOT_AGENT_ENABLED", False),
         write_enabled=_env_bool("ISAAC_EXTERNAL_MEMORY_WRITE", False),
         min_score=_env_float("ISAAC_EXTERNAL_MEMORY_MIN_SCORE", 5.0),
-        search_timeout_s=_env_float("ISAAC_EXTERNAL_MEMORY_SEARCH_TIMEOUT", 2.5),
-        write_timeout_s=_env_float("ISAAC_EXTERNAL_MEMORY_WRITE_TIMEOUT", 3.0),
-        search_limit=max(1, _env_int("ISAAC_EXTERNAL_MEMORY_SEARCH_LIMIT", 4)),
+        search_timeout_s=max(
+            0.5, min(60.0, _env_float("ISAAC_EXTERNAL_MEMORY_SEARCH_TIMEOUT", 2.5))
+        ),
+        write_timeout_s=max(
+            0.5, min(60.0, _env_float("ISAAC_EXTERNAL_MEMORY_WRITE_TIMEOUT", 3.0))
+        ),
+        search_limit=max(1, min(12, _env_int("ISAAC_EXTERNAL_MEMORY_SEARCH_LIMIT", 4))),
+        search_min_score=max(
+            0.0, min(1.0, _env_float("ISAAC_EXTERNAL_MEMORY_SEARCH_MIN_SCORE", 0.25))
+        ),
+        max_hit_chars=max(80, min(2000, _env_int("ISAAC_EXTERNAL_MEMORY_MAX_HIT_CHARS", 400))),
         owner_id=owner,
         mem0_allow_cloud=_env_bool("ISAAC_MEM0_ALLOW_CLOUD", False),
         cognee_allow_cloud=_env_bool("ISAAC_COGNEE_ALLOW_CLOUD", False),

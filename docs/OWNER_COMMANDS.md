@@ -59,6 +59,38 @@ URL/Ziel, Browser aus, 2FA/Captcha, Mission-Schritt). Kein Spam bei normalen Feh
 | `ISAAC_NTFY_TOPIC=mein-topic` | Push via [ntfy](https://ntfy.sh) (Handy-App) |
 | `ISAAC_NTFY_URL=https://ntfy.sh` | optional eigener ntfy-Server |
 | `ISAAC_NTFY_TOKEN=…` | optional Auth |
+| `ISAAC_OWNER_PUSH=1` | Owner-Push an (Default on) |
+| `ISAAC_REMOTE_SMOKE=1` | Background keep-alive gegen isaac-free (wake ≤10 Min) |
+| `ISAAC_REMOTE_SMOKE_WAKE_INTERVAL_S=600` | Anti-Sleep-Intervall |
+| `ISAAC_REMOTE_FREE_URL=https://isaac-free.onrender.com` | Smoke-Ziel |
+
+### Owner-Push / ntfy (Chat)
+
+```text
+ntfy status
+ntfy test
+```
+
+Topic lokal: `.env` → `ISAAC_NTFY_TOPIC` (Hinweisdatei `data/ntfy_topic_hint.txt`).
+
+### Remote Smoke (Chat)
+
+```text
+remote smoke
+remote smoke wake
+remote smoke full
+status:smoke wake
+```
+
+### Browser Login Flow (Admin, Playwright)
+
+```text
+login flow: x
+login flow: google
+login flow: webde
+```
+
+Credentials nur in `data/owner_login_probe_config.json` (gitignored). Pro Lauf **ein** E-Mail/Passwort-Paar.
 | `ISAAC_OWNER_WEBHOOK_URL=https://…` | optional JSON-Webhook |
 | `ISAAC_OWNER_PUSH_COOLDOWN_S=21600` | gleicher Blocker max. alle 6h |
 | `ISAAC_OWNER_PUSH_MIN_INTERVAL_S=300` | global min. 5 Min zwischen Pushes |

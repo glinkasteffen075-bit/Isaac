@@ -104,8 +104,90 @@ def probe_targets(selected: list[str]) -> list[ProbeTarget]:
             success_url_markers=("web.de/logout", "navigator.web.de"),
             failure_url_markers=("login", "fehler", "error"),
         ),
+        # X (Twitter) — owner-only; often needs 2FA/captcha
+        "x": ProbeTarget(
+            target_id="x",
+            login_url="https://x.com/i/flow/login",
+            domain="x.com",
+            email_selector=(
+                "input[name='text'], input[autocomplete='username'], "
+                "input[type='text'], input[type='email']"
+            ),
+            password_selector="input[name='password'], input[type='password']",
+            next_labels=("Next", "Weiter", "Log in", "Anmelden"),
+            success_url_markers=("x.com/home", "twitter.com/home", "/home"),
+            failure_url_markers=("login", "error", "challenge", "account/access"),
+        ),
+        "twitter": ProbeTarget(
+            target_id="x",
+            login_url="https://x.com/i/flow/login",
+            domain="x.com",
+            email_selector=(
+                "input[name='text'], input[autocomplete='username'], "
+                "input[type='text'], input[type='email']"
+            ),
+            password_selector="input[name='password'], input[type='password']",
+            next_labels=("Next", "Weiter", "Log in", "Anmelden"),
+            success_url_markers=("x.com/home", "twitter.com/home", "/home"),
+            failure_url_markers=("login", "error", "challenge", "account/access"),
+        ),
     }
     return [catalog[key] for key in selected if key in catalog]
+
+
+async def run_named_login_flow(
+    flow_name: str,
+    *,
+    email: str = "",
+    password: str = "",
+    save_success_to_browser: bool = True,
+) -> dict[str, Any]:
+    """Run a single named login flow (e.g. 'x', 'google') with at most one credential pair.
+
+    Safer than full combinatorial probe — owner-only, admin mode required.
+    """
+    blocked = require_owner_probe()
+    if blocked:
+        return {"ok": False, "error": blocked}
+
+    name = (flow_name or "").strip().lower()
+    if name in {"twitter", "x.com"}:
+        name = "x"
+    if not name:
+        return {
+            "ok": False,
+            "error": "Format: login flow: x | google | webde",
+            "available": sorted({"google", "webde", "x"}),
+        }
+
+    targets = probe_targets([name])
+    if not targets:
+        return {
+            "ok": False,
+            "error": f"Unbekannter Flow: {flow_name}",
+            "available": sorted({"google", "webde", "x"}),
+        }
+
+    cfg = load_probe_config()
+    email_list = [e.strip() for e in (cfg.get("emails") or []) if e and "@" in str(e)]
+    password_list = [p for p in (cfg.get("passwords") or []) if p]
+    use_email = (email or "").strip() or (email_list[0] if email_list else "")
+    use_password = (password or "").strip() or (password_list[0] if password_list else "")
+    if not use_email or not use_password:
+        return {
+            "ok": False,
+            "error": "Credentials fehlen (data/owner_login_probe_config.json oder Argumente)",
+            "flow": name,
+        }
+
+    # Reuse probe path with single target + single pair
+    return await run_login_probe(
+        emails=[use_email],
+        passwords=[use_password],
+        targets=[name if name != "x" else "x"],
+        delay_sec=1.0,
+        save_success_to_browser=save_success_to_browser,
+    )
 
 
 def _mask_email(email: str) -> str:

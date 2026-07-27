@@ -532,3 +532,39 @@ def status() -> dict[str, Any]:
         "last_push_at": state.get("last_push_at"),
         "tracked_keys": len(state.get("by_key") or {}),
     }
+
+
+async def send_test_push(*, message: str = "") -> dict[str, Any]:
+    """Owner-triggered test notification (bypasses hard-kind filter, force=True)."""
+    body = (message or "").strip() or "Isaac Owner-Push Test — Verbindung ok."
+    blocker = OwnerBlocker(
+        kind=KIND_OWNER_INPUT,
+        title="Owner-Push Test",
+        detail=body[:280],
+        need="none_test",
+        source="owner_notify.test",
+        cooldown_key=f"test|{int(time.time() // 60)}",
+    )
+    return await notify_owner_blocker(blocker, force=True)
+
+
+def status_text() -> str:
+    st = status()
+    topic = ntfy_topic()
+    topic_hint = ""
+    if topic:
+        # do not print full topic in multi-user logs — show suffix only
+        topic_hint = f"…{topic[-6:]}" if len(topic) > 6 else topic
+    lines = [
+        f"Owner-Push │ enabled={st['enabled']} ntfy={st['ntfy_topic_set']} "
+        f"webhook={st['webhook_set']}",
+        f"  ntfy_url={st['ntfy_url']} topic={topic_hint or '(unset)'}",
+        f"  cooldown={st['cooldown_s']}s min_interval={st['min_interval_s']}s",
+        f"  last_push_at={st.get('last_push_at') or 0} tracked={st['tracked_keys']}",
+        "  Befehle: ntfy status | ntfy test",
+    ]
+    if topic:
+        lines.append(f"  App: abonniere ntfy.sh/{topic}")
+    else:
+        lines.append("  Setze ISAAC_NTFY_TOPIC=… in .env")
+    return "\n".join(lines)

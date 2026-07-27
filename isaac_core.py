@@ -231,6 +231,16 @@ EXPLICIT_COMMAND_PATTERNS = [
         r"^smoke:remote\s+\w+$",
         r"^remote smoke$",
         r"^remote smoke\s+\w+$",
+        r"^ntfy$",
+        r"^ntfy\s+\w+$",
+        r"^owner push$",
+        r"^owner push\s+\w+$",
+        r"^owner-push$",
+        r"^owner-push\s+\w+$",
+        r"^login flow\s*:",
+        r"^login-flow\s*:",
+        r"^browser login flow\s*:",
+        r"^browser login\s*:",
     ]),
 ]
 
@@ -2415,6 +2425,18 @@ class IsaacKernel:
 
     def _handle_ext_memory_status(self, text: str = "", *_) -> str:
         tl = (text or "").lower().strip()
+        if tl.startswith("ntfy") or tl.startswith("owner push") or tl.startswith("owner-push"):
+            return self._handle_ntfy(text)
+        if any(
+            tl.startswith(p)
+            for p in (
+                "login flow",
+                "login-flow",
+                "browser login flow",
+                "browser login:",
+            )
+        ) or "login flow" in tl:
+            return self._handle_login_flow(text)
         if any(
             x in tl
             for x in (
@@ -2449,6 +2471,101 @@ class IsaacKernel:
             return get_external_memory_bridge().status_text()
         except Exception as exc:
             return f"[External Memory] nicht verfügbar: {exc}"
+
+    def _handle_ntfy(self, text: str = "") -> str:
+        """ntfy status | ntfy test — Owner-Push."""
+        tl = (text or "").lower().strip()
+        try:
+            from owner_notify import send_test_push, status_text
+        except Exception as exc:
+            return f"[ntfy] Modul fehlt: {exc}"
+        if "test" in tl or "ping" in tl:
+            try:
+                import asyncio
+
+                async def _go():
+                    return await send_test_push(message="Isaac ntfy test — bitte App prüfen.")
+
+                try:
+                    result = asyncio.get_running_loop()
+                except RuntimeError:
+                    result = None
+                if result is not None:
+                    # already in async context from process()
+                    import concurrent.futures
+
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        out = pool.submit(lambda: asyncio.run(_go())).result(timeout=30)
+                else:
+                    out = asyncio.run(_go())
+                ch = out.get("channels") or []
+                ok_ch = [c.get("channel") for c in ch if c.get("ok")]
+                return (
+                    f"[ntfy] test pushed={out.get('pushed')} "
+                    f"channels_ok={ok_ch or '—'} detail={out.get('skipped') or 'ok'}"
+                )
+            except Exception as exc:
+                return f"[ntfy] test fehlgeschlagen: {exc}"
+        return status_text()
+
+    def _handle_login_flow(self, text: str = "") -> str:
+        """login flow: x | google | webde — single-pair owner browser login."""
+        import re
+
+        raw = (text or "").strip()
+        m = re.search(
+            r"(?:login[- ]flow|browser login flow|browser login)\s*:?\s*(\w+)",
+            raw,
+            re.I,
+        )
+        name = (m.group(1) if m else "").strip().lower()
+        if not name or name in {"flow", "login", "browser"}:
+            return (
+                "[Login Flow] Format: login flow: x\n"
+                "Verfügbar: google | webde | x (Twitter)\n"
+                "Credentials: data/owner_login_probe_config.json (lokal, gitignored)\n"
+                "Nur Admin-Modus; max. 1 E-Mail/Passwort-Paar pro Lauf."
+            )
+        try:
+            from owner_login_probe import run_named_login_flow
+            import asyncio
+
+            async def _run():
+                return await run_named_login_flow(name)
+
+            try:
+                asyncio.get_running_loop()
+                import concurrent.futures
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    result = pool.submit(lambda: asyncio.run(_run())).result(timeout=180)
+            except RuntimeError:
+                result = asyncio.run(_run())
+        except Exception as exc:
+            return f"[Login Flow] Fehler: {exc}"
+
+        if not result.get("ok") and result.get("error"):
+            avail = result.get("available") or []
+            extra = f" verfügbar={avail}" if avail else ""
+            return f"[Login Flow] {result.get('error')}{extra}"
+
+        succ = result.get("success_count", 0)
+        tested = result.get("tested", 0)
+        lines = [
+            f"[Login Flow] target={name} tested={tested} success={succ}",
+        ]
+        for row in (result.get("results") or [])[:6]:
+            lines.append(
+                f"  {row.get('email_masked')}: "
+                f"{'OK' if row.get('ok') else row.get('reason', 'fail')[:60]}"
+            )
+        if succ:
+            lines.append("Erfolgreiche Zugangsdaten in browser_creds gespeichert (falls erlaubt).")
+        else:
+            lines.append(
+                "Hinweis: 2FA/Captcha blockiert oft automatische Logins — dann manuell + login: speichern."
+            )
+        return "\n".join(lines)
 
     def _handle_remote_smoke(self, tl: str) -> str:
         """status:smoke | status:smoke wake | status:smoke full

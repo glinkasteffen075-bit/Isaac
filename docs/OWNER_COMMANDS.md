@@ -91,6 +91,31 @@ login flow: webde
 ```
 
 Credentials nur in `data/owner_login_probe_config.json` (gitignored). Pro Lauf **ein** E-Mail/Passwort-Paar.
+
+### Android-Apps (echte Apps — Chrome mit deiner Session)
+
+Voraussetzung: **Termux-Brücke** auf dem S8 (Isaac läuft im Kali-Chroot).
+
+```bash
+# In der Termux-App (nicht nur Chroot):
+pkg install openssh termux-api tsu
+# + Termux:API aus F-Droid
+bash scripts/setup_termux_bridge.sh
+```
+
+Im Isaac-Chat (Admin):
+
+```text
+apps status
+öffne chrome
+starte chrome
+öffne die app gmail
+öffne youtube.com in chrome
+öffne https://mail.google.com in chrome
+```
+
+`öffne chrome` startet **com.android.chrome** (Android), nicht Playwright.  
+Playwright bleibt für Web-Tests/Automation.
 | `ISAAC_OWNER_WEBHOOK_URL=https://…` | optional JSON-Webhook |
 | `ISAAC_OWNER_PUSH_COOLDOWN_S=21600` | gleicher Blocker max. alle 6h |
 | `ISAAC_OWNER_PUSH_MIN_INTERVAL_S=300` | global min. 5 Min zwischen Pushes |

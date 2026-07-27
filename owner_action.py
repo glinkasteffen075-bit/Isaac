@@ -209,6 +209,62 @@ _ANDROID_INTENTS: dict[str, str] = {
     "wlan calling": "android.settings.WIFI_SETTINGS",
 }
 
+# Android app packages (launch real apps via am / monkey / termux-open)
+# Prefer this over Playwright when user says "öffne Chrome".
+_APP_PACKAGES: dict[str, str] = {
+    "chrome": "com.android.chrome",
+    "google chrome": "com.android.chrome",
+    "chromium": "org.chromium.chrome",
+    "firefox": "org.mozilla.firefox",
+    "gmail": "com.google.android.gm",
+    "google mail": "com.google.android.gm",
+    "maps": "com.google.android.apps.maps",
+    "google maps": "com.google.android.apps.maps",
+    "youtube": "com.google.android.youtube",
+    "yt": "com.google.android.youtube",
+    "whatsapp": "com.whatsapp",
+    "telegram": "org.telegram.messenger",
+    "signal": "org.thoughtcrime.securesms",
+    "photos": "com.google.android.apps.photos",
+    "google fotos": "com.google.android.apps.photos",
+    "fotos": "com.google.android.apps.photos",
+    "kamera": "com.sec.android.app.camera",
+    "camera": "com.sec.android.app.camera",
+    "play store": "com.android.vending",
+    "playstore": "com.android.vending",
+    "files": "com.google.android.apps.nbu.files",
+    "dateien": "com.google.android.apps.nbu.files",
+    "settings": "com.android.settings",
+    "einstellungen": "com.android.settings",
+    "calendar": "com.google.android.calendar",
+    "kalender": "com.google.android.calendar",
+    "contacts": "com.samsung.android.contacts",
+    "kontakte": "com.samsung.android.contacts",
+    "phone": "com.samsung.android.dialer",
+    "telefon": "com.samsung.android.dialer",
+    "messages": "com.samsung.android.messaging",
+    "sms": "com.samsung.android.messaging",
+    "clock": "com.sec.android.app.clockpackage",
+    "uhr": "com.sec.android.app.clockpackage",
+    "calculator": "com.sec.android.app.popupcalculator",
+    "rechner": "com.sec.android.app.popupcalculator",
+    "spotify": "com.spotify.music",
+    "netflix": "com.netflix.mediaclient",
+    "instagram": "com.instagram.android",
+    "facebook": "com.facebook.katana",
+    "x": "com.twitter.android",
+    "twitter": "com.twitter.android",
+    "termux": "com.termux",
+}
+
+_BRIDGE_SETUP_HINT = (
+    "Android-Apps starten braucht die Termux-Brücke.\n"
+    "In der Termux-App:\n"
+    "  pkg install openssh termux-api tsu\n"
+    "  bash scripts/setup_termux_bridge.sh\n"
+    "Dann: apps status"
+)
+
 _CLEANUP_PROTECTED_NAMES = frozenset({
     ".git", ".env", ".venv", "isaac.db", "audit.jsonl", "constitution.json",
 })
@@ -765,6 +821,11 @@ def detect_owner_action(text: str) -> Optional[OwnerAction]:
     if not normalized or _is_explanatory(normalized):
         return None
 
+    # App launches before security_toolkit — "starte chrome" is not a security tool
+    app_launch = _detect_app_launch(raw, normalized)
+    if app_launch:
+        return app_launch
+
     if is_owner_equivalent_mode():
         from security_toolkit import parse_security_command
 
@@ -1009,6 +1070,17 @@ def detect_owner_action(text: str) -> Optional[OwnerAction]:
 
     for alias in sorted(_SITE_ALIASES, key=len, reverse=True):
         if alias in normalized and normalized.startswith(_OPEN_PREFIXES):
+            # Prefer native app when we have a package mapping (e.g. gmail)
+            if alias in _APP_PACKAGES or any(
+                k in alias for k in _APP_PACKAGES
+            ):
+                for pkg_name in sorted(_APP_PACKAGES, key=len, reverse=True):
+                    if pkg_name in alias or alias in pkg_name:
+                        return OwnerAction(
+                            "app_open",
+                            {"name": pkg_name, "url": _SITE_ALIASES.get(alias, "")},
+                            raw=raw,
+                        )
             return OwnerAction("open_target", {"target": alias}, raw=raw)
 
     if re.match(r"^(starte|öffne|oeffne)(\s+die)?\s+app\s+", normalized):
@@ -1034,8 +1106,100 @@ def detect_owner_action(text: str) -> Optional[OwnerAction]:
     if normalized.startswith(_OPEN_PREFIXES):
         target = re.sub(r"^(öffne|oeffne|navigiere|starte)\s+(zu\s+)?", "", raw, flags=re.I).strip()
         if target:
+            # "öffne youtube.com in chrome" → chrome package + URL
+            m_in = re.search(
+                r"^(.+?)\s+(?:in|im|mit)\s+(chrome|browser|firefox)\s*$",
+                target,
+                re.I,
+            )
+            if m_in:
+                dest, browser = m_in.group(1).strip(), m_in.group(2).strip().lower()
+                browser = "chrome" if browser == "browser" else browser
+                url = dest
+                if not re.match(r"^https?://", url, re.I):
+                    if re.match(r"^[\w.-]+\.[a-z]{2,}", url, re.I) and " " not in url:
+                        url = f"https://{url}"
+                    else:
+                        url = f"https://www.google.com/search?q={quote_plus(url)}"
+                return OwnerAction(
+                    "app_open",
+                    {"name": browser, "url": url},
+                    raw=raw,
+                )
+            # bare app name
+            t_norm = _normalize(target)
+            for pkg_name in sorted(_APP_PACKAGES, key=len, reverse=True):
+                if t_norm == pkg_name or t_norm.startswith(pkg_name + " "):
+                    return OwnerAction("app_open", {"name": pkg_name}, raw=raw)
             return OwnerAction("open_target", {"target": target}, raw=raw)
 
+    return None
+
+
+def _detect_app_launch(raw: str, normalized: str) -> Optional[OwnerAction]:
+    """Early detect 'öffne/starte chrome' before security_toolkit steals it."""
+    if not normalized:
+        return None
+    # apps status / bridge status
+    if normalized in {
+        "apps status",
+        "app status",
+        "termux bridge",
+        "termux bridge status",
+        "bridge status",
+        "android apps",
+    } or normalized.startswith("apps status"):
+        return OwnerAction("apps_status", {}, raw=raw)
+
+    if not normalized.startswith(_OPEN_PREFIXES) and not re.match(
+        r"^(starte|öffne|oeffne)(\s+die)?\s+app\s+", normalized
+    ):
+        # also "chrome öffnen"
+        m_rev = re.match(
+            r"^(.+?)\s+(öffnen|oeffnen|starten)\s*$",
+            normalized,
+        )
+        if m_rev:
+            candidate = m_rev.group(1).strip()
+            for pkg_name in sorted(_APP_PACKAGES, key=len, reverse=True):
+                if candidate == pkg_name or candidate.endswith(" " + pkg_name):
+                    return OwnerAction("app_open", {"name": pkg_name}, raw=raw)
+        return None
+
+    # strip open prefixes
+    rest = re.sub(
+        r"^(starte|öffne|oeffne)(\s+die)?\s+(app\s+)?",
+        "",
+        normalized,
+        flags=re.I,
+    ).strip()
+    rest = re.sub(r"^(zu\s+)", "", rest).strip()
+    if not rest:
+        return None
+
+    # URL in chrome
+    m_in = re.search(
+        r"^(.+?)\s+(?:in|im|mit)\s+(chrome|browser|firefox)\s*$",
+        rest,
+        re.I,
+    )
+    if m_in:
+        dest, browser = m_in.group(1).strip(), m_in.group(2).strip().lower()
+        browser = "chrome" if browser == "browser" else browser
+        url = dest
+        if not re.match(r"^https?://", url, re.I):
+            if re.match(r"^[\w.-]+\.[a-z]{2,}", url, re.I) and " " not in url:
+                url = f"https://{url}"
+            else:
+                url = f"https://www.google.com/search?q={quote_plus(url)}"
+        return OwnerAction("app_open", {"name": browser, "url": url}, raw=raw)
+
+    for pkg_name in sorted(_APP_PACKAGES, key=len, reverse=True):
+        if rest == pkg_name or rest.startswith(pkg_name + " "):
+            return OwnerAction("app_open", {"name": pkg_name}, raw=raw)
+    for intent_name in sorted(_ANDROID_INTENTS, key=len, reverse=True):
+        if rest == intent_name or rest.startswith(intent_name + " "):
+            return OwnerAction("app_open", {"name": intent_name}, raw=raw)
     return None
 
 
@@ -1052,6 +1216,7 @@ async def execute_owner_action(action: OwnerAction) -> tuple[str, bool]:
         "file_list": _file_list,
         "file_operation": _file_operation,
         "app_open": _app_open,
+        "apps_status": _apps_status,
         "shell": _shell_action,
         "open_target": _open_target,
         "email_open": _email_open,
@@ -2254,27 +2419,215 @@ async def _clipboard(action: OwnerAction) -> tuple[str, bool]:
     return "[Owner] Unbekannte Zwischenablage-Operation.", False
 
 
+async def _apps_status(action: OwnerAction) -> tuple[str, bool]:
+    """Diagnose Android app launch path (Termux bridge)."""
+    lines = ["[Apps / Android-Brücke]"]
+    try:
+        from termux_bridge import bridge_enabled, bridge_mode, diagnose_bridge
+
+        diag = diagnose_bridge()
+        lines.append(f"bridge_enabled={bridge_enabled()} mode={bridge_mode()}")
+        if isinstance(diag, dict):
+            lines.append(f"available={diag.get('mode') != 'none'}")
+            for p in diag.get("probes") or []:
+                if isinstance(p, dict):
+                    lines.append(
+                        f"  probe {p.get('mode')}: available={p.get('available')} "
+                        f"{(p.get('detail') or '')[:60]}"
+                    )
+            tools = diag.get("tools") or {}
+            ok_tools = [k for k, v in tools.items() if v]
+            bad_tools = [k for k, v in tools.items() if not v]
+            lines.append(f"  tools_ok={ok_tools or '—'}")
+            if bad_tools:
+                lines.append(f"  tools_missing={bad_tools[:8]}")
+        lines.append("")
+        lines.append("Befehle: öffne chrome | öffne die app gmail | öffne maps.google.com in chrome")
+        if (diag or {}).get("mode") == "none" or not any(
+            (p or {}).get("available") for p in (diag or {}).get("probes") or []
+        ):
+            lines.append("")
+            lines.append(_BRIDGE_SETUP_HINT)
+        return "\n".join(lines), True
+    except Exception as exc:
+        return f"[Apps] Diagnose fehlgeschlagen: {exc}\n\n{_BRIDGE_SETUP_HINT}", False
+
+
+async def _launch_android_package(
+    package: str,
+    *,
+    url: str = "",
+    label: str = "",
+) -> dict[str, Any]:
+    """Try Termux-bridge / am / monkey / termux-open to start a real Android app."""
+    package = (package or "").strip()
+    url = (url or "").strip()
+    label = label or package
+    attempts: list[str] = []
+
+    # 1) Prefer bridge with explicit shell that uses Android am
+    try:
+        from termux_bridge import bridge_available, run_termux_command
+
+        if bridge_available():
+            if url:
+                # Open URL in specific package (Chrome keeps Google session)
+                cmd = (
+                    f"am start -a android.intent.action.VIEW "
+                    f"-d {shlex_quote(url)} -p {shlex_quote(package)}"
+                )
+                r = await run_termux_command(["sh", "-c", cmd], timeout=20.0)
+                attempts.append(f"bridge am VIEW: ok={r.get('ok')} err={r.get('error','')[:80]}")
+                if r.get("ok"):
+                    return {
+                        "ok": True,
+                        "via": "termux_bridge:am_view",
+                        "package": package,
+                        "url": url,
+                        "attempts": attempts,
+                    }
+                # termux-open-url (default handler = often Chrome)
+                r2 = await run_termux_command(["termux-open-url", url], timeout=15.0)
+                attempts.append(f"bridge termux-open-url: ok={r2.get('ok')}")
+                if r2.get("ok"):
+                    return {
+                        "ok": True,
+                        "via": "termux_bridge:termux-open-url",
+                        "package": package,
+                        "url": url,
+                        "attempts": attempts,
+                    }
+            # Launch package
+            for cmd in (
+                f"monkey -p {shlex_quote(package)} -c android.intent.category.LAUNCHER 1",
+                f"am start $(cmd package resolve-activity --brief {shlex_quote(package)} 2>/dev/null | tail -n 1)",
+            ):
+                r = await run_termux_command(["sh", "-c", cmd], timeout=20.0)
+                attempts.append(f"bridge launch: ok={r.get('ok')} {cmd[:50]}")
+                if r.get("ok"):
+                    return {
+                        "ok": True,
+                        "via": "termux_bridge:am",
+                        "package": package,
+                        "attempts": attempts,
+                    }
+            # termux-open package
+            r3 = await run_termux_command(
+                ["termux-open", f"android-app://{package}"],
+                timeout=15.0,
+            )
+            attempts.append(f"bridge termux-open app: ok={r3.get('ok')}")
+            if r3.get("ok"):
+                return {
+                    "ok": True,
+                    "via": "termux_bridge:termux-open",
+                    "package": package,
+                    "attempts": attempts,
+                }
+        else:
+            attempts.append("bridge_unavailable")
+    except Exception as exc:
+        attempts.append(f"bridge_exc:{exc}")
+
+    # 2) Direct shell (when am exists in PATH — pure Termux runtime)
+    if url:
+        r = await _shell(
+            f"am start -a android.intent.action.VIEW -d {shlex_quote(url)} "
+            f"-p {shlex_quote(package)}"
+        )
+        attempts.append(f"shell am VIEW: ok={r.get('ok')}")
+        if r.get("ok"):
+            return {"ok": True, "via": "shell:am_view", "package": package, "url": url, "attempts": attempts}
+    r = await _shell(
+        f"monkey -p {shlex_quote(package)} -c android.intent.category.LAUNCHER 1"
+    )
+    attempts.append(f"shell monkey: ok={r.get('ok')} err={(r.get('error') or r.get('stderr') or '')[:80]}")
+    if r.get("ok"):
+        return {"ok": True, "via": "shell:monkey", "package": package, "attempts": attempts}
+
+    return {
+        "ok": False,
+        "error": "android_launch_failed",
+        "package": package,
+        "label": label,
+        "attempts": attempts,
+        "hint": _BRIDGE_SETUP_HINT,
+    }
+
+
 async def _app_open(action: OwnerAction) -> tuple[str, bool]:
     name = _normalize(str(action.params.get("name") or ""))
-    AuditLog.action("OwnerAction", "app_open", name[:80])
-    runtime = await _runtime()
+    url = str(action.params.get("url") or "").strip()
+    AuditLog.action("OwnerAction", "app_open", f"{name[:60]} url={url[:80]}")
 
-    if name in _SITE_ALIASES:
-        return await _open_target(OwnerAction("open_target", {"target": name}, raw=action.raw))
-
+    # Intent-based settings apps
     intent = _ANDROID_INTENTS.get(name)
-    if intent and runtime.runtime == "termux":
-        result = await _shell(f"am start -a {intent}")
-        if result.get("ok"):
-            return f"[Owner] Android-Intent geöffnet: {intent}", True
-        return f"[Owner] Intent fehlgeschlagen: {result.get('error', 'unbekannt')}", False
+    if intent and not url:
+        is_action_intent = intent.startswith("android.")
+        if is_action_intent:
+            result = await _shell(f"am start -a {shlex_quote(intent)}")
+            if not result.get("ok"):
+                try:
+                    from termux_bridge import bridge_available, run_termux_command
 
-    if runtime.runtime == "termux":
-        result = await _shell(f"monkey -p {name} -c android.intent.category.LAUNCHER 1 2>/dev/null")
-        if result.get("ok"):
-            return f"[Owner] App gestartet: {name}", True
+                    if bridge_available():
+                        result = await run_termux_command(
+                            ["sh", "-c", f"am start -a {shlex_quote(intent)}"],
+                            timeout=15.0,
+                        )
+                except Exception:
+                    pass
+            if result.get("ok"):
+                return f"[Owner] Android-Intent geöffnet: {intent}", True
+            return (
+                f"[Owner] Intent fehlgeschlagen: {result.get('error', 'unbekannt')}\n\n"
+                f"{_BRIDGE_SETUP_HINT}",
+                False,
+            )
+        # package-as-intent-value (legacy calculator etc.)
+        package = intent if re.match(r"^[\w.]+$", intent) else ""
+        if package and package.count(".") >= 1:
+            launch = await _launch_android_package(package, label=name)
+            if launch.get("ok"):
+                return (
+                    f"[Owner] App gestartet: {name} ({package}) via {launch.get('via')}",
+                    True,
+                )
 
-    return await _open_target(OwnerAction("open_target", {"target": name}, raw=action.raw))
+    package = _APP_PACKAGES.get(name, "")
+    if not package and re.match(r"^[\w.]+$", name) and name.count(".") >= 1:
+        package = name  # raw package id
+
+    if package:
+        launch = await _launch_android_package(package, url=url, label=name)
+        if launch.get("ok"):
+            extra = f"\nURL: {url}" if url else ""
+            return (
+                f"[Owner] Android-App geöffnet: {name} ({package}) "
+                f"via {launch.get('via')}{extra}\n"
+                f"(Echte App — deine Chrome-Session gilt, falls Chrome.)",
+                True,
+            )
+        attempts = "; ".join(launch.get("attempts") or [])[:300]
+        return (
+            f"[Owner] Konnte App '{name}' ({package}) nicht starten.\n"
+            f"Versuche: {attempts}\n\n"
+            f"{launch.get('hint') or _BRIDGE_SETUP_HINT}",
+            False,
+        )
+
+    # Site alias URL without package
+    if name in _SITE_ALIASES:
+        return await _open_target(
+            OwnerAction("open_target", {"target": name, "prefer_native": True}, raw=action.raw)
+        )
+
+    return (
+        f"[Owner] Unbekannte App: {name}\n"
+        f"Bekannt u. a.: {', '.join(sorted(_APP_PACKAGES)[:12])}…\n"
+        f"Oder: öffne die app com.android.chrome",
+        False,
+    )
 
 
 async def _shell_action(action: OwnerAction) -> tuple[str, bool]:
@@ -2299,6 +2652,13 @@ async def _open_target(action: OwnerAction) -> tuple[str, bool]:
         return "[Owner] Kein Ziel angegeben.", False
 
     lower = target.lower()
+    # App name mistaken as open_target
+    for pkg_name in sorted(_APP_PACKAGES, key=len, reverse=True):
+        if lower == pkg_name or lower.strip() == pkg_name:
+            return await _app_open(
+                OwnerAction("app_open", {"name": pkg_name}, raw=action.raw)
+            )
+
     for alias, url in sorted(_SITE_ALIASES.items(), key=lambda x: -len(x[0])):
         if alias in lower or lower == alias:
             target = url
@@ -2311,13 +2671,33 @@ async def _open_target(action: OwnerAction) -> tuple[str, bool]:
             target = f"https://www.google.com/search?q={quote_plus(target)}"
 
     AuditLog.action("OwnerAction", "open_target", target[:160])
-    browser_note = await _browser_navigate(target, wait_ms=1500)
+    # Prefer native Android Chrome (session!) over Playwright
+    native = await _launch_android_package(
+        "com.android.chrome",
+        url=target,
+        label="chrome",
+    )
+    if native.get("ok"):
+        return (
+            f"[Owner] Geöffnet in Android-Chrome: {target}\n"
+            f"via {native.get('via')} (deine App-Session)",
+            True,
+        )
     opened = await _open_url(target)
-    return f"[Owner] Geöffnet: {target}\n{browser_note}\n{opened}", True
+    browser_note = await _browser_navigate(target, wait_ms=800)
+    hint = ""
+    if not native.get("ok"):
+        hint = f"\n(Hinweis: Android-Chrome nicht erreichbar — {_BRIDGE_SETUP_HINT.splitlines()[0]})"
+    return f"[Owner] Geöffnet: {target}\n{opened}\n{browser_note}{hint}", True
 
 
 async def _open_url(url: str) -> str:
     from computer_use import AgentAction, computer_use_enabled
+
+    # Native first
+    native = await _launch_android_package("com.android.chrome", url=url, label="chrome")
+    if native.get("ok"):
+        return f"Android-Chrome via {native.get('via')}."
 
     if computer_use_enabled():
         runtime = await _runtime()
@@ -2325,14 +2705,16 @@ async def _open_url(url: str) -> str:
         if result.get("ok"):
             via = result.get("via", "Computer-Use")
             return f"Geöffnet über {via}."
-        return f"Computer-Use: {result.get('error', 'unbekannt')}"
+        cu_err = result.get("error", "unbekannt")
+    else:
+        cu_err = "computer_use off"
 
     if get_config().browser_automation:
         note = await _browser_navigate(url)
         if "Browser" in note and "fehlgeschlagen" not in note.lower():
-            return note
-        return f"{note} (Playwright-Fallback)"
-    return "Öffne URL manuell (Computer-Use/Browser nicht aktiv)."
+            return f"{note} (Playwright — eigene Session, nicht Android-Chrome)"
+        return f"{note}; computer_use={cu_err}"
+    return f"Öffne URL manuell (native Chrome fehlgeschlagen; {cu_err})."
 
 
 async def _browser_navigate(url: str, wait_ms: int = 1000) -> str:
